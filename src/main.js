@@ -119,6 +119,8 @@ const EVENT_TYPES = {
   RANKED: "RANKED_FINISH"
 };
 
+const API_IMPORT_LEAGUES = ["NBA", "NFL", "MLB", "NHL", "NCAA Basketball", "NCAA Football", "Premier League", "MLS", "Champions League"];
+
 const AVATAR_CHOICES = ["😀", "😎", "🔥", "🧠", "🎯", "🏁", "⚡", "👑", "🐐", "💸", "🎲", "🦈"];
 
 let activeTab = "today";
@@ -126,6 +128,7 @@ let authMode = "login";
 let filters = { sport: "all", league: "all" };
 let apiImportResults = [];
 let apiImportMessage = "";
+let apiSyncRunning = false;
 let authUser = null;
 let loading = true;
 let dataReady = false;
@@ -1125,24 +1128,23 @@ function renderAdmin() {
         ${pendingUsers.length ? pendingUsers.map(user => `<div class="pending-user"><div class="avatar-row">${renderAvatar(user)}<div><strong>${escapeHtml(user.displayName)}</strong><br><span class="muted small">${escapeHtml(user.email)}</span></div></div><button class="primary" data-approve="${escapeHtml(user.id)}">Approve</button></div>`).join("") : `<div class="record">No pending users.</div>`}
       </div>
 
-      <div class="admin-card">
-        <h3>Demo setup</h3>
-        <p class="muted small">Use this during Firebase testing to create a few events in Firestore.</p>
-        <button class="primary" data-action="seed-demo-events">Seed demo events</button>
-      </div>
-
       <div class="admin-card api-import-card">
-        <h3>API event importer</h3>
-        <p class="muted small">Fetch real schedule data, review it, then import selected games into Firestore. Manual events stay available as the fallback.</p>
-        <label>League</label>
+        <h3>API schedule sync</h3>
+        <p class="muted small">Pull real ESPN schedule data into Firestore. Manual events stay available as the fallback, but demo seeding is gone now that the live importer works.</p>
+        <div class="button-row">
+          <button class="primary" data-action="sync-api-today" ${apiSyncRunning ? "disabled" : ""}>Sync today across leagues</button>
+          <button class="ghost" data-action="sync-api-tomorrow" ${apiSyncRunning ? "disabled" : ""}>Sync tomorrow</button>
+        </div>
+        <p class="footer-note small">This is the semi-automatic step: one click imports all supported leagues for that day. The next version can move this to a scheduled Vercel cron so it runs without you pressing anything.</p>
+        <label>Manual league/date fetch</label>
         <select id="apiLeague">
-          ${["NBA", "NFL", "MLB", "NHL", "NCAA Basketball", "NCAA Football", "Premier League", "MLS", "Champions League"].map(league => `<option value="${escapeHtml(league)}">${escapeHtml(league)}</option>`).join("")}
+          ${API_IMPORT_LEAGUES.map(league => `<option value="${escapeHtml(league)}">${escapeHtml(league)}</option>`).join("")}
         </select>
         <label>Date</label>
         <input id="apiDate" type="date" value="${escapeHtml(getBettingDayISO())}" />
         <div class="button-row">
-          <button class="primary" data-action="fetch-api-events">Fetch games</button>
-          <button class="ghost" data-action="import-all-api-events" ${apiImportResults.length ? "" : "disabled"}>Import all fetched</button>
+          <button class="primary" data-action="fetch-api-events">Fetch selected</button>
+          <button class="ghost" data-action="import-all-api-events" ${apiImportResults.length ? "" : "disabled"}>Import fetched</button>
         </div>
         ${apiImportMessage ? `<p class="footer-note small">${escapeHtml(apiImportMessage)}</p>` : ""}
         <div class="api-results">
@@ -1220,8 +1222,9 @@ function wireUi() {
   document.querySelectorAll("[data-approve]").forEach(button => button.addEventListener("click", () => approveUser(button.dataset.approve)));
   document.querySelector("[data-action='save-profile']")?.addEventListener("click", saveProfile);
   document.querySelector("[data-action='admin-unlock']")?.addEventListener("click", adminUnlock);
-  document.querySelector("[data-action='seed-demo-events']")?.addEventListener("click", seedDemoEvents);
   document.querySelector("[data-action='fetch-api-events']")?.addEventListener("click", fetchApiEvents);
+  document.querySelector("[data-action='sync-api-today']")?.addEventListener("click", () => syncApiSchedule(0));
+  document.querySelector("[data-action='sync-api-tomorrow']")?.addEventListener("click", () => syncApiSchedule(1));
   document.querySelector("[data-action='import-all-api-events']")?.addEventListener("click", importAllApiEvents);
   document.querySelectorAll("[data-import-api-event]").forEach(button => button.addEventListener("click", () => importApiEvent(button.dataset.importApiEvent)));
   document.querySelector("[data-action='create-event']")?.addEventListener("click", createEvent);
@@ -1696,6 +1699,32 @@ async function importApiEvent(apiEventId) {
   renderApp();
 }
 
+function dateISOOffset(daysFromToday = 0) {
+  const date = new Date();
+  date.setDate(date.getDate() + daysFromToday);
+  return date.toISOString().slice(0, 10);
+}
+
+async function saveApiEventToBatch(batch, event, usedCodes) {
+  const id = apiEventDocId(event);
+  const existing = state.events[id] || Object.values(state.events).find(saved => saved.externalIds?.espnEventId === event.apiEventId);
+  if (existing) return false;
+
+  const savedEvent = {
+    ...event,
+    id,
+    shortCode: nextAvailableDisplayCode(event.league, event.startTime, usedCodes),
+    createdAt: serverTimestamp(),
+    updatedAt: serverTimestamp()
+  };
+
+  delete savedEvent.apiSource;
+  delete savedEvent.apiEventId;
+
+  batch.set(doc(db, "events", id), savedEvent, { merge: true });
+  return true;
+}
+
 async function importAllApiEvents() {
   if (!isAdmin() || !apiImportResults.length) return;
 
@@ -1704,23 +1733,8 @@ async function importAllApiEvents() {
   const usedCodes = new Set(Object.values(state.events || {}).map(event => event.shortCode).filter(Boolean));
 
   for (const event of apiImportResults) {
-    const id = apiEventDocId(event);
-    const existing = state.events[id] || Object.values(state.events).find(saved => saved.externalIds?.espnEventId === event.apiEventId);
-    if (existing) continue;
-
-    const savedEvent = {
-      ...event,
-      id,
-      shortCode: nextAvailableDisplayCode(event.league, event.startTime, usedCodes),
-      createdAt: serverTimestamp(),
-      updatedAt: serverTimestamp()
-    };
-
-    delete savedEvent.apiSource;
-    delete savedEvent.apiEventId;
-
-    batch.set(doc(db, "events", id), savedEvent, { merge: true });
-    added += 1;
+    const didAdd = await saveApiEventToBatch(batch, event, usedCodes);
+    if (didAdd) added += 1;
   }
 
   if (!added) {
@@ -1734,71 +1748,57 @@ async function importAllApiEvents() {
   renderApp();
 }
 
-async function seedDemoEvents() {
-  if (!isAdmin()) return;
+async function fetchApiEventsForLeagueDate(league, dateISO) {
+  const date = dateISO.replace(/-/g, "");
+  const response = await fetch(`/api/espn-events?league=${encodeURIComponent(league)}&date=${encodeURIComponent(date)}`);
+  const data = await response.json();
+  if (!response.ok) throw new Error(data.error || `${league} failed with ${response.status}`);
+  return data.events || [];
+}
 
-  const today = getBettingDayISO();
-  const demoEvents = [
-    {
-      id: `NBA-${today}-SAS-OKC`,
-      shortCode: makeDisplayCode("NBA", today, 1),
-      sport: "basketball",
-      league: "NBA",
-      type: EVENT_TYPES.TEAM,
-      title: "San Antonio Spurs at Oklahoma City Thunder",
-      away: { code: "SAS", name: "San Antonio Spurs" },
-      home: { code: "OKC", name: "Oklahoma City Thunder" },
-      startTime: `${today}T20:30:00-05:00`,
-      status: "pregame",
-      score: null,
-      odds: "Demo odds placeholder",
-      externalIds: { source: "demo" },
-      intel: "Demo event intel. Live/API versions can show odds movement, matchup notes, news, and pregame updates here.",
-      createdAt: serverTimestamp(),
-      updatedAt: serverTimestamp()
-    },
-    {
-      id: `F1-${today}-MONACO-GP`,
-      shortCode: makeDisplayCode("F1", today, 1),
-      sport: "racing",
-      league: "F1",
-      type: EVENT_TYPES.RANKED,
-      title: "Monaco Grand Prix",
-      startTime: `${today}T09:00:00-05:00`,
-      status: "pregame",
-      participants: ["Verstappen", "Norris", "Leclerc", "Piastri", "Hamilton", "Russell"],
-      resultOrder: [],
-      odds: "Demo odds placeholder",
-      externalIds: { source: "demo" },
-      intel: "Demo event intel. Live/API versions can show qualifying, news, and event-specific notes here.",
-      createdAt: serverTimestamp(),
-      updatedAt: serverTimestamp()
-    },
-    {
-      id: `CUS-${today}-COFFEE-TEA`,
-      shortCode: makeDisplayCode("Custom", today, 1),
-      sport: "custom",
-      league: "Custom",
-      type: EVENT_TYPES.TEAM,
-      title: "Office argument: coffee vs tea",
-      away: { code: "COFFEE", name: "Coffee" },
-      home: { code: "TEA", name: "Tea" },
-      startTime: `${today}T23:30:00-05:00`,
-      status: "pregame",
-      score: null,
-      odds: "Custom bet",
-      externalIds: { source: "demo" },
-      intel: "Custom bets are for internal fun: create any title, two options, and let users match against opposite picks.",
-      createdAt: serverTimestamp(),
-      updatedAt: serverTimestamp()
+async function syncApiSchedule(daysFromToday = 0) {
+  if (!isAdmin() || apiSyncRunning) return;
+
+  const dateISO = dateISOOffset(daysFromToday);
+  apiSyncRunning = true;
+  apiImportResults = [];
+  apiImportMessage = `Syncing ${dateISO} across supported leagues...`;
+  renderApp();
+
+  try {
+    const batch = writeBatch(db);
+    const usedCodes = new Set(Object.values(state.events || {}).map(event => event.shortCode).filter(Boolean));
+    const counts = [];
+    let added = 0;
+    let fetched = 0;
+
+    for (const league of API_IMPORT_LEAGUES) {
+      try {
+        const events = await fetchApiEventsForLeagueDate(league, dateISO);
+        fetched += events.length;
+        let leagueAdded = 0;
+        for (const event of events) {
+          const didAdd = await saveApiEventToBatch(batch, event, usedCodes);
+          if (didAdd) {
+            added += 1;
+            leagueAdded += 1;
+          }
+        }
+        if (events.length || leagueAdded) counts.push(`${league}: ${leagueAdded}/${events.length}`);
+      } catch (error) {
+        counts.push(`${league}: error`);
+      }
     }
-  ];
 
-  const batch = writeBatch(db);
-  for (const event of demoEvents) {
-    batch.set(doc(db, "events", event.id), event, { merge: true });
+    if (added) await batch.commit();
+
+    apiImportMessage = `Synced ${dateISO}. Fetched ${fetched}; imported ${added} new event${added === 1 ? "" : "s"}. ${counts.join(" · ")}`;
+  } catch (error) {
+    apiImportMessage = error.message || "Schedule sync failed.";
+  } finally {
+    apiSyncRunning = false;
+    renderApp();
   }
-  await batch.commit();
 }
 
 async function createEvent() {

@@ -82,3 +82,13 @@ NBA, NFL, MLB, NHL, NCAA Basketball, NCAA Football, Premier League, MLS, Champio
 ```
 
 Local Vite dev may not run Vercel serverless functions by default. The endpoint is intended for the deployed Vercel app or local `vercel dev` testing.
+
+
+## v8.1 notes
+
+- Removed the old Seed demo events admin card.
+- Added API Schedule Sync controls:
+  - Sync today across supported leagues
+  - Sync tomorrow
+  - Manual selected league/date fetch still available
+- This is semi-automatic. The next step is a Vercel cron endpoint that runs schedule sync without an admin pressing a button.
