@@ -134,3 +134,16 @@ This matters for racing because ESPN event IDs can be ambiguous across racing en
 F1 now prefers Jolpica/Ergast-compatible data for race schedule and final results. ESPN remains a fallback for F1 schedule discovery only.
 
 This prevents ESPN's racing ordering from being displayed as a verified final leaderboard when it is actually not reliable for finishing order.
+
+
+## v8.8 API duplicate cleanup
+
+Adds an Admin cleanup tool for stale/duplicate API-imported events. This is intended for cases where an older ESPN racing import remains in Firestore after a newer verified source creates the correct race.
+
+The sync/import logic is now race-aware:
+- same sport
+- same league
+- same normalized race title or F1 round
+- source confidence keeps verified F1/NASCAR results over unverified ESPN schedule ordering
+
+The cleanup tool will not delete events that already have bets or matches.

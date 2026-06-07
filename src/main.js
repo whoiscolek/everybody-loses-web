@@ -1260,6 +1260,7 @@ function renderAdmin() {
           <button class="primary" data-action="sync-api-today" ${apiSyncRunning ? "disabled" : ""}>Sync today across leagues</button>
           <button class="ghost" data-action="sync-api-tomorrow" ${apiSyncRunning ? "disabled" : ""}>Sync tomorrow</button>
           <button class="ghost" data-action="delete-demo-events">Delete old demo events</button>
+          <button class="ghost" data-action="cleanup-api-events">Clean duplicate API events</button>
         </div>
         <p class="footer-note small">This is the semi-automatic step: one click imports or refreshes all supported leagues for that day. The next version can move this to a scheduled Vercel cron so it runs without you pressing anything.</p>
         <label>Manual league/date fetch</label>
@@ -1352,6 +1353,7 @@ function wireUi() {
   document.querySelector("[data-action='sync-api-today']")?.addEventListener("click", () => syncApiSchedule(0));
   document.querySelector("[data-action='sync-api-tomorrow']")?.addEventListener("click", () => syncApiSchedule(1));
   document.querySelector("[data-action='delete-demo-events']")?.addEventListener("click", deleteDemoEvents);
+  document.querySelector("[data-action='cleanup-api-events']")?.addEventListener("click", cleanupDuplicateApiEvents);
   document.querySelector("[data-action='import-all-api-events']")?.addEventListener("click", importAllApiEvents);
   document.querySelectorAll("[data-import-api-event]").forEach(button => button.addEventListener("click", () => importApiEvent(button.dataset.importApiEvent)));
   document.querySelector("[data-action='create-event']")?.addEventListener("click", createEvent);
@@ -1755,10 +1757,55 @@ function eventMatchesApiImport(saved, apiEvent) {
   return !!savedTitle && savedTitle === apiTitle && startsClose;
 }
 
+function normalizeEventTitle(title) {
+  return String(title || "")
+    .toLowerCase()
+    .replace(/grand prix|gp|race|presented by.*$/gi, "")
+    .replace(/[^a-z0-9]+/g, " ")
+    .trim();
+}
+
+function eventSourceConfidence(event) {
+  const source = String(event?.externalIds?.source || event?.apiSource || "").toLowerCase();
+  if (event?.leaderboardVerified) return 100;
+  if (source.includes("jolpica") || source.includes("ergast")) return 95;
+  if (source.includes("nascar")) return 95;
+  if (source.includes("motogp")) return 90;
+  if (source.includes("espn")) return 45;
+  return 10;
+}
+
+function canonicalApiKey(event) {
+  const league = String(event?.league || "").trim().toLowerCase();
+  const sport = String(event?.sport || "").trim().toLowerCase();
+  const title = normalizeEventTitle(event?.title || "");
+  const f1Round = event?.externalIds?.f1Round ? `round-${event.externalIds.f1Round}` : "";
+  const sourceRound = f1Round || title;
+  return `${sport}|${league}|${sourceRound}`;
+}
+
+function eventLooksSameRace(saved, apiEvent) {
+  if (!saved || !apiEvent) return false;
+  if (String(saved.sport || "") !== String(apiEvent.sport || "")) return false;
+  if (String(saved.league || "") !== String(apiEvent.league || "")) return false;
+
+  const savedKey = canonicalApiKey(saved);
+  const apiKey = canonicalApiKey(apiEvent);
+  if (savedKey && apiKey && savedKey === apiKey) return true;
+
+  const savedTitle = normalizeEventTitle(saved.title || "");
+  const apiTitle = normalizeEventTitle(apiEvent.title || "");
+  return !!savedTitle && !!apiTitle && savedTitle === apiTitle;
+}
+
 function findExistingApiEvent(apiEvent) {
   const docId = apiEventDocId(apiEvent);
   if (state.events[docId]) return state.events[docId];
-  return Object.values(state.events || {}).find(saved => eventMatchesApiImport(saved, apiEvent));
+
+  const exactSourceMatch = Object.values(state.events || {}).find(saved => eventMatchesApiImport(saved, apiEvent));
+  if (exactSourceMatch) return exactSourceMatch;
+
+  return Object.values(state.events || {}).find(saved => eventLooksSameRace(saved, apiEvent));
 }
 
 function nextAvailableDisplayCode(league, startTime, usedCodes = null) {
@@ -1797,10 +1844,70 @@ function renderApiImportResults() {
           <span class="muted small">${escapeHtml(event.league)} · ${escapeHtml(formatTime(event.startTime))} CT · ${escapeHtml(label(event.status))}</span><br />
           <span class="small">${escapeHtml(scoreText)} · Odds: ${escapeHtml(event.odds || "Unavailable")}</span>
         </div>
-        <button class="${existing ? "ghost" : "primary"}" data-import-api-event="${escapeHtml(event.apiEventId)}" ${existing ? "disabled" : ""}>${existing ? "Imported" : "Import"}</button>
+        <button class="${existing ? "ghost" : "primary"}" data-import-api-event="${escapeHtml(event.apiEventId)}">${existing ? "Refresh" : "Import"}</button>
       </div>
     `;
   }).join("");
+}
+
+
+async function cleanupDuplicateApiEvents() {
+  if (!isAdmin()) return;
+
+  const events = Object.values(state.events || {}).filter(event => event.externalIds?.source || event.leaderboardSource || event.odds === "API schedule import");
+  const groups = new Map();
+
+  for (const event of events) {
+    const key = canonicalApiKey(event);
+    if (!key || key.includes("||")) continue;
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key).push(event);
+  }
+
+  const batch = writeBatch(db);
+  let removed = 0;
+
+  for (const group of groups.values()) {
+    if (group.length <= 1) continue;
+
+    const sorted = [...group].sort((a, b) => {
+      const confidenceDiff = eventSourceConfidence(b) - eventSourceConfidence(a);
+      if (confidenceDiff !== 0) return confidenceDiff;
+      return toDateValue(b.updatedAt || b.createdAt) - toDateValue(a.updatedAt || a.createdAt);
+    });
+
+    const keep = sorted[0];
+    for (const duplicate of sorted.slice(1)) {
+      const duplicateId = duplicate.firestoreId || duplicate.id;
+      if (!duplicateId) continue;
+
+      const hasBets = Object.values(state.bets || {}).some(bet => bet.eventId === duplicateId);
+      const hasMatches = Object.values(state.matches || {}).some(match => match.eventId === duplicateId);
+      if (hasBets || hasMatches) continue;
+
+      batch.delete(doc(db, "events", duplicateId));
+      delete state.events[duplicateId];
+      removed += 1;
+    }
+
+    const keepId = keep.firestoreId || keep.id;
+    if (keepId) {
+      batch.set(doc(db, "events", keepId), {
+        duplicateCleanedAt: serverTimestamp(),
+        updatedAt: serverTimestamp()
+      }, { merge: true });
+    }
+  }
+
+  if (!removed) {
+    apiImportMessage = "No removable duplicate API events found. Events with bets/matches are preserved.";
+    renderApp();
+    return;
+  }
+
+  await batch.commit();
+  apiImportMessage = `Removed ${removed} duplicate/stale API event${removed === 1 ? "" : "s"}. Events with bets/matches were preserved.`;
+  renderApp();
 }
 
 async function fetchApiEvents() {
@@ -1838,7 +1945,35 @@ async function importApiEvent(apiEventId) {
 
   const id = apiEventDocId(event);
   const existing = findExistingApiEvent(event);
-  if (existing) return alert("This event already appears to be imported.");
+
+  if (existing) {
+    const refreshedEvent = {
+      ...event,
+      id: existing.id || existing.firestoreId || id,
+      shortCode: existing.shortCode || nextAvailableDisplayCode(event.league, event.startTime),
+      createdAt: existing.createdAt || serverTimestamp(),
+      updatedAt: serverTimestamp()
+    };
+
+    delete refreshedEvent.apiSource;
+    delete refreshedEvent.apiEventId;
+
+    const existingDocId = existing.firestoreId || existing.id || id;
+    await setDoc(doc(db, "events", existingDocId), refreshedEvent, { merge: true });
+
+    state.events[existingDocId] = {
+      ...existing,
+      ...refreshedEvent,
+      firestoreId: existingDocId,
+      updatedAt: new Date()
+    };
+
+    apiImportMessage = `Refreshed existing ${event.title}. It is saved as ${refreshedEvent.shortCode}.`;
+    activeTab = "today";
+    filters = { sport: event.sport || "all", league: event.league || "all" };
+    renderApp();
+    return;
+  }
 
   const savedEvent = {
     ...event,
@@ -1877,6 +2012,8 @@ async function saveApiEventToBatch(batch, event, usedCodes) {
   const existing = findExistingApiEvent(event);
 
   const liveFields = {
+    title: event.title,
+    startTime: event.startTime,
     status: event.status,
     score: event.score || null,
     odds: event.odds || "Unavailable",
@@ -1892,7 +2029,8 @@ async function saveApiEventToBatch(batch, event, usedCodes) {
   };
 
   if (existing) {
-    batch.set(doc(db, "events", existing.id || id), liveFields, { merge: true });
+    const existingId = existing.firestoreId || existing.id || id;
+    batch.set(doc(db, "events", existingId), liveFields, { merge: true });
     return "updated";
   }
 
