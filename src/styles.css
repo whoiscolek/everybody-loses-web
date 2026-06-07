@@ -1805,3 +1805,91 @@ button.danger {
 .odds-line {
   font-weight: 650;
 }
+
+
+.compact-history-list {
+  display: grid;
+  gap: 12px;
+}
+
+.compact-history-card {
+  border: 1px solid rgba(20, 20, 24, .10);
+  border-radius: 24px;
+  padding: 16px;
+  background: rgba(255, 255, 255, .72);
+  box-shadow: 0 18px 45px rgba(20, 20, 24, .06);
+}
+
+.compact-history-head {
+  display: flex;
+  align-items: flex-start;
+  gap: 14px;
+}
+
+.compact-history-head h3 {
+  margin: 2px 0 4px;
+  font-size: 1.05rem;
+}
+
+.compact-leaderboard {
+  margin-top: 12px;
+  border-radius: 18px;
+  overflow: hidden;
+  border: 1px solid rgba(20, 20, 24, .08);
+}
+
+.compact-leaderboard-row {
+  display: grid;
+  grid-template-columns: 56px 1fr auto;
+  gap: 12px;
+  align-items: center;
+  padding: 9px 12px;
+  background: rgba(255, 255, 255, .56);
+  border-bottom: 1px solid rgba(20, 20, 24, .06);
+}
+
+.compact-leaderboard-row:last-child {
+  border-bottom: 0;
+}
+
+.compact-leaderboard-row span {
+  font-weight: 800;
+}
+
+.compact-leaderboard-row em {
+  font-style: normal;
+  color: var(--muted);
+  font-size: .82rem;
+}
+
+.compact-history-foot {
+  margin-top: 12px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.compact-history-foot span {
+  border: 1px solid rgba(20, 20, 24, .08);
+  border-radius: 999px;
+  padding: 7px 10px;
+  background: rgba(255, 255, 255, .58);
+  font-size: .86rem;
+}
+
+.tiny-action {
+  margin-left: 8px;
+  padding: 5px 9px;
+  min-height: 0;
+  font-size: .78rem;
+}
+
+@media (max-width: 720px) {
+  .compact-leaderboard-row {
+    grid-template-columns: 44px 1fr;
+  }
+
+  .compact-leaderboard-row em {
+    grid-column: 2;
+  }
+}

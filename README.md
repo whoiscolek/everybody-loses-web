@@ -176,3 +176,19 @@ Odds integration:
 - With no key, it gracefully skips and the app keeps working
 
 The Odds API is intentionally not used for every event by default.
+
+
+## v9.1 stats/weather + compact history + odds visibility
+
+Today:
+- ESPN summary/boxscore data is now attempted for team games.
+- Weather is attempted from ESPN first, then from venue city via Open-Meteo when ESPN does not provide it.
+- Generic Source/Venue rows are filtered out of the main stat grid.
+- Admins get a visible Refresh odds button on team event cards.
+- Odds refresh now writes a visible oddsStatus when it skips/fails, instead of failing silently.
+
+History:
+- Final events are displayed as compact utility cards.
+- Racing/ranked-finish leaderboards remain visible in History.
+- History shows matchup/result, game ID, and betting outcome summary.
+- It does not repeat the full Today-style odds/weather/stats card.

@@ -550,6 +550,141 @@ async function fetchJolpicaF1ForDate(date) {
   return baseEvent;
 }
 
+
+function statValue(stat) {
+  if (stat?.displayValue !== undefined && stat.displayValue !== null) return String(stat.displayValue);
+  if (stat?.value !== undefined && stat.value !== null) return String(stat.value);
+  return "";
+}
+
+function pickUsefulTeamStats(summary) {
+  const rows = [];
+  const boxscoreTeams = summary?.boxscore?.teams || [];
+
+  for (const teamBlock of boxscoreTeams) {
+    const teamCode = teamBlock?.team?.abbreviation || teamBlock?.team?.shortDisplayName || teamBlock?.team?.displayName || "";
+    const stats = teamBlock?.statistics || [];
+
+    for (const stat of stats) {
+      const label = stat?.label || stat?.displayName || stat?.name || "";
+      const value = statValue(stat);
+      if (!label || !value) continue;
+
+      if (/possession|shots|saves|corners|fouls|turnovers|rebounds|assists|hits|errors|yards|first downs|third down|power play|faceoffs|field goal|passing|rushing|total/i.test(label)) {
+        rows.push({ label: `${teamCode} ${label}`.trim(), value });
+      }
+
+      if (rows.length >= 4) break;
+    }
+
+    if (rows.length >= 4) break;
+  }
+
+  const leaders = summary?.leaders || [];
+  for (const leaderGroup of leaders) {
+    const label = leaderGroup?.name || leaderGroup?.displayName || "";
+    const first = leaderGroup?.leaders?.[0];
+    const athlete = first?.athlete?.displayName || first?.displayName || "";
+    const value = first?.displayValue || first?.value || "";
+    if (label && athlete && rows.length < 6) rows.push({ label, value: `${athlete}${value ? ` · ${value}` : ""}` });
+  }
+
+  return rows;
+}
+
+function summaryWeather(summary) {
+  const weather = summary?.gameInfo?.weather || summary?.header?.competitions?.[0]?.weather || null;
+  if (!weather) return "";
+  const parts = [
+    weather.displayValue || "",
+    weather.temperature ? `${weather.temperature}°` : "",
+    weather.highTemperature ? `High ${weather.highTemperature}°` : ""
+  ].filter(Boolean);
+  return parts.join(" · ");
+}
+
+function venueCityStateFromSummary(summary, competition) {
+  const venue = summary?.gameInfo?.venue || competition?.venue || {};
+  const address = venue.address || {};
+  return {
+    venueName: venue.fullName || competition?.venue?.fullName || "",
+    city: address.city || venue.city || "",
+    state: address.state || address.stateAbbreviation || venue.state || ""
+  };
+}
+
+async function fetchWeatherForCity(city, state) {
+  if (!city) return "";
+  try {
+    const place = [city, state].filter(Boolean).join(", ");
+    const geoUrl = `https://geocoding-api.open-meteo.com/v1/search?name=${encodeURIComponent(place)}&count=1&language=en&format=json`;
+    const geo = await fetchJsonUrl(geoUrl, "Weather geocoding");
+    const result = geo?.results?.[0];
+    if (!result?.latitude || !result?.longitude) return "";
+
+    const forecastUrl = `https://api.open-meteo.com/v1/forecast?latitude=${result.latitude}&longitude=${result.longitude}&current=temperature_2m,precipitation,weather_code,wind_speed_10m&temperature_unit=fahrenheit&wind_speed_unit=mph`;
+    const forecast = await fetchJsonUrl(forecastUrl, "Weather forecast");
+    const current = forecast?.current;
+    if (!current) return "";
+
+    const temp = current.temperature_2m !== undefined ? `${Math.round(Number(current.temperature_2m))}°F` : "";
+    const wind = current.wind_speed_10m !== undefined ? `Wind ${Math.round(Number(current.wind_speed_10m))} mph` : "";
+    const precip = current.precipitation !== undefined ? `Precip ${current.precipitation}` : "";
+    return [temp, wind, precip].filter(Boolean).join(" · ");
+  } catch {
+    return "";
+  }
+}
+
+async function enrichTeamEvent(mappedEvent, rawEvent, config) {
+  if (mappedEvent.type !== "TEAM_HEAD_TO_HEAD") return mappedEvent;
+
+  const competition = rawEvent.competitions?.[0] || {};
+  let summary = null;
+
+  try {
+    const summaryUrl = `https://site.api.espn.com/apis/site/v2/sports/${config.espnPath}/summary?event=${encodeURIComponent(String(rawEvent.id))}`;
+    summary = await fetchEspnJson(summaryUrl);
+  } catch {
+    summary = null;
+  }
+
+  const venueParts = venueCityStateFromSummary(summary, competition);
+  const espnWeather = summaryWeather(summary);
+  const weatherText = espnWeather || await fetchWeatherForCity(venueParts.city, venueParts.state);
+  const usefulStats = summary ? pickUsefulTeamStats(summary) : [];
+  const statusText = mappedEvent.liveStats?.find(stat => stat.label === "Status")?.value || labelStatus(mappedEvent.status);
+
+  const liveStats = [
+    { label: "Status", value: statusText },
+    { label: "Odds", value: mappedEvent.odds || "Unavailable" },
+    { label: "Weather", value: weatherText || "Weather unavailable" },
+    ...usefulStats
+  ].slice(0, 6);
+
+  if (!usefulStats.length && mappedEvent.status !== "pregame") {
+    liveStats.push({ label: "Stats", value: "Detailed boxscore unavailable" });
+  }
+
+  return {
+    ...mappedEvent,
+    liveStats,
+    weather: weatherText ? { summary: weatherText, city: venueParts.city, state: venueParts.state } : null,
+    venue: venueParts.venueName || mappedEvent.venue || ""
+  };
+}
+
+async function mapEventsWithEnrichment(rawEvents, config) {
+  const mapped = Array.isArray(rawEvents) ? rawEvents.map(event => mapEvent(event, config)) : [];
+  if (config.eventType !== "TEAM_HEAD_TO_HEAD") return mapped;
+
+  const enriched = [];
+  for (let i = 0; i < mapped.length; i += 1) {
+    enriched.push(await enrichTeamEvent(mapped[i], rawEvents[i], config));
+  }
+  return enriched;
+}
+
 async function fetchLeagueData(config, date, params) {
   const urls = [];
 
@@ -631,7 +766,7 @@ export default async function handler(req, res) {
       const fetched = await fetchLeagueData(config, date, params);
       const rawEvents = fetched.events;
       url = fetched.url;
-      events = Array.isArray(rawEvents) ? rawEvents.map(event => mapEvent(event, config)) : [];
+      events = await mapEventsWithEnrichment(rawEvents, config);
     }
 
     if (config.useOfficialLive) {

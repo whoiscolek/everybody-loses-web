@@ -301,6 +301,23 @@ function eventOddsText(event) {
   return event?.odds || "Unavailable";
 }
 
+function eventOddsMeta(event) {
+  if (!event?.oddsLive) return "";
+  const book = event.oddsLive.bookmaker ? `Book: ${event.oddsLive.bookmaker}` : "";
+  const fetched = event.oddsLive.fetchedAt ? `Updated ${formatTime(event.oddsLive.fetchedAt)} CT` : "";
+  return [book, fetched].filter(Boolean).join(" · ");
+}
+
+function eventHasOddsInterest(eventId) {
+  return Object.values(state.bets || {}).some(bet => bet.eventId === eventId)
+    || Object.values(state.matches || {}).some(match => match.eventId === eventId);
+}
+
+function renderAdminOddsButton(event) {
+  if (!isAdmin() || event.type !== EVENT_TYPES.TEAM || event.status === "final") return "";
+  return `<button class="ghost tiny-action" data-refresh-odds="${escapeHtml(event.firestoreId || event.id)}">Refresh odds</button>`;
+}
+
 function safeRefreshFieldsForEvent(event, existing = null) {
   const existingId = existing?.firestoreId || existing?.id || "";
   const hasFinancials = existingId && eventHasFinancialRecords(existingId);
@@ -722,7 +739,7 @@ function renderEventCard(event) {
         </div>
       </div>
       ${renderScoreLine(event)}
-      <div class="event-desc">${escapeHtml(event.intel || "No event intel configured yet.")}</div>
+      <div class="event-desc">${escapeHtml(event.intel || "No event intel configured yet.")}${event.oddsStatus ? `<br><span class="tiny muted">Odds: ${escapeHtml(event.oddsStatus)}</span>` : ""}</div>
       <div class="bet-box">
         <h4>Quick bet panel</h4>
         ${event.type === EVENT_TYPES.TEAM ? renderTeamBetForm(event, locked) : renderRankedBetForm(event, locked)}
@@ -732,6 +749,7 @@ function renderEventCard(event) {
         Code: <strong>${escapeHtml(event.shortCode || nextEventDisplayCode(event.league, event.startTime))}</strong>
         · Internal ID: ${escapeHtml(event.id)}
         ${event.externalIds && Object.keys(event.externalIds).length ? `· External refs: ${escapeHtml(JSON.stringify(event.externalIds))}` : ""}
+        ${renderAdminOddsButton(event)}
       </div>
     </article>
   `;
@@ -790,7 +808,11 @@ function normalizedRacingRows(event) {
 
 
 function renderLiveStats(stats = [], fallback = []) {
-  const rows = Array.isArray(stats) && stats.length ? stats : fallback;
+  const sourceRows = Array.isArray(stats) && stats.length ? stats : fallback;
+  const rows = sourceRows
+    .filter(stat => stat && !/^(source|venue)$/i.test(String(stat.label || "")))
+    .filter(stat => String(stat.value ?? "").trim() && !/^unavailable$/i.test(String(stat.value ?? "").trim()));
+
   if (!rows.length) return "";
   return `
     <div class="mini-stat-grid">
@@ -834,6 +856,7 @@ function renderScoreLine(event) {
           { label: "Weather", value: eventWeatherText(event) },
           { label: event.status === "final" ? "Winner" : "Live", value: winner || "Scoreboard active" }
         ])}
+        ${eventOddsMeta(event) ? `<div class="score-sub odds-line">${escapeHtml(eventOddsMeta(event))}</div>` : ""}
       </div>
     `;
   }
@@ -1085,41 +1108,85 @@ function renderHistory() {
   return `
     <div class="panel">
       <h3>History</h3>
-      <p class="muted">Final events move here automatically. Racing and ranked-finish events keep their final leaderboards visible.</p>
+      <p class="muted">Final events move here automatically. This view is condensed for review: result, leaderboard, game ID, and betting outcome.</p>
     </div>
-    <div class="grid history-event-grid">
+    <div class="history-list compact-history-list">
       ${events.length ? events.map(renderHistoryEventCard).join("") : `<div class="panel empty-state">No final event history yet.</div>`}
     </div>
   `;
 }
 
+function historyBetSummary(event) {
+  const eventId = event.firestoreId || event.id;
+  const bets = Object.values(state.bets || {}).filter(bet => bet.eventId === eventId || bet.eventId === event.id);
+  const matches = Object.values(state.matches || {}).filter(match => match.eventId === eventId || match.eventId === event.id);
+  const ledger = Object.values(state.ledgerEntries || {}).filter(entry => entry.eventId === eventId || entry.eventId === event.id);
+
+  if (ledger.length) {
+    return ledger.map(entry => `${userName(entry.fromUser)} owes ${userName(entry.toUser)} ${money(entry.amount)}`).join(" · ");
+  }
+
+  if (matches.length) {
+    return `${matches.length} matched bet${matches.length === 1 ? "" : "s"} · not settled yet`;
+  }
+
+  if (bets.length) {
+    return `${bets.length} open/unmatched bet${bets.length === 1 ? "" : "s"}`;
+  }
+
+  return "No bets on this event";
+}
+
+function renderCompactLeaderboard(event) {
+  if (event.type !== EVENT_TYPES.RANKED) return "";
+  const rows = normalizedRacingRows(event).slice(0, 10);
+  if (!rows.length) return "";
+  return `
+    <div class="compact-leaderboard">
+      ${rows.map(row => `
+        <div class="compact-leaderboard-row">
+          <span>${escapeHtml(toOrdinal(row.position))}</span>
+          <strong>${escapeHtml(row.name)}</strong>
+          <em>${escapeHtml(row.detail || "")}</em>
+        </div>
+      `).join("")}
+    </div>
+  `;
+}
+
+function renderHistoryResultLine(event) {
+  if (event.type === EVENT_TYPES.TEAM) {
+    const away = event.away?.code || "Away";
+    const home = event.home?.code || "Home";
+    const awayScore = event.score?.away ?? "—";
+    const homeScore = event.score?.home ?? "—";
+    return `${away} ${awayScore} · ${home} ${homeScore}`;
+  }
+
+  const winner = normalizedRacingRows(event)[0]?.name || event.resultOrder?.[0] || "Winner unavailable";
+  return `Winner: ${winner}`;
+}
+
 function renderHistoryEventCard(event) {
   const eventId = event.firestoreId || event.id;
-  const betCount = Object.values(state.bets).filter(bet => bet.eventId === eventId || bet.eventId === event.id).length;
-  const matchCount = Object.values(state.matches).filter(match => match.eventId === eventId || match.eventId === event.id).length;
-  const ledgerCount = Object.values(state.ledgerEntries).filter(entry => entry.eventId === eventId || entry.eventId === event.id).length;
+  const matchup = event.type === EVENT_TYPES.TEAM
+    ? `${event.away?.code || "Away"} vs ${event.home?.code || "Home"}`
+    : `${(event.participants || []).length} entries`;
 
   return `
-    <article class="event-card history-event-card">
-      <div class="event-top">
-        <div class="event-main">
-          <div class="sport-icon">${renderLeagueLogo(event.sport, event.league)}</div>
-          <div>
-            <div class="kicker">${escapeHtml(event.league)} · Final</div>
-            <h3 class="event-title">${escapeHtml(event.title)}</h3>
-            <div class="meta-line">
-              <span class="status-badge final">Final</span>
-              <span class="badge">${escapeHtml(formatTime(event.startTime))} CT</span>
-              <span class="badge">${escapeHtml(event.shortCode || event.id)}</span>
-            </div>
-          </div>
+    <article class="compact-history-card">
+      <div class="compact-history-head">
+        <div class="sport-icon">${renderLeagueLogo(event.sport, event.league)}</div>
+        <div>
+          <div class="kicker">${escapeHtml(event.league)} · ${escapeHtml(formatTime(event.startTime))} CT</div>
+          <h3>${escapeHtml(event.title)}</h3>
+          <p class="muted small">${escapeHtml(matchup)} · ${escapeHtml(renderHistoryResultLine(event))}</p>
         </div>
       </div>
-      ${renderScoreLine(event)}
-      <div class="event-desc">
-        <strong>Record</strong><br />
-        <span class="muted small">Bets: ${betCount} · Matches: ${matchCount} · Ledger items: ${ledgerCount}</span><br />
-        <span class="tiny muted">${escapeHtml(eventId)}</span>
+      ${renderCompactLeaderboard(event)}
+      <div class="compact-history-foot">
+        <span><strong>Game ID</strong> ${escapeHtml(event.shortCode || eventId)}</span>
+        <span>${escapeHtml(historyBetSummary(event))}</span>
       </div>
     </article>
   `;
@@ -1495,6 +1562,7 @@ function wireUi() {
   document.querySelector("[data-action='import-all-api-events']")?.addEventListener("click", importAllApiEvents);
   document.querySelectorAll("[data-import-api-event]").forEach(button => button.addEventListener("click", () => importApiEvent(button.dataset.importApiEvent)));
   document.querySelectorAll("[data-delete-api-event]").forEach(button => button.addEventListener("click", () => deleteApiEvent(button.dataset.deleteApiEvent)));
+  document.querySelectorAll("[data-refresh-odds]").forEach(button => button.addEventListener("click", () => refreshOddsForEvent(button.dataset.refreshOdds, "manual-admin-refresh", true)));
   document.querySelector("[data-action='create-event']")?.addEventListener("click", createEvent);
   document.querySelector("[data-action='update-event']")?.addEventListener("click", updateEvent);
   document.querySelector("[data-action='settle-event']")?.addEventListener("click", settleEventFromAdmin);
@@ -1635,10 +1703,16 @@ async function clearCurrentUserEventBets(eventId) {
 }
 
 
-async function refreshOddsForEvent(eventId, reason = "bet-created") {
+async function refreshOddsForEvent(eventId, reason = "bet-created", showFeedback = false) {
   const event = state.events[eventId];
-  if (!event || event.type !== EVENT_TYPES.TEAM) return;
-  if (event.status === "final") return;
+  if (!event || event.type !== EVENT_TYPES.TEAM) {
+    if (showFeedback) alert("Odds refresh only works for team games right now.");
+    return;
+  }
+  if (event.status === "final") {
+    if (showFeedback) alert("Odds refresh skipped because this event is final.");
+    return;
+  }
 
   try {
     const response = await fetch("/api/odds", {
@@ -1648,7 +1722,18 @@ async function refreshOddsForEvent(eventId, reason = "bet-created") {
     });
 
     const data = await response.json();
-    if (!response.ok || !data?.odds) return;
+
+    if (!response.ok || !data?.odds) {
+      const reasonText = data?.reason || data?.error || "No matching live odds were returned.";
+      await setDoc(doc(db, "events", eventId), {
+        oddsStatus: reasonText,
+        updatedAt: serverTimestamp()
+      }, { merge: true });
+      state.events[eventId] = { ...event, oddsStatus: reasonText };
+      renderApp();
+      if (showFeedback) alert(`Odds not updated: ${reasonText}`);
+      return;
+    }
 
     const oddsLive = {
       ...data.odds,
@@ -1658,6 +1743,7 @@ async function refreshOddsForEvent(eventId, reason = "bet-created") {
 
     await setDoc(doc(db, "events", eventId), {
       oddsLive,
+      oddsStatus: "Live odds updated",
       odds: data.odds.summary || data.odds.moneyline || event.odds || "Live odds unavailable",
       updatedAt: serverTimestamp()
     }, { merge: true });
@@ -1665,12 +1751,21 @@ async function refreshOddsForEvent(eventId, reason = "bet-created") {
     state.events[eventId] = {
       ...event,
       oddsLive,
+      oddsStatus: "Live odds updated",
       odds: data.odds.summary || data.odds.moneyline || event.odds
     };
 
     renderApp();
-  } catch {
-    // Odds are helpful context, not core betting plumbing. Never block or void a bet over odds failure.
+    if (showFeedback) alert("Live odds updated.");
+  } catch (error) {
+    const reasonText = error.message || "Odds refresh failed.";
+    await setDoc(doc(db, "events", eventId), {
+      oddsStatus: reasonText,
+      updatedAt: serverTimestamp()
+    }, { merge: true });
+    state.events[eventId] = { ...event, oddsStatus: reasonText };
+    renderApp();
+    if (showFeedback) alert(`Odds not updated: ${reasonText}`);
   }
 }
 
