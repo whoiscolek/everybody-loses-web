@@ -201,3 +201,10 @@ History:
 - Packages league logo assets under `public/logos/` so the `/logos/...png` references resolve after deployment.
 - Polishes the profile picture upload tile so the native browser file input stays hidden and selected filenames display in the app style.
 - Keeps `package-lock.json`; do not delete it from the repo.
+
+
+## v9.3 odds + weather sync fix
+
+- Odds refresh no longer sends `commenceTimeFrom` or `commenceTimeTo` to The Odds API. The app now fetches the league odds board and matches games locally, which avoids the strict timestamp rejection.
+- Existing imported events now refresh `weather`, `weatherText`, and `venue` fields during API sync even when bets/matches/ledger records already exist. The protected betting structure is still preserved.
+- This should fix live odds refresh still returning `Invalid commenceTimeFrom parameter` and weather not appearing on already-imported cards after sync.

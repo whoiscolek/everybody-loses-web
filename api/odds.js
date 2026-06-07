@@ -123,14 +123,16 @@ export default async function handler(req, res) {
     const from = oddsApiTimestamp(startMs - 18 * 60 * 60 * 1000);
     const to = oddsApiTimestamp(startMs + 18 * 60 * 60 * 1000);
 
+    // The Odds API is very strict about commenceTimeFrom/commenceTimeTo, and some
+    // deployed runtimes/providers reject otherwise valid ISO strings. Since these
+    // filters are optional, do not send them. We fetch the league board and match
+    // the correct game locally by team names + start time.
     const params = new URLSearchParams({
       apiKey,
       regions: "us",
       markets: "h2h,spreads,totals",
       oddsFormat: "american",
-      dateFormat: "iso",
-      commenceTimeFrom: from,
-      commenceTimeTo: to
+      dateFormat: "iso"
     });
 
     const url = `https://api.the-odds-api.com/v4/sports/${sportKey}/odds/?${params.toString()}`;
@@ -157,6 +159,7 @@ export default async function handler(req, res) {
 
     return res.status(200).json({
       odds: summarizeOdds(game, event),
+      requestWindow: { from, to, note: "Time window used only for local matching; not sent to The Odds API." },
       usage: {
         remaining: response.headers.get("x-requests-remaining") || "",
         used: response.headers.get("x-requests-used") || "",

@@ -330,6 +330,9 @@ function safeRefreshFieldsForEvent(event, existing = null) {
     leaderboardSource: event.leaderboardSource || "Imported event data",
     leaderboardVerified: !!event.leaderboardVerified,
     liveStats: event.liveStats || [],
+    weather: event.weather || null,
+    weatherText: event.weatherText || event.weather?.summary || "",
+    venue: event.venue || "",
     resultOrder: event.resultOrder || [],
     intel: event.intel || "",
     externalIds: event.externalIds || {},
@@ -1744,7 +1747,8 @@ async function refreshOddsForEvent(eventId, reason = "bet-created", showFeedback
     const data = await response.json();
 
     if (!response.ok || !data?.odds) {
-      const reasonText = data?.reason || data?.error || "No matching live odds were returned.";
+      const requestNote = data?.requestWindow?.note ? ` (${data.requestWindow.note})` : "";
+      const reasonText = `${data?.reason || data?.error || "No matching live odds were returned."}${requestNote}`;
       await setDoc(doc(db, "events", eventId), {
         oddsStatus: reasonText,
         updatedAt: serverTimestamp()
