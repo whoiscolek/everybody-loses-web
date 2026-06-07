@@ -92,3 +92,8 @@ Local Vite dev may not run Vercel serverless functions by default. The endpoint 
   - Sync tomorrow
   - Manual selected league/date fetch still available
 - This is semi-automatic. The next step is a Vercel cron endpoint that runs schedule sync without an admin pressing a button.
+
+## v8.2 notes
+- Adds racing leagues to the API sync list: F1, NASCAR, MotoGP.
+- Racing imports are ranked-finish events and should be verified in Admin before users bet.
+- Adds an Admin button to delete old demo events left in Firestore from earlier builds.

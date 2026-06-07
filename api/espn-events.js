@@ -1,13 +1,22 @@
 const LEAGUE_MAP = {
-  NBA: { sport: "basketball", league: "NBA", espnPath: "basketball/nba", appSport: "basketball" },
-  NFL: { sport: "football", league: "NFL", espnPath: "football/nfl", appSport: "football" },
-  MLB: { sport: "baseball", league: "MLB", espnPath: "baseball/mlb", appSport: "baseball" },
-  NHL: { sport: "hockey", league: "NHL", espnPath: "hockey/nhl", appSport: "hockey" },
-  "NCAA Basketball": { sport: "basketball", league: "NCAA Basketball", espnPath: "basketball/mens-college-basketball", appSport: "basketball", groups: 100 },
-  "NCAA Football": { sport: "football", league: "NCAA Football", espnPath: "football/college-football", appSport: "football", groups: 100 },
-  "Premier League": { sport: "soccer", league: "Premier League", espnPath: "soccer/eng.1", appSport: "soccer" },
-  MLS: { sport: "soccer", league: "MLS", espnPath: "soccer/usa.1", appSport: "soccer" },
-  "Champions League": { sport: "soccer", league: "Champions League", espnPath: "soccer/uefa.champions", appSport: "soccer" }
+  NBA: { sport: "basketball", league: "NBA", espnPath: "basketball/nba", appSport: "basketball", eventType: "TEAM_HEAD_TO_HEAD" },
+  NFL: { sport: "football", league: "NFL", espnPath: "football/nfl", appSport: "football", eventType: "TEAM_HEAD_TO_HEAD" },
+  MLB: { sport: "baseball", league: "MLB", espnPath: "baseball/mlb", appSport: "baseball", eventType: "TEAM_HEAD_TO_HEAD" },
+  NHL: { sport: "hockey", league: "NHL", espnPath: "hockey/nhl", appSport: "hockey", eventType: "TEAM_HEAD_TO_HEAD" },
+  "NCAA Basketball": { sport: "basketball", league: "NCAA Basketball", espnPath: "basketball/mens-college-basketball", appSport: "basketball", groups: 100, eventType: "TEAM_HEAD_TO_HEAD" },
+  "NCAA Football": { sport: "football", league: "NCAA Football", espnPath: "football/college-football", appSport: "football", groups: 100, eventType: "TEAM_HEAD_TO_HEAD" },
+  "Premier League": { sport: "soccer", league: "Premier League", espnPath: "soccer/eng.1", appSport: "soccer", eventType: "TEAM_HEAD_TO_HEAD" },
+  MLS: { sport: "soccer", league: "MLS", espnPath: "soccer/usa.1", appSport: "soccer", eventType: "TEAM_HEAD_TO_HEAD" },
+  "Champions League": { sport: "soccer", league: "Champions League", espnPath: "soccer/uefa.champions", appSport: "soccer", eventType: "TEAM_HEAD_TO_HEAD" },
+  F1: { sport: "racing", league: "F1", espnPath: "racing/f1", appSport: "racing", eventType: "RANKED_FINISH", leagueKey: "f1" },
+  NASCAR: { sport: "racing", league: "NASCAR", espnPath: "racing/nascar", appSport: "racing", eventType: "RANKED_FINISH", leagueKey: "nascar" },
+  MotoGP: { sport: "racing", league: "MotoGP", espnPath: "racing/motogp", appSport: "racing", eventType: "RANKED_FINISH", leagueKey: "motogp" }
+};
+
+const DEFAULT_RACING_PARTICIPANTS = {
+  F1: ["Verstappen", "Norris", "Piastri", "Leclerc", "Hamilton", "Russell", "Antonelli", "Sainz", "Alonso", "Tsunoda"],
+  NASCAR: ["Kyle Larson", "Denny Hamlin", "William Byron", "Chase Elliott", "Ryan Blaney", "Christopher Bell", "Tyler Reddick", "Joey Logano", "Ross Chastain", "Bubba Wallace", "Brad Keselowski", "Ty Gibbs"],
+  MotoGP: ["Marc Marquez", "Alex Marquez", "Francesco Bagnaia", "Pedro Acosta", "Fabio Quartararo", "Marco Bezzecchi", "Franco Morbidelli", "Brad Binder", "Maverick Vinales", "Enea Bastianini"]
 };
 
 function ymd(date = new Date()) {
@@ -33,7 +42,60 @@ function getStatus(event) {
   return "pregame";
 }
 
-function mapEvent(event, config) {
+function extractRaceParticipants(event, config) {
+  const competitors = [];
+  for (const competition of event?.competitions || []) {
+    for (const item of competition?.competitors || []) {
+      const name = item?.athlete?.displayName || item?.driver?.displayName || item?.team?.displayName || item?.displayName || item?.name;
+      if (name && !competitors.includes(name)) competitors.push(name);
+    }
+  }
+  return competitors.length ? competitors.slice(0, 30) : (DEFAULT_RACING_PARTICIPANTS[config.league] || []);
+}
+
+function extractRaceResultOrder(event, config) {
+  const rows = [];
+  for (const competition of event?.competitions || []) {
+    for (const item of competition?.competitors || []) {
+      const name = item?.athlete?.displayName || item?.driver?.displayName || item?.team?.displayName || item?.displayName || item?.name;
+      const rank = Number(item?.curatedRank?.current || item?.rank || item?.order || item?.place || item?.score);
+      if (name && Number.isFinite(rank) && rank > 0) rows.push({ name, rank });
+    }
+  }
+  return rows.sort((a, b) => a.rank - b.rank).map(row => row.name);
+}
+
+function mapRacingEvent(event, config) {
+  const competition = event.competitions?.[0] || {};
+  const status = getStatus(event);
+  const startTime = event.date || competition.date || new Date().toISOString();
+  const participants = extractRaceParticipants(event, config);
+  const resultOrder = status === "final" ? extractRaceResultOrder(event, config) : [];
+
+  return {
+    apiSource: "espn",
+    apiEventId: String(event.id),
+    sport: config.appSport,
+    league: config.league,
+    type: "RANKED_FINISH",
+    title: event.shortName || event.name || `${config.league} race`,
+    startTime,
+    status,
+    participants,
+    resultOrder,
+    score: null,
+    odds: "API schedule import",
+    externalIds: {
+      source: "espn",
+      espnEventId: String(event.id),
+      espnUid: event.uid || "",
+      espnGuid: event.guid || ""
+    },
+    intel: `${config.league} race imported from ESPN schedule data. Participant lists for racing may need admin verification before users bet.`
+  };
+}
+
+function mapTeamEvent(event, config) {
   const competition = event.competitions?.[0] || {};
   const away = getCompetitor(competition, "away") || competition.competitors?.[1] || {};
   const home = getCompetitor(competition, "home") || competition.competitors?.[0] || {};
@@ -78,6 +140,67 @@ function mapEvent(event, config) {
   };
 }
 
+function mapEvent(event, config) {
+  if (config.eventType === "RANKED_FINISH") return mapRacingEvent(event, config);
+  return mapTeamEvent(event, config);
+}
+
+function collectEvents(data) {
+  if (Array.isArray(data?.events)) return data.events;
+
+  const candidates = [];
+  for (const sport of data?.sports || []) {
+    for (const league of sport?.leagues || []) {
+      if (Array.isArray(league?.events)) candidates.push(...league.events);
+    }
+  }
+
+  if (Array.isArray(data?.content?.sbData?.events)) candidates.push(...data.content.sbData.events);
+  if (Array.isArray(data?.scoreboard?.events)) candidates.push(...data.scoreboard.events);
+  return candidates;
+}
+
+async function fetchEspnJson(url) {
+  const response = await fetch(url, {
+    headers: {
+      "accept": "application/json",
+      "user-agent": "Everyone-Loses/1.0"
+    }
+  });
+
+  if (!response.ok) {
+    const error = new Error(`ESPN request failed with ${response.status}`);
+    error.status = response.status;
+    error.url = url;
+    throw error;
+  }
+
+  return response.json();
+}
+
+async function fetchLeagueData(config, date, params) {
+  const urls = [
+    `https://site.api.espn.com/apis/site/v2/sports/${config.espnPath}/scoreboard?${params.toString()}`
+  ];
+
+  if (config.sport === "racing") {
+    urls.push(`https://site.web.api.espn.com/apis/personalized/v2/scoreboard/header?sport=racing&league=${encodeURIComponent(config.leagueKey || config.league.toLowerCase())}&dates=${date}`);
+  }
+
+  let lastError = null;
+  for (const url of urls) {
+    try {
+      const data = await fetchEspnJson(url);
+      const events = collectEvents(data);
+      return { data, events, url };
+    } catch (error) {
+      lastError = error;
+    }
+  }
+
+  throw lastError || new Error("ESPN request failed");
+}
+
 export default async function handler(req, res) {
   res.setHeader("Access-Control-Allow-Origin", "*");
   res.setHeader("Access-Control-Allow-Methods", "GET, OPTIONS");
@@ -98,26 +221,16 @@ export default async function handler(req, res) {
     const params = new URLSearchParams({ dates: date, limit: "200" });
     if (config.groups) params.set("groups", String(config.groups));
 
-    const url = `https://site.api.espn.com/apis/site/v2/sports/${config.espnPath}/scoreboard?${params.toString()}`;
-    const response = await fetch(url, {
-      headers: {
-        "accept": "application/json",
-        "user-agent": "Everyone-Loses/1.0"
-      }
-    });
-
-    if (!response.ok) {
-      return res.status(response.status).json({ error: `ESPN request failed with ${response.status}`, url });
-    }
-
-    const data = await response.json();
-    const events = Array.isArray(data.events) ? data.events.map(event => mapEvent(event, config)) : [];
+    const { events: rawEvents, url } = await fetchLeagueData(config, date, params);
+    const events = Array.isArray(rawEvents) ? rawEvents.map(event => mapEvent(event, config)) : [];
 
     return res.status(200).json({
       source: "espn",
       league: config.league,
       date,
       count: events.length,
+      url,
+      note: config.sport === "racing" ? "Racing imports use ESPN schedule data when available; verify participants before betting." : "",
       events
     });
   } catch (error) {

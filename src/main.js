@@ -119,7 +119,7 @@ const EVENT_TYPES = {
   RANKED: "RANKED_FINISH"
 };
 
-const API_IMPORT_LEAGUES = ["NBA", "NFL", "MLB", "NHL", "NCAA Basketball", "NCAA Football", "Premier League", "MLS", "Champions League"];
+const API_IMPORT_LEAGUES = ["NBA", "NFL", "MLB", "NHL", "NCAA Basketball", "NCAA Football", "Premier League", "MLS", "Champions League", "F1", "NASCAR", "MotoGP"];
 
 const AVATAR_CHOICES = ["😀", "😎", "🔥", "🧠", "🎯", "🏁", "⚡", "👑", "🐐", "💸", "🎲", "🦈"];
 
@@ -622,7 +622,7 @@ function renderToday() {
       </div>
     </div>
     <div class="grid">
-      ${events.length ? events.map(renderEventCard).join("") : `<div class="panel empty-state">No events match these filters. Admin can seed demo events or create manual events.</div>`}
+      ${events.length ? events.map(renderEventCard).join("") : `<div class="panel empty-state">No events match these filters. Admin can sync/import real events or create manual events.</div>`}
     </div>
   `;
 }
@@ -1130,10 +1130,11 @@ function renderAdmin() {
 
       <div class="admin-card api-import-card">
         <h3>API schedule sync</h3>
-        <p class="muted small">Pull real ESPN schedule data into Firestore. Manual events stay available as the fallback, but demo seeding is gone now that the live importer works.</p>
+        <p class="muted small">Pull real ESPN schedule data into Firestore. Manual events stay available as the fallback. Racing is now included when ESPN exposes the event data.</p>
         <div class="button-row">
           <button class="primary" data-action="sync-api-today" ${apiSyncRunning ? "disabled" : ""}>Sync today across leagues</button>
           <button class="ghost" data-action="sync-api-tomorrow" ${apiSyncRunning ? "disabled" : ""}>Sync tomorrow</button>
+          <button class="ghost" data-action="delete-demo-events">Delete old demo events</button>
         </div>
         <p class="footer-note small">This is the semi-automatic step: one click imports all supported leagues for that day. The next version can move this to a scheduled Vercel cron so it runs without you pressing anything.</p>
         <label>Manual league/date fetch</label>
@@ -1225,6 +1226,7 @@ function wireUi() {
   document.querySelector("[data-action='fetch-api-events']")?.addEventListener("click", fetchApiEvents);
   document.querySelector("[data-action='sync-api-today']")?.addEventListener("click", () => syncApiSchedule(0));
   document.querySelector("[data-action='sync-api-tomorrow']")?.addEventListener("click", () => syncApiSchedule(1));
+  document.querySelector("[data-action='delete-demo-events']")?.addEventListener("click", deleteDemoEvents);
   document.querySelector("[data-action='import-all-api-events']")?.addEventListener("click", importAllApiEvents);
   document.querySelectorAll("[data-import-api-event]").forEach(button => button.addEventListener("click", () => importApiEvent(button.dataset.importApiEvent)));
   document.querySelector("[data-action='create-event']")?.addEventListener("click", createEvent);
@@ -1632,7 +1634,11 @@ function renderApiImportResults() {
   return apiImportResults.map(event => {
     const docId = apiEventDocId(event);
     const existing = state.events[docId] || Object.values(state.events).find(saved => saved.externalIds?.espnEventId === event.apiEventId);
-    const scoreText = event.score ? `${event.away.code} ${event.score.away} · ${event.home.code} ${event.score.home}` : `${event.away.code} vs ${event.home.code}`;
+    const scoreText = event.type === EVENT_TYPES.RANKED
+      ? `${(event.participants || []).slice(0, 6).join(", ")}${(event.participants || []).length > 6 ? "..." : ""}`
+      : event.score
+        ? `${event.away.code} ${event.score.away} · ${event.home.code} ${event.score.home}`
+        : `${event.away.code} vs ${event.home.code}`;
     return `
       <div class="record api-result-row">
         <div>
@@ -1799,6 +1805,54 @@ async function syncApiSchedule(daysFromToday = 0) {
     apiSyncRunning = false;
     renderApp();
   }
+}
+
+async function deleteDemoEvents() {
+  if (!isAdmin()) return;
+
+  const demoEvents = Object.values(state.events).filter(event => {
+    const id = String(event.id || "");
+    return event.externalIds?.source === "demo"
+      || event.odds === "Demo odds placeholder"
+      || id.includes("SAS-OKC")
+      || id.includes("MONACO-GP")
+      || id.includes("COFFEE-TEA");
+  });
+
+  if (!demoEvents.length) {
+    alert("No old demo events found.");
+    return;
+  }
+
+  const ok = confirm(`Delete ${demoEvents.length} old demo event${demoEvents.length === 1 ? "" : "s"}? This also removes bets and matches attached to those demo events.`);
+  if (!ok) return;
+
+  const demoIds = new Set(demoEvents.map(event => event.firestoreId || event.id));
+  const batch = writeBatch(db);
+  let deleted = 0;
+
+  for (const match of Object.values(state.matches)) {
+    if (demoIds.has(match.eventId)) {
+      batch.delete(doc(db, "matches", match.firestoreId || match.id));
+      deleted += 1;
+    }
+  }
+
+  for (const bet of Object.values(state.bets)) {
+    if (demoIds.has(bet.eventId)) {
+      batch.delete(doc(db, "bets", bet.firestoreId || bet.id));
+      deleted += 1;
+    }
+  }
+
+  for (const event of demoEvents) {
+    batch.delete(doc(db, "events", event.firestoreId || event.id));
+    deleted += 1;
+  }
+
+  await batch.commit();
+  apiImportMessage = `Deleted ${demoEvents.length} old demo event${demoEvents.length === 1 ? "" : "s"}.`;
+  renderApp();
 }
 
 async function createEvent() {
