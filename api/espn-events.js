@@ -42,35 +42,77 @@ function getStatus(event) {
   return "pregame";
 }
 
-function extractRaceParticipants(event, config) {
-  const competitors = [];
+function raceName(item) {
+  return item?.athlete?.displayName
+    || item?.driver?.displayName
+    || item?.team?.displayName
+    || item?.displayName
+    || item?.name
+    || item?.athlete?.shortName
+    || item?.driver?.shortName
+    || "";
+}
+
+function raceRank(item, fallback) {
+  const candidates = [
+    item?.curatedRank?.current,
+    item?.rank,
+    item?.order,
+    item?.place,
+    item?.position,
+    item?.score,
+    item?.linescores?.[0]?.value
+  ];
+  for (const value of candidates) {
+    const n = Number(value);
+    if (Number.isFinite(n) && n > 0) return n;
+  }
+  return fallback;
+}
+
+function extractRaceLeaderboard(event, config) {
+  const byName = new Map();
+  let fallbackRank = 1;
+
   for (const competition of event?.competitions || []) {
     for (const item of competition?.competitors || []) {
-      const name = item?.athlete?.displayName || item?.driver?.displayName || item?.team?.displayName || item?.displayName || item?.name;
-      if (name && !competitors.includes(name)) competitors.push(name);
+      const name = raceName(item);
+      if (!name || byName.has(name)) continue;
+      const position = raceRank(item, fallbackRank++);
+      const detail = item?.status?.displayName
+        || item?.result?.displayName
+        || item?.statistics?.find?.(stat => /laps|time|behind|points/i.test(stat?.name || ""))?.displayValue
+        || "";
+      byName.set(name, { position, name, detail });
     }
   }
-  return competitors.length ? competitors.slice(0, 30) : (DEFAULT_RACING_PARTICIPANTS[config.league] || []);
+
+  if (!byName.size) {
+    for (const name of DEFAULT_RACING_PARTICIPANTS[config.league] || []) {
+      byName.set(name, { position: fallbackRank++, name, detail: "Entry" });
+    }
+  }
+
+  return Array.from(byName.values())
+    .sort((a, b) => Number(a.position || 999) - Number(b.position || 999))
+    .slice(0, 30);
+}
+
+function extractRaceParticipants(event, config) {
+  return extractRaceLeaderboard(event, config).map(row => row.name);
 }
 
 function extractRaceResultOrder(event, config) {
-  const rows = [];
-  for (const competition of event?.competitions || []) {
-    for (const item of competition?.competitors || []) {
-      const name = item?.athlete?.displayName || item?.driver?.displayName || item?.team?.displayName || item?.displayName || item?.name;
-      const rank = Number(item?.curatedRank?.current || item?.rank || item?.order || item?.place || item?.score);
-      if (name && Number.isFinite(rank) && rank > 0) rows.push({ name, rank });
-    }
-  }
-  return rows.sort((a, b) => a.rank - b.rank).map(row => row.name);
+  return extractRaceLeaderboard(event, config).map(row => row.name);
 }
 
 function mapRacingEvent(event, config) {
   const competition = event.competitions?.[0] || {};
   const status = getStatus(event);
   const startTime = event.date || competition.date || new Date().toISOString();
-  const participants = extractRaceParticipants(event, config);
-  const resultOrder = status === "final" ? extractRaceResultOrder(event, config) : [];
+  const leaderboard = extractRaceLeaderboard(event, config);
+  const participants = leaderboard.map(row => row.name);
+  const resultOrder = status === "final" ? leaderboard.map(row => row.name) : [];
 
   return {
     apiSource: "espn",
@@ -82,6 +124,7 @@ function mapRacingEvent(event, config) {
     startTime,
     status,
     participants,
+    leaderboard,
     resultOrder,
     score: null,
     odds: "API schedule import",
@@ -185,6 +228,8 @@ async function fetchLeagueData(config, date, params) {
 
   if (config.sport === "racing") {
     urls.push(`https://site.web.api.espn.com/apis/personalized/v2/scoreboard/header?sport=racing&league=${encodeURIComponent(config.leagueKey || config.league.toLowerCase())}&dates=${date}`);
+    urls.push(`https://site.api.espn.com/apis/site/v2/sports/racing/${encodeURIComponent(config.leagueKey || config.league.toLowerCase())}/scoreboard?dates=${date}&limit=200`);
+    urls.push(`https://sports.core.api.espn.com/v2/sports/racing/leagues/${encodeURIComponent(config.leagueKey || config.league.toLowerCase())}/events?dates=${date}`);
   }
 
   let lastError = null;

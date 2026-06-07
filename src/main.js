@@ -666,19 +666,118 @@ function renderEventCard(event) {
   `;
 }
 
+function toOrdinal(number) {
+  const n = Number(number);
+  if (!Number.isFinite(n) || n <= 0) return "—";
+  const mod100 = n % 100;
+  if (mod100 >= 11 && mod100 <= 13) return `${n}th`;
+  const mod10 = n % 10;
+  if (mod10 === 1) return `${n}st`;
+  if (mod10 === 2) return `${n}nd`;
+  if (mod10 === 3) return `${n}rd`;
+  return `${n}th`;
+}
+
+function normalizedRacingRows(event) {
+  const rows = [];
+  const seen = new Set();
+
+  for (const row of event.leaderboard || []) {
+    const name = row?.name || row?.driver || row?.participant;
+    if (!name || seen.has(name)) continue;
+    seen.add(name);
+    rows.push({
+      position: Number(row.position || row.rank || rows.length + 1),
+      name,
+      detail: row.detail || row.laps || row.time || row.status || ""
+    });
+  }
+
+  for (const name of event.resultOrder || []) {
+    if (!name || seen.has(name)) continue;
+    seen.add(name);
+    rows.push({ position: rows.length + 1, name, detail: "Final" });
+  }
+
+  if (!rows.length) {
+    for (const name of event.participants || []) {
+      if (!name || seen.has(name)) continue;
+      seen.add(name);
+      rows.push({ position: rows.length + 1, name, detail: event.status === "pregame" ? "Entry" : "Position pending" });
+    }
+  }
+
+  return rows
+    .filter(row => row.name)
+    .sort((a, b) => {
+      const ap = Number.isFinite(Number(a.position)) ? Number(a.position) : 999;
+      const bp = Number.isFinite(Number(b.position)) ? Number(b.position) : 999;
+      return ap - bp;
+    })
+    .slice(0, 18);
+}
+
 function renderScoreLine(event) {
   if (event.type === EVENT_TYPES.TEAM) {
-    const text = event.score
-      ? `${event.away.code} ${event.score.away} · ${event.home.code} ${event.score.home}`
-      : `${event.away.code} vs ${event.home.code}`;
-    return `<div class="score-card"><div class="score-big">${escapeHtml(text)}</div><div class="score-sub">Odds: ${escapeHtml(event.odds || "Unavailable")}</div></div>`;
+    const hasScore = !!event.score;
+    const awayScore = hasScore ? event.score.away : "—";
+    const homeScore = hasScore ? event.score.home : "—";
+    const winner = event.status === "final" && hasScore
+      ? Number(event.score.away) > Number(event.score.home)
+        ? event.away.code
+        : Number(event.score.home) > Number(event.score.away)
+          ? event.home.code
+          : "Draw"
+      : "";
+
+    return `
+      <div class="score-card event-center team-center">
+        <div class="event-center-label">${event.status === "final" ? "Final scoreboard" : event.status === "live" ? "Live scoreboard" : "Scoreboard"}</div>
+        <div class="team-score-row">
+          <div class="team-score-cell">
+            <span class="team-code">${escapeHtml(event.away.code)}</span>
+            <strong>${escapeHtml(String(awayScore))}</strong>
+          </div>
+          <span class="score-divider">vs</span>
+          <div class="team-score-cell right">
+            <span class="team-code">${escapeHtml(event.home.code)}</span>
+            <strong>${escapeHtml(String(homeScore))}</strong>
+          </div>
+        </div>
+        <div class="mini-stat-grid">
+          <span><strong>Status</strong>${escapeHtml(label(event.status))}</span>
+          <span><strong>Odds</strong>${escapeHtml(event.odds || "Unavailable")}</span>
+          <span><strong>${event.status === "final" ? "Winner" : "Stats"}</strong>${escapeHtml(winner || "Live stats coming soon")}</span>
+        </div>
+      </div>
+    `;
   }
 
-  if (event.resultOrder?.length) {
-    return `<div class="score-card"><div class="score-big">Result: ${event.resultOrder.map(escapeHtml).join(" → ")}</div><div class="score-sub">Odds: ${escapeHtml(event.odds || "Unavailable")}</div></div>`;
-  }
+  const rows = normalizedRacingRows(event);
+  const heading = event.status === "final" ? "Final leaderboard" : event.status === "live" ? "Live leaderboard" : "Entry list";
+  const sub = event.status === "pregame" ? "Positions will update when race data is available." : "Positions from imported event data.";
 
-  return `<div class="score-card"><div class="score-big">${event.participants.map(escapeHtml).join(", ")}</div><div class="score-sub">Odds: ${escapeHtml(event.odds || "Unavailable")}</div></div>`;
+  return `
+    <div class="score-card event-center racing-center">
+      <div class="event-center-head">
+        <div>
+          <div class="event-center-label">${escapeHtml(heading)}</div>
+          <div class="score-sub">${escapeHtml(sub)}</div>
+        </div>
+        <span class="soft-badge">${escapeHtml(event.league)}</span>
+      </div>
+      <div class="race-leaderboard">
+        ${rows.map((row, index) => `
+          <div class="race-leaderboard-row ${index < 3 ? "podium" : ""}">
+            <span class="race-position">${escapeHtml(toOrdinal(row.position || index + 1))}</span>
+            <strong>${escapeHtml(row.name)}</strong>
+            <span>${escapeHtml(row.detail || "")}</span>
+          </div>
+        `).join("")}
+      </div>
+      <div class="score-sub odds-line">Odds: ${escapeHtml(event.odds || "Unavailable")}</div>
+    </div>
+  `;
 }
 
 function renderTeamBetForm(event, locked) {

@@ -97,3 +97,11 @@ Local Vite dev may not run Vercel serverless functions by default. The endpoint 
 - Adds racing leagues to the API sync list: F1, NASCAR, MotoGP.
 - Racing imports are ranked-finish events and should be verified in Admin before users bet.
 - Adds an Admin button to delete old demo events left in Firestore from earlier builds.
+
+
+## v8.3 notes
+
+- Racing/Olympics-style ranked events now render as a leaderboard instead of a single arrow-separated result string.
+- Team events now render a scoreboard panel with a placeholder for live stats/final stats.
+- ESPN remains the default schedule/score source. The Odds API should be treated as an optional paid/limited enhancement later, ideally only after a bet exists on an event so quota is not burned on games nobody is betting.
+- NASCAR and MotoGP are still dependent on whether the ESPN endpoints return schedule data for the requested date. If ESPN returns zero events, the app now reports that more cleanly but a second racing-specific source may be needed.
