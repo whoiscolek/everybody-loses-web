@@ -810,11 +810,25 @@ function normalizedRacingRows(event) {
 }
 
 
-function renderLiveStats(stats = [], fallback = []) {
+function renderLiveStats(stats = [], fallback = [], event = null) {
   const sourceRows = Array.isArray(stats) && stats.length ? stats : fallback;
   const rows = sourceRows
     .filter(stat => stat && !/^(source|venue)$/i.test(String(stat.label || "")))
-    .filter(stat => String(stat.value ?? "").trim() && !/^unavailable$/i.test(String(stat.value ?? "").trim()));
+    .map(stat => {
+      const statLabel = String(stat.label || "");
+      if (event && /^odds$/i.test(statLabel)) {
+        return { ...stat, value: eventOddsText(event) };
+      }
+      if (event && /^weather$/i.test(statLabel)) {
+        return { ...stat, value: eventWeatherText(event) };
+      }
+      return stat;
+    })
+    .filter(stat => {
+      const value = String(stat.value ?? "").trim();
+      if (!value) return false;
+      return !/^unavailable$/i.test(value);
+    });
 
   if (!rows.length) return "";
   return `
@@ -858,7 +872,7 @@ function renderScoreLine(event) {
           { label: "Odds", value: eventOddsText(event) },
           { label: "Weather", value: eventWeatherText(event) },
           { label: event.status === "final" ? "Winner" : "Live", value: winner || "Scoreboard active" }
-        ])}
+        ], event)}
         ${eventOddsMeta(event) ? `<div class="score-sub odds-line">${escapeHtml(eventOddsMeta(event))}</div>` : ""}
       </div>
     `;
@@ -895,7 +909,7 @@ function renderScoreLine(event) {
         { label: "Source", value: sourceLabel },
         { label: "Status", value: label(event.status) },
         { label: "Entries", value: String(rows.length) }
-      ])}
+      ], event)}
       <div class="score-sub odds-line">Odds: ${escapeHtml(eventOddsText(event))}</div>
     </div>
   `;

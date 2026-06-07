@@ -615,11 +615,21 @@ function venueCityStateFromSummary(summary, competition) {
 
 async function fetchWeatherForCity(city, state) {
   if (!city) return "";
+
+  const cityName = String(city || "").trim();
+  const stateName = String(state || "").trim();
+  const stateUpper = stateName.toUpperCase();
+
   try {
-    const place = [city, state].filter(Boolean).join(", ");
-    const geoUrl = `https://geocoding-api.open-meteo.com/v1/search?name=${encodeURIComponent(place)}&count=1&language=en&format=json`;
+    const geoUrl = `https://geocoding-api.open-meteo.com/v1/search?name=${encodeURIComponent(cityName)}&count=10&language=en&format=json`;
     const geo = await fetchJsonUrl(geoUrl, "Weather geocoding");
-    const result = geo?.results?.[0];
+    const candidates = Array.isArray(geo?.results) ? geo.results : [];
+    const result = candidates.find(item => {
+      const admin1 = String(item.admin1 || "").toUpperCase();
+      const admin1Code = String(item.admin1_code || "").toUpperCase();
+      return !stateUpper || admin1 === stateUpper || admin1Code === stateUpper || admin1.includes(stateUpper);
+    }) || candidates[0];
+
     if (!result?.latitude || !result?.longitude) return "";
 
     const forecastUrl = `https://api.open-meteo.com/v1/forecast?latitude=${result.latitude}&longitude=${result.longitude}&current=temperature_2m,precipitation,weather_code,wind_speed_10m&temperature_unit=fahrenheit&wind_speed_unit=mph`;
@@ -629,7 +639,8 @@ async function fetchWeatherForCity(city, state) {
 
     const temp = current.temperature_2m !== undefined ? `${Math.round(Number(current.temperature_2m))}°F` : "";
     const wind = current.wind_speed_10m !== undefined ? `Wind ${Math.round(Number(current.wind_speed_10m))} mph` : "";
-    const precip = current.precipitation !== undefined ? `Precip ${current.precipitation}` : "";
+    const precipValue = Number(current.precipitation);
+    const precip = Number.isFinite(precipValue) && precipValue > 0 ? `Precip ${precipValue}` : "";
     return [temp, wind, precip].filter(Boolean).join(" · ");
   } catch {
     return "";

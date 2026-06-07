@@ -208,3 +208,10 @@ History:
 - Odds refresh no longer sends `commenceTimeFrom` or `commenceTimeTo` to The Odds API. The app now fetches the league odds board and matches games locally, which avoids the strict timestamp rejection.
 - Existing imported events now refresh `weather`, `weatherText`, and `venue` fields during API sync even when bets/matches/ledger records already exist. The protected betting structure is still preserved.
 - This should fix live odds refresh still returning `Invalid commenceTimeFrom parameter` and weather not appearing on already-imported cards after sync.
+
+
+## v9.4 odds/weather display fix
+
+- Live odds refresh now forces the event card display row to read from `oddsLive` instead of stale imported `liveStats` rows.
+- Weather display now reads from the refreshed event weather fields instead of stale imported `liveStats` rows.
+- Weather geocoding now searches by city first and matches the state when possible, which is more reliable for Open-Meteo than sending `City, State` as the name field.
