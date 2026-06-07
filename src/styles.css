@@ -1786,3 +1786,22 @@ button.danger {
   overflow: auto;
   padding-right: 4px;
 }
+
+
+.history-event-grid {
+  margin-top: 14px;
+}
+
+.history-event-card {
+  opacity: .96;
+}
+
+.history-event-card .event-desc {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+}
+
+.odds-line {
+  font-weight: 650;
+}

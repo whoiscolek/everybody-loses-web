@@ -158,3 +158,21 @@ This build adds safety rules around syncing:
 - Admin now has an API event maintenance panel to manually delete stale imported events. Events with bets/matches/ledger are protected and the delete button is disabled.
 
 Use this to remove old broken ESPN/F1 remnants that are not true duplicates by title/source and therefore were not caught by automatic duplicate cleanup.
+
+
+## v9.0 history + triggered odds
+
+Final events now leave the Today tab and move to History. History renders full event cards, including racing/ranked-finish leaderboards.
+
+Today event stats were cleaned up:
+- removed generic Source/Venue display from the main stats row
+- shows Status, Odds, Weather, and basic scoreboard/stat state when available
+
+Odds integration:
+- Added `/api/odds`
+- Odds refresh is triggered after a team bet is created
+- Odds failure never blocks, voids, changes, deletes, or settles bets
+- Requires `ODDS_API_KEY` in Vercel environment variables to actually call The Odds API
+- With no key, it gracefully skips and the app keeps working
+
+The Odds API is intentionally not used for every event by default.

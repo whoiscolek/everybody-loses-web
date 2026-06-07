@@ -165,10 +165,12 @@ function mapTeamEvent(event, config) {
   const clock = event?.status?.displayClock || competition?.status?.displayClock || competition?.situation?.clock || "";
   const period = event?.status?.period || competition?.status?.period || "";
   const venue = competition?.venue?.fullName || event?.venue?.fullName || "";
+  const weather = competition?.weather?.displayValue || competition?.weather?.conditionId || "";
   const liveStats = [
     { label: "Status", value: status === "live" && period ? `Period ${period}${clock ? ` · ${clock}` : ""}` : labelStatus(status) },
-    { label: "Venue", value: venue || "Unavailable" },
-    { label: "Source", value: "ESPN scoreboard" }
+    { label: "Odds", value: typeof odds === "number" ? `O/U ${odds}` : String(odds || "Unavailable") },
+    { label: "Weather", value: weather || "Weather unavailable" },
+    { label: "Stats", value: status === "pregame" ? "Pregame" : "Scoreboard active" }
   ];
 
   return {
@@ -190,6 +192,7 @@ function mapTeamEvent(event, config) {
     status,
     score,
     liveStats,
+    weather: weather ? { summary: String(weather) } : null,
     odds: typeof odds === "number" ? `O/U ${odds}` : String(odds),
     externalIds: {
       source: "espn",
