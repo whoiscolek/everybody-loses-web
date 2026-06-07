@@ -236,3 +236,15 @@ History:
   - settles final events with matched bets when enough result data is available.
 - Manual sync, cleanup, settle, and refresh-odds buttons remain available as backup controls.
 - Refresh odds buttons remain admin-only.
+
+## v9.7 ESPN-first odds + protected Odds API automation
+
+- ESPN/imported odds remain the default odds display for schedule browsing.
+- The Odds API is no longer automatically called for every active/upcoming event.
+- Automatic Odds API refresh now only runs for team events that already have betting interest, meaning at least one bet or match exists.
+- Automatic Odds API refresh uses per-event cooldowns:
+  - Pregame: roughly once per hour.
+  - Live: roughly once every 20 minutes.
+- Automatic Odds API refresh has a local admin daily cap of 25 requests per betting day.
+- Admin manual Refresh odds buttons remain available as backup controls.
+- Schedule syncing, duplicate cleanup, and final settlement automation are unchanged.

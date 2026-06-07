@@ -39,7 +39,10 @@ const DISPLAY_TIME_ZONE = "America/New_York";
 const TIME_ZONE_LABEL = "ET";
 const BETTING_DAY_RESET_HOUR = 3;
 const AUTO_SYNC_INTERVAL_MS = 10 * 60 * 1000;
-const AUTO_ODDS_INTERVAL_MS = 8 * 60 * 1000;
+const AUTO_ODDS_INTERVAL_MS = 15 * 60 * 1000;
+const ODDS_AUTO_PREGAME_COOLDOWN_MS = 60 * 60 * 1000;
+const ODDS_AUTO_LIVE_COOLDOWN_MS = 20 * 60 * 1000;
+const ODDS_DAILY_AUTO_REQUEST_LIMIT = 25;
 const AUTO_CLEANUP_INTERVAL_MS = 6 * 60 * 60 * 1000;
 const AUTO_SETTLE_INTERVAL_MS = 10 * 60 * 1000;
 
@@ -1529,7 +1532,7 @@ function renderAdmin() {
           <button class="ghost" data-action="delete-demo-events">Delete old demo events</button>
           <button class="ghost" data-action="cleanup-api-events">Clean duplicate API events</button>
         </div>
-        <p class="footer-note small">Automatic maintenance now runs in the background for admins: today/tomorrow schedule sync, duplicate cleanup, final-event settlement, and live odds refresh. These buttons stay here as backup controls.</p>
+        <p class="footer-note small">Automatic maintenance now runs in the background for admins: today/tomorrow schedule sync, duplicate cleanup, final-event settlement, and odds refresh only for events with bets/matches. ESPN/imported odds remain the default display until someone actually bets. Backup buttons stay here as manual controls.</p>
         <label>Manual league/date fetch</label>
         <select id="apiLeague">
           ${API_IMPORT_LEAGUES.map(league => `<option value="${escapeHtml(league)}">${escapeHtml(league)}</option>`).join("")}
@@ -2560,14 +2563,55 @@ function shouldRunAutoTask(name, intervalMs) {
   }
 }
 
+function oddsAutoDailyKey() {
+  return autoKey(`odds-daily:${getBettingDayISO()}`);
+}
+
+function getAutoOddsRequestCount() {
+  try {
+    return Number(localStorage.getItem(oddsAutoDailyKey()) || 0);
+  } catch {
+    return 0;
+  }
+}
+
+function reserveAutoOddsRequestSlot() {
+  try {
+    const key = oddsAutoDailyKey();
+    const current = Number(localStorage.getItem(key) || 0);
+    if (current >= ODDS_DAILY_AUTO_REQUEST_LIMIT) return false;
+    localStorage.setItem(key, String(current + 1));
+    return true;
+  } catch {
+    return true;
+  }
+}
+
+function oddsRefreshCooldownMs(event) {
+  return event?.status === "live" ? ODDS_AUTO_LIVE_COOLDOWN_MS : ODDS_AUTO_PREGAME_COOLDOWN_MS;
+}
+
+function eventHasFreshAutoOdds(event) {
+  const fetchedAt = toDateValue(event?.oddsLive?.fetchedAt);
+  if (!fetchedAt) return false;
+  return Date.now() - fetchedAt < oddsRefreshCooldownMs(event);
+}
+
 function activeTeamEventsForOdds() {
   const now = Date.now();
-  const windowMs = 48 * 60 * 60 * 1000;
+  const nearWindowMs = 36 * 60 * 60 * 1000;
+
   return Object.values(state.events || {}).filter(event => {
     if (event.type !== EVENT_TYPES.TEAM || event.status === "final") return false;
+
+    const eventId = event.firestoreId || event.id;
+    if (!eventHasOddsInterest(eventId)) return false;
+    if (eventHasFreshAutoOdds(event)) return false;
+
     const start = new Date(event.startTime || 0).getTime();
-    const nearNow = Number.isFinite(start) && Math.abs(start - now) <= windowMs;
-    return nearNow || eventHasOddsInterest(event.firestoreId || event.id);
+    if (!Number.isFinite(start)) return event.status === "live";
+
+    return event.status === "live" || Math.abs(start - now) <= nearWindowMs;
   });
 }
 
@@ -2594,14 +2638,18 @@ async function autoSettleFinalEvents() {
 
 async function autoRefreshOddsForActiveEvents() {
   let refreshed = 0;
+
   for (const event of activeTeamEventsForOdds()) {
+    if (!reserveAutoOddsRequestSlot()) break;
+
     try {
-      await refreshOddsForEvent(event.firestoreId || event.id, "auto-maintenance", false);
+      await refreshOddsForEvent(event.firestoreId || event.id, "auto-maintenance-bet-interest-only", false);
       refreshed += 1;
     } catch {
       // odds should never block the app
     }
   }
+
   return refreshed;
 }
 
@@ -2633,7 +2681,7 @@ async function runAutoMaintenance(reason = "timer") {
 
     if (shouldRunAutoTask("odds", AUTO_ODDS_INTERVAL_MS)) {
       const odds = await autoRefreshOddsForActiveEvents();
-      notes.push(`odds checked ${odds}`);
+      notes.push(`Odds API refreshed ${odds} bet-interest event(s); auto cap ${getAutoOddsRequestCount()}/${ODDS_DAILY_AUTO_REQUEST_LIMIT}`);
     }
 
     if (notes.length) {
