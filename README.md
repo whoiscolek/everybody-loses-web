@@ -192,3 +192,12 @@ History:
 - Racing/ranked-finish leaderboards remain visible in History.
 - History shows matchup/result, game ID, and betting outcome summary.
 - It does not repeat the full Today-style odds/weather/stats card.
+
+
+## v9.2 odds timestamp + repo asset pass
+
+- Fixes The Odds API `commenceTimeFrom` / `commenceTimeTo` formatting by stripping milliseconds from ISO timestamps.
+- Keeps v9.1 triggered/manual odds refresh behavior.
+- Packages league logo assets under `public/logos/` so the `/logos/...png` references resolve after deployment.
+- Polishes the profile picture upload tile so the native browser file input stays hidden and selected filenames display in the app style.
+- Keeps `package-lock.json`; do not delete it from the repo.

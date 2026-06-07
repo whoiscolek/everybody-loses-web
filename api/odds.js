@@ -47,6 +47,12 @@ function formatPrice(price) {
   return num > 0 ? `+${num}` : String(num);
 }
 
+function oddsApiTimestamp(dateLike) {
+  const date = new Date(dateLike);
+  if (Number.isNaN(date.getTime())) return new Date().toISOString().replace(/\.\d{3}Z$/, "Z");
+  return date.toISOString().replace(/\.\d{3}Z$/, "Z");
+}
+
 function summarizeOdds(game, event) {
   const books = game.bookmakers || [];
   const firstBook = books[0] || {};
@@ -113,8 +119,9 @@ export default async function handler(req, res) {
     }
 
     const start = new Date(event.startTime || Date.now());
-    const from = new Date(start.getTime() - 18 * 60 * 60 * 1000).toISOString();
-    const to = new Date(start.getTime() + 18 * 60 * 60 * 1000).toISOString();
+    const startMs = Number.isNaN(start.getTime()) ? Date.now() : start.getTime();
+    const from = oddsApiTimestamp(startMs - 18 * 60 * 60 * 1000);
+    const to = oddsApiTimestamp(startMs + 18 * 60 * 60 * 1000);
 
     const params = new URLSearchParams({
       apiKey,

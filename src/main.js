@@ -1223,11 +1223,11 @@ function renderProfile() {
 
         <label>Upload custom profile picture</label>
         <input id="profileImageUpload" class="hidden-file-input" type="file" accept="image/*" />
-        <label for="profileImageUpload" class="upload-tile">
+        <label for="profileImageUpload" class="upload-tile" id="profileUploadTile">
           <span class="upload-icon">＋</span>
           <span class="upload-text">
-            <strong>Choose image</strong>
-            <small>PNG, JPG, GIF, or WebP</small>
+            <strong id="profileUploadTitle">Choose image</strong>
+            <small id="profileUploadHint">PNG, JPG, GIF, or WebP</small>
           </span>
         </label>
 
@@ -1553,6 +1553,7 @@ function wireUi() {
   document.querySelectorAll("[data-settle]").forEach(button => button.addEventListener("click", () => settleBalance(button.dataset.settle, Number(button.dataset.amount))));
   document.querySelectorAll("[data-approve]").forEach(button => button.addEventListener("click", () => approveUser(button.dataset.approve)));
   document.querySelector("[data-action='save-profile']")?.addEventListener("click", saveProfile);
+  document.querySelector("#profileImageUpload")?.addEventListener("change", updateProfileUploadTile);
   document.querySelector("[data-action='admin-unlock']")?.addEventListener("click", adminUnlock);
   document.querySelector("[data-action='fetch-api-events']")?.addEventListener("click", fetchApiEvents);
   document.querySelector("[data-action='sync-api-today']")?.addEventListener("click", () => syncApiSchedule(0));
@@ -1567,6 +1568,25 @@ function wireUi() {
   document.querySelector("[data-action='update-event']")?.addEventListener("click", updateEvent);
   document.querySelector("[data-action='settle-event']")?.addEventListener("click", settleEventFromAdmin);
   document.querySelector("[data-action='manual-ledger']")?.addEventListener("click", manualLedgerAdd);
+}
+
+function updateProfileUploadTile() {
+  const input = document.querySelector("#profileImageUpload");
+  const title = document.querySelector("#profileUploadTitle");
+  const hint = document.querySelector("#profileUploadHint");
+  const tile = document.querySelector("#profileUploadTile");
+  const file = input?.files?.[0];
+
+  if (!file) {
+    if (title) title.textContent = "Choose image";
+    if (hint) hint.textContent = "PNG, JPG, GIF, or WebP";
+    tile?.classList.remove("has-file");
+    return;
+  }
+
+  if (title) title.textContent = file.name;
+  if (hint) hint.textContent = `${Math.max(1, Math.round(file.size / 1024))} KB selected`;
+  tile?.classList.add("has-file");
 }
 
 async function login() {
