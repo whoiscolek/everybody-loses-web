@@ -215,3 +215,11 @@ History:
 - Live odds refresh now forces the event card display row to read from `oddsLive` instead of stale imported `liveStats` rows.
 - Weather display now reads from the refreshed event weather fields instead of stale imported `liveStats` rows.
 - Weather geocoding now searches by city first and matches the state when possible, which is more reliable for Open-Meteo than sending `City, State` as the name field.
+
+## v9.5 odds/weather/stats display cleanup
+
+- Odds matching is now stricter. A live odds refresh must match both teams and a nearby start time, preventing the app from showing a spread/total from the wrong game.
+- Odds text now labels moneyline, team-specific spread, total, sportsbook, and matched game more clearly.
+- Weather now falls back to home-team city/state when ESPN venue weather is missing, so indoor/neutral games can still show outside conditions after sync.
+- Today cards no longer show filler rows like "API schedule import," "Weather unavailable," or "Scoreboard active" when better data is unavailable.
+- ESPN summary parsing now tries team boxscore stats, player stat leaders, game leaders, and period scoring before falling back to the score.

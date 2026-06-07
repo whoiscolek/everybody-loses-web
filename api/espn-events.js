@@ -14,6 +14,18 @@ const LEAGUE_MAP = {
   MotoGP: { sport: "racing", league: "MotoGP", espnPath: "", appSport: "racing", eventType: "RANKED_FINISH", leagueKey: "motogp", useMotoGpPulseLive: true }
 };
 
+const TEAM_LOCATION_FALLBACKS = {
+  ATL: ["Atlanta", "GA"], BOS: ["Boston", "MA"], BKN: ["Brooklyn", "NY"], CHA: ["Charlotte", "NC"], CHI: ["Chicago", "IL"],
+  CLE: ["Cleveland", "OH"], DAL: ["Dallas", "TX"], DEN: ["Denver", "CO"], DET: ["Detroit", "MI"], GSW: ["San Francisco", "CA"],
+  HOU: ["Houston", "TX"], IND: ["Indianapolis", "IN"], LAC: ["Los Angeles", "CA"], LAL: ["Los Angeles", "CA"], MEM: ["Memphis", "TN"],
+  MIA: ["Miami", "FL"], MIL: ["Milwaukee", "WI"], MIN: ["Minneapolis", "MN"], NOP: ["New Orleans", "LA"], NYK: ["New York", "NY"],
+  OKC: ["Oklahoma City", "OK"], ORL: ["Orlando", "FL"], PHI: ["Philadelphia", "PA"], PHX: ["Phoenix", "AZ"], POR: ["Portland", "OR"],
+  SAC: ["Sacramento", "CA"], SAS: ["San Antonio", "TX"], TOR: ["Toronto", "ON"], UTA: ["Salt Lake City", "UT"], WAS: ["Washington", "DC"],
+  ARI: ["Phoenix", "AZ"], BAL: ["Baltimore", "MD"], BUF: ["Buffalo", "NY"], CAR: ["Charlotte", "NC"], CIN: ["Cincinnati", "OH"],
+  GB: ["Green Bay", "WI"], JAX: ["Jacksonville", "FL"], KC: ["Kansas City", "MO"], LV: ["Las Vegas", "NV"], NE: ["Foxborough", "MA"],
+  NO: ["New Orleans", "LA"], PIT: ["Pittsburgh", "PA"], SEA: ["Seattle", "WA"], SF: ["Santa Clara", "CA"], TB: ["Tampa", "FL"], TEN: ["Nashville", "TN"]
+};
+
 const DEFAULT_RACING_PARTICIPANTS = {
   F1: ["Verstappen", "Norris", "Piastri", "Leclerc", "Hamilton", "Russell", "Antonelli", "Sainz", "Alonso", "Tsunoda"],
   NASCAR: ["Kyle Larson", "Denny Hamlin", "William Byron", "Chase Elliott", "Ryan Blaney", "Christopher Bell", "Tyler Reddick", "Joey Logano", "Ross Chastain", "Bubba Wallace", "Brad Keselowski", "Ty Gibbs"],
@@ -557,28 +569,78 @@ function statValue(stat) {
   return "";
 }
 
-function pickUsefulTeamStats(summary) {
+function addStatRow(rows, label, value, max = 6) {
+  const cleanLabel = String(label || "").trim();
+  const cleanValue = String(value ?? "").trim();
+  if (!cleanLabel || !cleanValue || rows.length >= max) return;
+  if (/^(source|venue|status|odds|weather)$/i.test(cleanLabel)) return;
+  if (/^(scoreboard active|detailed boxscore unavailable|unavailable)$/i.test(cleanValue)) return;
+  if (rows.some(row => row.label === cleanLabel && row.value === cleanValue)) return;
+  rows.push({ label: cleanLabel, value: cleanValue });
+}
+
+function formatPeriodLine(teamCode, competitor) {
+  const lines = competitor?.linescores || [];
+  if (!teamCode || !Array.isArray(lines) || !lines.length) return "";
+  const values = lines.map(item => item?.displayValue ?? item?.value).filter(value => value !== undefined && value !== null && value !== "");
+  return values.length ? `${teamCode} by period: ${values.join("-")}` : "";
+}
+
+function pickPlayerRows(summary, rows) {
+  const playerTeams = summary?.boxscore?.players || [];
+
+  for (const teamBlock of playerTeams) {
+    const teamCode = teamBlock?.team?.abbreviation || teamBlock?.team?.shortDisplayName || teamBlock?.team?.displayName || "";
+    for (const category of teamBlock?.statistics || []) {
+      const labels = category?.labels || category?.names || [];
+      const athletes = category?.athletes || [];
+      if (!Array.isArray(athletes) || !athletes.length) continue;
+
+      const scoringIndexes = ["PTS", "REB", "AST", "G", "A", "SOG", "H", "RBI", "HR", "YDS", "TD"].map(key => labels.findIndex(label => String(label).toUpperCase() === key)).filter(index => index >= 0);
+
+      for (const athleteRow of athletes.slice(0, 3)) {
+        const athlete = athleteRow?.athlete?.displayName || athleteRow?.athlete?.shortName || athleteRow?.displayName || "";
+        const stats = athleteRow?.stats || [];
+        if (!athlete || !Array.isArray(stats) || !stats.length) continue;
+
+        const parts = scoringIndexes.slice(0, 3).map(index => `${stats[index]} ${labels[index]}`).filter(part => !/^undefined/i.test(part));
+        if (parts.length) addStatRow(rows, `${teamCode} ${athlete}`.trim(), parts.join(" · "));
+        if (rows.length >= 6) return;
+      }
+    }
+  }
+}
+
+function pickUsefulTeamStats(summary, mappedEvent, rawEvent) {
   const rows = [];
   const boxscoreTeams = summary?.boxscore?.teams || [];
+  const preferred = /field goal|fg|3pt|three|free throw|rebounds?|assists?|turnovers?|steals?|blocks?|shots?|saves?|corners?|fouls?|hits?|errors?|yards?|first downs?|third down|power play|faceoffs?|possession|total/i;
 
   for (const teamBlock of boxscoreTeams) {
     const teamCode = teamBlock?.team?.abbreviation || teamBlock?.team?.shortDisplayName || teamBlock?.team?.displayName || "";
     const stats = teamBlock?.statistics || [];
-
     for (const stat of stats) {
       const label = stat?.label || stat?.displayName || stat?.name || "";
       const value = statValue(stat);
-      if (!label || !value) continue;
-
-      if (/possession|shots|saves|corners|fouls|turnovers|rebounds|assists|hits|errors|yards|first downs|third down|power play|faceoffs|field goal|passing|rushing|total/i.test(label)) {
-        rows.push({ label: `${teamCode} ${label}`.trim(), value });
-      }
-
+      if (preferred.test(label)) addStatRow(rows, `${teamCode} ${label}`.trim(), value);
       if (rows.length >= 4) break;
     }
-
     if (rows.length >= 4) break;
   }
+
+  if (rows.length < 4) {
+    for (const teamBlock of boxscoreTeams) {
+      const teamCode = teamBlock?.team?.abbreviation || teamBlock?.team?.shortDisplayName || teamBlock?.team?.displayName || "";
+      for (const stat of teamBlock?.statistics || []) {
+        const label = stat?.label || stat?.displayName || stat?.name || "";
+        addStatRow(rows, `${teamCode} ${label}`.trim(), statValue(stat));
+        if (rows.length >= 4) break;
+      }
+      if (rows.length >= 4) break;
+    }
+  }
+
+  pickPlayerRows(summary, rows);
 
   const leaders = summary?.leaders || [];
   for (const leaderGroup of leaders) {
@@ -586,10 +648,16 @@ function pickUsefulTeamStats(summary) {
     const first = leaderGroup?.leaders?.[0];
     const athlete = first?.athlete?.displayName || first?.displayName || "";
     const value = first?.displayValue || first?.value || "";
-    if (label && athlete && rows.length < 6) rows.push({ label, value: `${athlete}${value ? ` · ${value}` : ""}` });
+    addStatRow(rows, label, athlete ? `${athlete}${value ? ` · ${value}` : ""}` : value);
   }
 
-  return rows;
+  const competition = rawEvent?.competitions?.[0] || {};
+  const away = getCompetitor(competition, "away") || competition.competitors?.[1] || {};
+  const home = getCompetitor(competition, "home") || competition.competitors?.[0] || {};
+  addStatRow(rows, "Away scoring", formatPeriodLine(mappedEvent?.away?.code, away));
+  addStatRow(rows, "Home scoring", formatPeriodLine(mappedEvent?.home?.code, home));
+
+  return rows.slice(0, 6);
 }
 
 function summaryWeather(summary) {
@@ -603,13 +671,15 @@ function summaryWeather(summary) {
   return parts.join(" · ");
 }
 
-function venueCityStateFromSummary(summary, competition) {
+function venueCityStateFromSummary(summary, competition, mappedEvent = null) {
   const venue = summary?.gameInfo?.venue || competition?.venue || {};
   const address = venue.address || {};
+  const homeCode = mappedEvent?.home?.code || "";
+  const fallback = TEAM_LOCATION_FALLBACKS[homeCode] || [];
   return {
     venueName: venue.fullName || competition?.venue?.fullName || "",
-    city: address.city || venue.city || "",
-    state: address.state || address.stateAbbreviation || venue.state || ""
+    city: address.city || venue.city || fallback[0] || "",
+    state: address.state || address.stateAbbreviation || venue.state || fallback[1] || ""
   };
 }
 
@@ -660,10 +730,10 @@ async function enrichTeamEvent(mappedEvent, rawEvent, config) {
     summary = null;
   }
 
-  const venueParts = venueCityStateFromSummary(summary, competition);
+  const venueParts = venueCityStateFromSummary(summary, competition, mappedEvent);
   const espnWeather = summaryWeather(summary);
   const weatherText = espnWeather || await fetchWeatherForCity(venueParts.city, venueParts.state);
-  const usefulStats = summary ? pickUsefulTeamStats(summary) : [];
+  const usefulStats = pickUsefulTeamStats(summary, mappedEvent, rawEvent);
   const statusText = mappedEvent.liveStats?.find(stat => stat.label === "Status")?.value || labelStatus(mappedEvent.status);
 
   const liveStats = [
@@ -674,7 +744,8 @@ async function enrichTeamEvent(mappedEvent, rawEvent, config) {
   ].slice(0, 6);
 
   if (!usefulStats.length && mappedEvent.status !== "pregame") {
-    liveStats.push({ label: "Stats", value: "Detailed boxscore unavailable" });
+    const scoreText = mappedEvent.score ? `${mappedEvent.away.code} ${mappedEvent.score.away} · ${mappedEvent.home.code} ${mappedEvent.score.home}` : "Score active";
+    liveStats.push({ label: "Score", value: scoreText });
   }
 
   return {

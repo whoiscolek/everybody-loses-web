@@ -292,7 +292,8 @@ function eventHasActiveBetInterest(eventId) {
 }
 
 function eventWeatherText(event) {
-  return event?.weather?.summary || event?.weatherText || "Weather unavailable";
+  const text = event?.weather?.summary || event?.weatherText || "";
+  return text || "Weather pending — sync today to refresh.";
 }
 
 function eventOddsText(event) {
@@ -304,8 +305,9 @@ function eventOddsText(event) {
 function eventOddsMeta(event) {
   if (!event?.oddsLive) return "";
   const book = event.oddsLive.bookmaker ? `Book: ${event.oddsLive.bookmaker}` : "";
+  const matched = event.oddsLive.matchedGame ? `Matched: ${event.oddsLive.matchedGame}` : "";
   const fetched = event.oddsLive.fetchedAt ? `Updated ${formatTime(event.oddsLive.fetchedAt)} CT` : "";
-  return [book, fetched].filter(Boolean).join(" · ");
+  return [book, matched, fetched].filter(Boolean).join(" · ");
 }
 
 function eventHasOddsInterest(eventId) {
@@ -827,7 +829,8 @@ function renderLiveStats(stats = [], fallback = [], event = null) {
     .filter(stat => {
       const value = String(stat.value ?? "").trim();
       if (!value) return false;
-      return !/^unavailable$/i.test(value);
+      if (/^(unavailable|weather unavailable|api schedule import|scoreboard active|detailed boxscore unavailable)$/i.test(value)) return false;
+      return true;
     });
 
   if (!rows.length) return "";

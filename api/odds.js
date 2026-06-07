@@ -25,19 +25,18 @@ function eventMatchesOddsGame(event, oddsGame) {
   const homeNames = [event?.home?.name, event?.home?.code].filter(Boolean);
   const awayNames = [event?.away?.name, event?.away?.code].filter(Boolean);
 
-  const homeOk = homeNames.some(name => namesMatch(name, oddsGame.home_team));
-  const awayOk = awayNames.some(name => namesMatch(name, oddsGame.away_team));
-
-  if (homeOk && awayOk) return true;
+  const homeHome = homeNames.some(name => namesMatch(name, oddsGame.home_team));
+  const awayAway = awayNames.some(name => namesMatch(name, oddsGame.away_team));
+  const homeAway = homeNames.some(name => namesMatch(name, oddsGame.away_team));
+  const awayHome = awayNames.some(name => namesMatch(name, oddsGame.home_team));
 
   const eventStart = new Date(event?.startTime || 0).getTime();
   const oddsStart = new Date(oddsGame?.commence_time || 0).getTime();
   const startsClose = Number.isFinite(eventStart) && Number.isFinite(oddsStart) && Math.abs(eventStart - oddsStart) < 12 * 60 * 60 * 1000;
 
-  return startsClose && (
-    homeNames.some(name => namesMatch(name, oddsGame.home_team) || namesMatch(name, oddsGame.away_team)) ||
-    awayNames.some(name => namesMatch(name, oddsGame.home_team) || namesMatch(name, oddsGame.away_team))
-  );
+  // Do not accept a match on one team only. That was causing the app to grab a
+  // different live game from the same league and display nonsense totals.
+  return startsClose && ((homeHome && awayAway) || (homeAway && awayHome));
 }
 
 function formatPrice(price) {
@@ -62,30 +61,47 @@ function summarizeOdds(game, event) {
   const total = markets.find(market => market.key === "totals");
 
   const h2hOutcomes = h2h?.outcomes || [];
-  const homePrice = h2hOutcomes.find(outcome => namesMatch(outcome.name, game.home_team))?.price;
-  const awayPrice = h2hOutcomes.find(outcome => namesMatch(outcome.name, game.away_team))?.price;
+  const spreadOutcomes = spread?.outcomes || [];
+  const totalOutcomes = total?.outcomes || [];
+  const homeName = game.home_team;
+  const awayName = game.away_team;
+  const homeCode = event?.home?.code || homeName;
+  const awayCode = event?.away?.code || awayName;
 
-  const moneyline = homePrice !== undefined || awayPrice !== undefined
-    ? `${event?.away?.code || game.away_team} ${formatPrice(awayPrice)} · ${event?.home?.code || game.home_team} ${formatPrice(homePrice)}`
+  const homeMoney = h2hOutcomes.find(outcome => namesMatch(outcome.name, homeName))?.price;
+  const awayMoney = h2hOutcomes.find(outcome => namesMatch(outcome.name, awayName))?.price;
+  const homeSpread = spreadOutcomes.find(outcome => namesMatch(outcome.name, homeName));
+  const awaySpread = spreadOutcomes.find(outcome => namesMatch(outcome.name, awayName));
+  const totalLine = totalOutcomes.find(outcome => /over/i.test(String(outcome.name || outcome.description || ""))) || totalOutcomes[0];
+
+  const moneyline = homeMoney !== undefined || awayMoney !== undefined
+    ? `${awayCode} ${formatPrice(awayMoney)} · ${homeCode} ${formatPrice(homeMoney)}`
     : "";
 
-  const spreadOutcome = spread?.outcomes?.[0];
-  const totalOutcome = total?.outcomes?.[0];
+  const spreadText = awaySpread?.point !== undefined || homeSpread?.point !== undefined
+    ? `${awaySpread?.point !== undefined ? `${awayCode} ${awaySpread.point}${awaySpread.price !== undefined ? ` (${formatPrice(awaySpread.price)})` : ""}` : ""}${awaySpread?.point !== undefined && homeSpread?.point !== undefined ? " · " : ""}${homeSpread?.point !== undefined ? `${homeCode} ${homeSpread.point}${homeSpread.price !== undefined ? ` (${formatPrice(homeSpread.price)})` : ""}` : ""}`
+    : "";
+
+  const totalText = totalLine?.point !== undefined
+    ? `Total ${totalLine.point}${totalLine.price !== undefined ? ` (${formatPrice(totalLine.price)})` : ""}`
+    : "";
 
   const parts = [];
-  if (moneyline) parts.push(moneyline);
-  if (spreadOutcome?.point !== undefined) parts.push(`Spread ${spreadOutcome.point}`);
-  if (totalOutcome?.point !== undefined) parts.push(`Total ${totalOutcome.point}`);
+  if (moneyline) parts.push(`ML ${moneyline}`);
+  if (spreadText) parts.push(`Spread ${spreadText}`);
+  if (totalText) parts.push(totalText);
 
   return {
     source: "The Odds API",
     bookmaker: firstBook.title || firstBook.key || "bookmaker unavailable",
     marketCount: markets.length,
     moneyline,
-    spread: spreadOutcome?.point !== undefined ? String(spreadOutcome.point) : "",
-    total: totalOutcome?.point !== undefined ? String(totalOutcome.point) : "",
+    spread: spreadText,
+    total: totalText,
     summary: parts.join(" · ") || "Odds unavailable",
     oddsApiEventId: game.id || "",
+    matchedGame: `${awayName} at ${homeName}`,
+    commenceTime: game.commence_time || "",
     lastUpdate: firstBook.last_update || new Date().toISOString()
   };
 }
