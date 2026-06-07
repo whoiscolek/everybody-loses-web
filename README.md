@@ -1,0 +1,65 @@
+# Everyone Loses v7.1 — Firebase + Admin Unlock
+
+This version uses the Firebase project config for:
+
+- Firebase Authentication
+- Firestore
+- Firebase Storage
+
+It also replaces the fake admin email bootstrap with a separate Admin Unlock flow.
+
+## Run locally
+
+```bash
+npm install
+npm run dev
+```
+
+## Firebase already coded in
+
+The Firebase web app config is already in:
+
+```txt
+src/firebase.js
+```
+
+You do not need `.env` for local testing in this version.
+
+## Firebase Console setup
+
+In Firebase Console for project `everyone-loses`:
+
+1. Authentication → Sign-in method → enable Email/Password.
+2. Firestore Database → create database.
+3. Storage → get started / enable bucket.
+4. Publish rules from:
+   - `firestore.rules`
+   - `storage.rules`
+
+## Admin unlock
+
+Create a normal account with your real email in the app.
+
+Then open Admin and use:
+
+```txt
+Admin code: bitch
+Admin password: allmyhomiespackin
+```
+
+Change these before deploying by editing `src/main.js`:
+
+```js
+const ADMIN_UNLOCK_CODE = "bitch";
+const ADMIN_UNLOCK_PASSWORD = "allmyhomiespackin";
+```
+
+Important: this is prototype security. Since this is frontend-only, the admin unlock strings are visible in the built app. Before a wider public deployment, admin should move to Firebase custom claims or a Cloud Function.
+
+## First admin steps
+
+1. Sign up with your normal email.
+2. Go to Admin.
+3. Enter the admin unlock code/password.
+4. Click Seed demo events.
+5. Create/approve other users from Admin.
