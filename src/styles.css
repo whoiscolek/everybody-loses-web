@@ -1768,3 +1768,21 @@ button.danger {
 .event-center-label {
   letter-spacing: -.035em;
 }
+
+
+.api-maintenance-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+}
+
+.api-maintenance-row button {
+  flex: 0 0 auto;
+}
+
+.api-maintenance-card .api-results {
+  max-height: 460px;
+  overflow: auto;
+  padding-right: 4px;
+}

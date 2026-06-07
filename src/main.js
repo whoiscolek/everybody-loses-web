@@ -266,6 +266,54 @@ function currentUser() {
   return state.currentUserId ? state.users[state.currentUserId] : null;
 }
 
+function eventBetCount(eventId) {
+  return Object.values(state.bets || {}).filter(bet => bet.eventId === eventId).length;
+}
+
+function eventMatchCount(eventId) {
+  return Object.values(state.matches || {}).filter(match => match.eventId === eventId).length;
+}
+
+function eventLedgerCount(eventId) {
+  return Object.values(state.ledgerEntries || {}).filter(entry => entry.eventId === eventId).length;
+}
+
+function eventHasFinancialRecords(eventId) {
+  return eventBetCount(eventId) > 0 || eventMatchCount(eventId) > 0 || eventLedgerCount(eventId) > 0;
+}
+
+function safeRefreshFieldsForEvent(event, existing = null) {
+  const existingId = existing?.firestoreId || existing?.id || "";
+  const hasFinancials = existingId && eventHasFinancialRecords(existingId);
+
+  const fields = {
+    status: event.status,
+    score: event.score || null,
+    odds: event.odds || "Unavailable",
+    leaderboard: event.leaderboard || [],
+    leaderboardSource: event.leaderboardSource || "Imported event data",
+    leaderboardVerified: !!event.leaderboardVerified,
+    liveStats: event.liveStats || [],
+    resultOrder: event.resultOrder || [],
+    intel: event.intel || "",
+    externalIds: event.externalIds || {},
+    updatedAt: serverTimestamp()
+  };
+
+  if (!hasFinancials) {
+    fields.title = event.title;
+    fields.startTime = event.startTime;
+    fields.participants = event.participants || [];
+  }
+
+  if (hasFinancials) {
+    fields.lockedStructurePreserved = true;
+    fields.structurePreservedReason = "Existing bets/matches/ledger records present; sync did not change title, start time, event type, short code, or participant list.";
+  }
+
+  return fields;
+}
+
 function isAdmin() {
   const user = currentUser();
   return Boolean(user?.approved && user?.isAdmin);
@@ -1239,6 +1287,38 @@ async function adminUnlock() {
   alert("Admin unlocked for this account.");
 }
 
+
+function renderApiEventMaintenance() {
+  const apiEvents = Object.values(state.events || {})
+    .filter(event => event.externalIds?.source || event.leaderboardSource || event.odds === "API schedule import")
+    .sort((a, b) => new Date(b.startTime || 0) - new Date(a.startTime || 0));
+
+  if (!apiEvents.length) {
+    return `<div class="record muted small">No API-imported events found.</div>`;
+  }
+
+  return apiEvents.slice(0, 40).map(event => {
+    const eventId = event.firestoreId || event.id;
+    const bets = eventBetCount(eventId);
+    const matches = eventMatchCount(eventId);
+    const ledger = eventLedgerCount(eventId);
+    const protectedLabel = bets || matches || ledger
+      ? `${bets} bets · ${matches} matches · ${ledger} ledger`
+      : "No bets/matches/ledger";
+    const source = event.externalIds?.source || event.leaderboardSource || "unknown";
+    return `
+      <div class="record api-maintenance-row">
+        <div>
+          <strong>${escapeHtml(event.title || eventId)}</strong><br />
+          <span class="muted small">${escapeHtml(event.league || "Unknown")} · ${escapeHtml(formatTime(event.startTime))} CT · ${escapeHtml(event.shortCode || eventId)}</span><br />
+          <span class="small">Source: ${escapeHtml(source)} · ${escapeHtml(protectedLabel)}</span>
+        </div>
+        <button class="danger" data-delete-api-event="${escapeHtml(eventId)}" ${bets || matches || ledger ? "disabled" : ""}>Delete</button>
+      </div>
+    `;
+  }).join("");
+}
+
 function renderAdmin() {
   if (!isAdmin()) return renderAdminUnlock();
 
@@ -1276,6 +1356,14 @@ function renderAdmin() {
         ${apiImportMessage ? `<p class="footer-note small">${escapeHtml(apiImportMessage)}</p>` : ""}
         <div class="api-results">
           ${renderApiImportResults()}
+        </div>
+      </div>
+
+      <div class="admin-card api-maintenance-card">
+        <h3>API event maintenance</h3>
+        <p class="muted small">Use this to remove stale imported events. Events with bets, matches, or ledger entries are protected and cannot be deleted here.</p>
+        <div class="api-results">
+          ${renderApiEventMaintenance()}
         </div>
       </div>
 
@@ -1356,6 +1444,7 @@ function wireUi() {
   document.querySelector("[data-action='cleanup-api-events']")?.addEventListener("click", cleanupDuplicateApiEvents);
   document.querySelector("[data-action='import-all-api-events']")?.addEventListener("click", importAllApiEvents);
   document.querySelectorAll("[data-import-api-event]").forEach(button => button.addEventListener("click", () => importApiEvent(button.dataset.importApiEvent)));
+  document.querySelectorAll("[data-delete-api-event]").forEach(button => button.addEventListener("click", () => deleteApiEvent(button.dataset.deleteApiEvent)));
   document.querySelector("[data-action='create-event']")?.addEventListener("click", createEvent);
   document.querySelector("[data-action='update-event']")?.addEventListener("click", updateEvent);
   document.querySelector("[data-action='settle-event']")?.addEventListener("click", settleEventFromAdmin);
@@ -1910,6 +1999,25 @@ async function cleanupDuplicateApiEvents() {
   renderApp();
 }
 
+
+async function deleteApiEvent(eventId) {
+  if (!isAdmin()) return;
+  const event = state.events[eventId];
+  if (!event) return alert("Could not find that event.");
+
+  if (eventHasFinancialRecords(eventId)) {
+    return alert("Protected: this event has bets, matches, or ledger records, so the app will not delete it.");
+  }
+
+  const ok = confirm(`Delete imported event "${event.title || eventId}"? This only deletes the event, not users/bets/ledger.`);
+  if (!ok) return;
+
+  await deleteDoc(doc(db, "events", eventId));
+  delete state.events[eventId];
+  apiImportMessage = `Deleted stale imported event: ${event.title || eventId}.`;
+  renderApp();
+}
+
 async function fetchApiEvents() {
   if (!isAdmin()) return;
 
@@ -1947,28 +2055,26 @@ async function importApiEvent(apiEventId) {
   const existing = findExistingApiEvent(event);
 
   if (existing) {
-    const refreshedEvent = {
-      ...event,
-      id: existing.id || existing.firestoreId || id,
-      shortCode: existing.shortCode || nextAvailableDisplayCode(event.league, event.startTime),
-      createdAt: existing.createdAt || serverTimestamp(),
-      updatedAt: serverTimestamp()
-    };
-
-    delete refreshedEvent.apiSource;
-    delete refreshedEvent.apiEventId;
-
     const existingDocId = existing.firestoreId || existing.id || id;
-    await setDoc(doc(db, "events", existingDocId), refreshedEvent, { merge: true });
+    const refreshFields = safeRefreshFieldsForEvent(event, existing);
+
+    await setDoc(doc(db, "events", existingDocId), refreshFields, { merge: true });
 
     state.events[existingDocId] = {
       ...existing,
-      ...refreshedEvent,
+      ...event,
+      ...refreshFields,
       firestoreId: existingDocId,
+      id: existing.id || existingDocId,
+      shortCode: existing.shortCode,
+      startTime: refreshFields.startTime || existing.startTime,
+      title: refreshFields.title || existing.title,
+      participants: refreshFields.participants || existing.participants,
       updatedAt: new Date()
     };
 
-    apiImportMessage = `Refreshed existing ${event.title}. It is saved as ${refreshedEvent.shortCode}.`;
+    const safetyNote = eventHasFinancialRecords(existingDocId) ? " Betting structure was preserved because this event has bets/matches/ledger records." : "";
+    apiImportMessage = `Refreshed existing ${event.title}. It is saved as ${existing.shortCode || existingDocId}.${safetyNote}`;
     activeTab = "today";
     filters = { sport: event.sport || "all", league: event.league || "all" };
     renderApp();
@@ -2011,25 +2117,9 @@ async function saveApiEventToBatch(batch, event, usedCodes) {
   const id = apiEventDocId(event);
   const existing = findExistingApiEvent(event);
 
-  const liveFields = {
-    title: event.title,
-    startTime: event.startTime,
-    status: event.status,
-    score: event.score || null,
-    odds: event.odds || "Unavailable",
-    participants: event.participants || [],
-    leaderboard: event.leaderboard || [],
-    leaderboardSource: event.leaderboardSource || "Imported event data",
-    leaderboardVerified: !!event.leaderboardVerified,
-    liveStats: event.liveStats || [],
-    resultOrder: event.resultOrder || [],
-    intel: event.intel || "",
-    externalIds: event.externalIds || {},
-    updatedAt: serverTimestamp()
-  };
-
   if (existing) {
     const existingId = existing.firestoreId || existing.id || id;
+    const liveFields = safeRefreshFieldsForEvent(event, existing);
     batch.set(doc(db, "events", existingId), liveFields, { merge: true });
     return "updated";
   }

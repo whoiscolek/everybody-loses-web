@@ -147,3 +147,14 @@ The sync/import logic is now race-aware:
 - source confidence keeps verified F1/NASCAR results over unverified ESPN schedule ordering
 
 The cleanup tool will not delete events that already have bets or matches.
+
+
+## v8.9 safe sync + event maintenance
+
+This build adds safety rules around syncing:
+- Sync/refresh never deletes bets, matches, ledger entries, users, or settlements.
+- Existing events with bets/matches/ledger keep their betting structure: title, start time, type, short code, and participant list are preserved.
+- Sync can still refresh status, score, verified leaderboard/result order, live stats, odds text, source IDs, and intel.
+- Admin now has an API event maintenance panel to manually delete stale imported events. Events with bets/matches/ledger are protected and the delete button is disabled.
+
+Use this to remove old broken ESPN/F1 remnants that are not true duplicates by title/source and therefore were not caught by automatic duplicate cleanup.
