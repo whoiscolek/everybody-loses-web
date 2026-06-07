@@ -35,6 +35,14 @@ import { auth, db, storage, hasFirebaseConfig } from "./firebase.js";
 const ADMIN_UNLOCK_CODE = "bitch";
 const ADMIN_UNLOCK_PASSWORD = "allmyhomiespackin";
 
+const DISPLAY_TIME_ZONE = "America/New_York";
+const TIME_ZONE_LABEL = "ET";
+const BETTING_DAY_RESET_HOUR = 3;
+const AUTO_SYNC_INTERVAL_MS = 10 * 60 * 1000;
+const AUTO_ODDS_INTERVAL_MS = 8 * 60 * 1000;
+const AUTO_CLEANUP_INTERVAL_MS = 6 * 60 * 60 * 1000;
+const AUTO_SETTLE_INTERVAL_MS = 10 * 60 * 1000;
+
 const SPORT_GROUPS = {
   basketball: ["NBA", "NCAA Basketball"],
   football: ["NFL", "NCAA Football"],
@@ -132,6 +140,9 @@ let filters = { sport: "all", league: "all" };
 let apiImportResults = [];
 let apiImportMessage = "";
 let apiSyncRunning = false;
+let autoMaintenanceRunning = false;
+let autoMaintenanceTimer = null;
+let autoMaintenanceMessage = "";
 let authUser = null;
 let loading = true;
 let dataReady = false;
@@ -306,7 +317,7 @@ function eventOddsMeta(event) {
   if (!event?.oddsLive) return "";
   const book = event.oddsLive.bookmaker ? `Book: ${event.oddsLive.bookmaker}` : "";
   const matched = event.oddsLive.matchedGame ? `Matched: ${event.oddsLive.matchedGame}` : "";
-  const fetched = event.oddsLive.fetchedAt ? `Updated ${formatTime(event.oddsLive.fetchedAt)} CT` : "";
+  const fetched = event.oddsLive.fetchedAt ? `${TIME_ZONE_LABEL} updated ${formatTime(event.oddsLive.fetchedAt)}` : "";
   return [book, matched, fetched].filter(Boolean).join(" · ");
 }
 
@@ -427,7 +438,7 @@ function renderLeagueLogo(sport, league) {
 
 function getBettingDayISO(date = new Date()) {
   const parts = new Intl.DateTimeFormat("en-CA", {
-    timeZone: "America/Chicago",
+    timeZone: DISPLAY_TIME_ZONE,
     year: "numeric",
     month: "2-digit",
     day: "2-digit",
@@ -436,10 +447,10 @@ function getBettingDayISO(date = new Date()) {
   }).formatToParts(date);
 
   const lookup = Object.fromEntries(parts.map(part => [part.type, part.value]));
-  const chicagoHour = Number(lookup.hour);
+  const easternHour = Number(lookup.hour);
   const base = new Date(`${lookup.year}-${lookup.month}-${lookup.day}T12:00:00Z`);
 
-  if (chicagoHour < 2) base.setUTCDate(base.getUTCDate() - 1);
+  if (easternHour < BETTING_DAY_RESET_HOUR) base.setUTCDate(base.getUTCDate() - 1);
   return base.toISOString().slice(0, 10);
 }
 
@@ -447,7 +458,7 @@ function mmddFromDate(dateLike) {
   const d = new Date(dateLike);
   if (!Number.isNaN(d.getTime())) {
     const parts = new Intl.DateTimeFormat("en-CA", {
-      timeZone: "America/Chicago",
+      timeZone: DISPLAY_TIME_ZONE,
       month: "2-digit",
       day: "2-digit"
     }).formatToParts(d);
@@ -484,7 +495,7 @@ function formatTime(value) {
   if (Number.isNaN(date.getTime())) return value;
 
   return new Intl.DateTimeFormat("en-US", {
-    timeZone: "America/Chicago",
+    timeZone: DISPLAY_TIME_ZONE,
     month: "short",
     day: "numeric",
     hour: "numeric",
@@ -519,6 +530,7 @@ function renderApp() {
     </main>
   `;
   wireUi();
+  maybeStartAutoMaintenance();
 }
 
 function renderFirebaseNotice() {
@@ -733,7 +745,7 @@ function renderEventCard(event) {
             <h3 class="event-title">${escapeHtml(event.title)}</h3>
             <div class="meta-line">
               <span class="status-badge ${escapeHtml(event.status)}">${escapeHtml(label(event.status))}</span>
-              <span class="badge">${escapeHtml(formatTime(event.startTime))} CT</span>
+              <span class="badge">${escapeHtml(formatTime(event.startTime))} ET</span>
             </div>
             <div class="logo-stack">
               ${event.type === EVENT_TYPES.TEAM
@@ -1198,7 +1210,7 @@ function renderHistoryEventCard(event) {
       <div class="compact-history-head">
         <div class="sport-icon">${renderLeagueLogo(event.sport, event.league)}</div>
         <div>
-          <div class="kicker">${escapeHtml(event.league)} · ${escapeHtml(formatTime(event.startTime))} CT</div>
+          <div class="kicker">${escapeHtml(event.league)} · ${escapeHtml(formatTime(event.startTime))} ET</div>
           <h3>${escapeHtml(event.title)}</h3>
           <p class="muted small">${escapeHtml(matchup)} · ${escapeHtml(renderHistoryResultLine(event))}</p>
         </div>
@@ -1447,10 +1459,40 @@ function renderApiEventMaintenance() {
       <div class="record api-maintenance-row">
         <div>
           <strong>${escapeHtml(event.title || eventId)}</strong><br />
-          <span class="muted small">${escapeHtml(event.league || "Unknown")} · ${escapeHtml(formatTime(event.startTime))} CT · ${escapeHtml(event.shortCode || eventId)}</span><br />
+          <span class="muted small">${escapeHtml(event.league || "Unknown")} · ${escapeHtml(formatTime(event.startTime))} ET · ${escapeHtml(event.shortCode || eventId)}</span><br />
           <span class="small">Source: ${escapeHtml(source)} · ${escapeHtml(protectedLabel)}</span>
         </div>
         <button class="danger" data-delete-api-event="${escapeHtml(eventId)}" ${bets || matches || ledger ? "disabled" : ""}>Delete</button>
+      </div>
+    `;
+  }).join("");
+}
+
+function renderAdminUserManagement() {
+  const users = Object.values(state.users || {})
+    .sort((a, b) => String(a.displayName || "").localeCompare(String(b.displayName || "")));
+
+  if (!users.length) return `<div class="record">No users found.</div>`;
+
+  return users.map(user => {
+    const id = user.firestoreId || user.id;
+    const isSelf = id === state.currentUserId;
+    const betCount = Object.values(state.bets || {}).filter(bet => bet.userId === id).length;
+    const matchCount = Object.values(state.matches || {}).filter(match => match.userA === id || match.userB === id).length;
+    const ledgerCount = Object.values(state.ledgerEntries || {}).filter(entry => entry.fromUser === id || entry.toUser === id).length;
+    const settlementCount = Object.values(state.settlements || {}).filter(item => item.fromUser === id || item.toUser === id).length;
+
+    return `
+      <div class="pending-user admin-user-row">
+        <div class="avatar-row">
+          ${renderAvatar(user)}
+          <div>
+            <strong>${escapeHtml(user.displayName || "Unnamed user")}</strong><br>
+            <span class="muted small">${escapeHtml(user.email || "No email")} · ${user.approved ? "Approved" : "Pending"}${user.isAdmin ? " · Admin" : ""}</span><br>
+            <span class="muted tiny">${betCount} bets · ${matchCount} matches · ${ledgerCount} ledger · ${settlementCount} settlements</span>
+          </div>
+        </div>
+        <button class="danger" data-delete-user="${escapeHtml(id)}" ${isSelf ? "disabled" : ""}>Delete profile</button>
       </div>
     `;
   }).join("");
@@ -1470,6 +1512,14 @@ function renderAdmin() {
         ${pendingUsers.length ? pendingUsers.map(user => `<div class="pending-user"><div class="avatar-row">${renderAvatar(user)}<div><strong>${escapeHtml(user.displayName)}</strong><br><span class="muted small">${escapeHtml(user.email)}</span></div></div><button class="primary" data-approve="${escapeHtml(user.id)}">Approve</button></div>`).join("") : `<div class="record">No pending users.</div>`}
       </div>
 
+      <div class="admin-card">
+        <h3>User management</h3>
+        <p class="muted small">Delete dummy profiles here. Deleting a profile also removes that user’s bets, matches, ledger rows, and settlements so they disappear from the leaderboard and history math.</p>
+        <div class="api-results">
+          ${renderAdminUserManagement()}
+        </div>
+      </div>
+
       <div class="admin-card api-import-card">
         <h3>API schedule sync</h3>
         <p class="muted small">Pull real schedule/score data into Firestore. ESPN is the default free source; NASCAR live order uses NASCAR.com when available; MotoGP uses PulseLive timing when available. Manual events stay available as the fallback.</p>
@@ -1479,7 +1529,7 @@ function renderAdmin() {
           <button class="ghost" data-action="delete-demo-events">Delete old demo events</button>
           <button class="ghost" data-action="cleanup-api-events">Clean duplicate API events</button>
         </div>
-        <p class="footer-note small">This is the semi-automatic step: one click imports or refreshes all supported leagues for that day. The next version can move this to a scheduled Vercel cron so it runs without you pressing anything.</p>
+        <p class="footer-note small">Automatic maintenance now runs in the background for admins: today/tomorrow schedule sync, duplicate cleanup, final-event settlement, and live odds refresh. These buttons stay here as backup controls.</p>
         <label>Manual league/date fetch</label>
         <select id="apiLeague">
           ${API_IMPORT_LEAGUES.map(league => `<option value="${escapeHtml(league)}">${escapeHtml(league)}</option>`).join("")}
@@ -1491,6 +1541,7 @@ function renderAdmin() {
           <button class="ghost" data-action="import-all-api-events" ${apiImportResults.length ? "" : "disabled"}>Import fetched</button>
         </div>
         ${apiImportMessage ? `<p class="footer-note small">${escapeHtml(apiImportMessage)}</p>` : ""}
+        ${autoMaintenanceMessage ? `<p class="footer-note small">Auto: ${escapeHtml(autoMaintenanceMessage)}</p>` : ""}
         <div class="api-results">
           ${renderApiImportResults()}
         </div>
@@ -1572,6 +1623,7 @@ function wireUi() {
   document.querySelectorAll("[data-clear-event-bets]").forEach(button => button.addEventListener("click", () => clearCurrentUserEventBets(button.dataset.clearEventBets)));
   document.querySelectorAll("[data-settle]").forEach(button => button.addEventListener("click", () => settleBalance(button.dataset.settle, Number(button.dataset.amount))));
   document.querySelectorAll("[data-approve]").forEach(button => button.addEventListener("click", () => approveUser(button.dataset.approve)));
+  document.querySelectorAll("[data-delete-user]").forEach(button => button.addEventListener("click", () => deleteUserProfile(button.dataset.deleteUser)));
   document.querySelector("[data-action='save-profile']")?.addEventListener("click", saveProfile);
   document.querySelector("#profileImageUpload")?.addEventListener("change", updateProfileUploadTile);
   document.querySelector("[data-action='admin-unlock']")?.addEventListener("click", adminUnlock);
@@ -1692,6 +1744,39 @@ async function approveUser(userId) {
     approved: true,
     updatedAt: serverTimestamp()
   });
+}
+
+async function deleteUserProfile(userId) {
+  if (!isAdmin()) return;
+  if (!userId) return alert("Could not identify that user.");
+  if (userId === state.currentUserId) return alert("You cannot delete your own active admin profile.");
+
+  const user = state.users[userId];
+  if (!user) return alert("Could not find that user profile.");
+
+  const relatedBets = Object.values(state.bets || {}).filter(bet => bet.userId === userId);
+  const relatedBetIds = new Set(relatedBets.map(bet => bet.firestoreId || bet.id));
+  const relatedMatches = Object.values(state.matches || {}).filter(match =>
+    match.userA === userId ||
+    match.userB === userId ||
+    relatedBetIds.has(match.betA) ||
+    relatedBetIds.has(match.betB)
+  );
+  const relatedLedger = Object.values(state.ledgerEntries || {}).filter(entry => entry.fromUser === userId || entry.toUser === userId);
+  const relatedSettlements = Object.values(state.settlements || {}).filter(item => item.fromUser === userId || item.toUser === userId);
+
+  const ok = confirm(`Delete ${user.displayName || user.email || "this profile"}? This removes the profile plus ${relatedBets.length} bet(s), ${relatedMatches.length} match(es), ${relatedLedger.length} ledger row(s), and ${relatedSettlements.length} settlement(s). This cannot be undone.`);
+  if (!ok) return;
+
+  const batch = writeBatch(db);
+  for (const match of relatedMatches) batch.delete(doc(db, "matches", match.firestoreId || match.id));
+  for (const bet of relatedBets) batch.delete(doc(db, "bets", bet.firestoreId || bet.id));
+  for (const entry of relatedLedger) batch.delete(doc(db, "ledgerEntries", entry.firestoreId || entry.id));
+  for (const settlement of relatedSettlements) batch.delete(doc(db, "settlements", settlement.firestoreId || settlement.id));
+  batch.delete(doc(db, "users", userId));
+
+  await batch.commit();
+  alert(`Deleted ${user.displayName || user.email || "profile"}.`);
 }
 
 function getUserEventBets(eventId, userId) {
@@ -1907,15 +1992,17 @@ async function placeRankedBet(eventId) {
   });
 }
 
-async function settleEvent(eventId) {
-  const event = state.events[eventId];
-  if (!event || event.status !== "final") return;
-  if (event.type === EVENT_TYPES.TEAM) await settleTeamEvent(event);
-  if (event.type === EVENT_TYPES.RANKED) await settleRankedEvent(event);
+async function settleEvent(eventId, options = {}) {
+  if (!isAdmin()) return;
+  const event = state.events[eventId] || findEventByIdOrCode(eventId);
+  if (!event) { if (!options.silent) alert("Event not found."); return; }
+  if (event.status !== "final") { if (!options.silent) alert("Set event status to final before settling."); return; }
+  if (event.type === EVENT_TYPES.TEAM) return settleTeamEvent(event, options);
+  if (event.type === EVENT_TYPES.RANKED) return settleRankedEvent(event, options);
 }
 
-async function settleTeamEvent(event) {
-  if (!event.score) return alert("Team/custom event needs a final score first.");
+async function settleTeamEvent(event, options = {}) {
+  if (!event.score) { if (!options.silent) alert("Team/custom event needs a final score first."); return; }
 
   const winningSide = Number(event.score.home) > Number(event.score.away)
     ? "home"
@@ -1923,7 +2010,7 @@ async function settleTeamEvent(event) {
       ? "away"
       : null;
 
-  if (!winningSide) return alert("Tie settlement is not implemented yet.");
+  if (!winningSide) { if (!options.silent) alert("Tie settlement is not implemented yet."); return; }
 
   const batch = writeBatch(db);
 
@@ -1955,8 +2042,8 @@ async function settleTeamEvent(event) {
   await batch.commit();
 }
 
-async function settleRankedEvent(event) {
-  if (!event.resultOrder?.length) return alert("Ranked event needs a result order first.");
+async function settleRankedEvent(event, options = {}) {
+  if (!event.resultOrder?.length) { if (!options.silent) alert("Ranked event needs a result order first."); return; }
 
   const rank = new Map(event.resultOrder.map((participant, index) => [participant.toLowerCase(), index + 1]));
   const bets = Object.values(state.bets).filter(bet => bet.eventId === event.id && bet.status !== "settled");
@@ -2157,7 +2244,7 @@ function renderApiImportResults() {
       <div class="record api-result-row">
         <div>
           <strong>${escapeHtml(event.title)}</strong><br />
-          <span class="muted small">${escapeHtml(event.league)} · ${escapeHtml(formatTime(event.startTime))} CT · ${escapeHtml(label(event.status))}</span><br />
+          <span class="muted small">${escapeHtml(event.league)} · ${escapeHtml(formatTime(event.startTime))} ET · ${escapeHtml(label(event.status))}</span><br />
           <span class="small">${escapeHtml(scoreText)} · Odds: ${escapeHtml(event.odds || "Unavailable")}</span>
         </div>
         <button class="${existing ? "ghost" : "primary"}" data-import-api-event="${escapeHtml(event.apiEventId)}">${existing ? "Refresh" : "Import"}</button>
@@ -2167,7 +2254,7 @@ function renderApiImportResults() {
 }
 
 
-async function cleanupDuplicateApiEvents() {
+async function cleanupDuplicateApiEvents(options = {}) {
   if (!isAdmin()) return;
 
   const events = Object.values(state.events || {}).filter(event => event.externalIds?.source || event.leaderboardSource || event.odds === "API schedule import");
@@ -2216,14 +2303,19 @@ async function cleanupDuplicateApiEvents() {
   }
 
   if (!removed) {
-    apiImportMessage = "No removable duplicate API events found. Events with bets/matches are preserved.";
-    renderApp();
-    return;
+    if (!options.silent) {
+      apiImportMessage = "No removable duplicate API events found. Events with bets/matches are preserved.";
+      renderApp();
+    }
+    return 0;
   }
 
   await batch.commit();
-  apiImportMessage = `Removed ${removed} duplicate/stale API event${removed === 1 ? "" : "s"}. Events with bets/matches were preserved.`;
-  renderApp();
+  if (!options.silent) {
+    apiImportMessage = `Removed ${removed} duplicate/stale API event${removed === 1 ? "" : "s"}. Events with bets/matches were preserved.`;
+    renderApp();
+  }
+  return removed;
 }
 
 
@@ -2335,8 +2427,8 @@ async function importApiEvent(apiEventId) {
 }
 
 function dateISOOffset(daysFromToday = 0) {
-  const date = new Date();
-  date.setDate(date.getDate() + daysFromToday);
+  const date = new Date(`${getBettingDayISO()}T12:00:00Z`);
+  date.setUTCDate(date.getUTCDate() + daysFromToday);
   return date.toISOString().slice(0, 10);
 }
 
@@ -2399,14 +2491,17 @@ async function fetchApiEventsForLeagueDate(league, dateISO) {
   return data.events || [];
 }
 
-async function syncApiSchedule(daysFromToday = 0) {
-  if (!isAdmin() || apiSyncRunning) return;
+async function syncApiSchedule(daysFromToday = 0, options = {}) {
+  if (!isAdmin() || apiSyncRunning) return { added: 0, updated: 0, fetched: 0 };
 
+  const silent = !!options.silent;
   const dateISO = dateISOOffset(daysFromToday);
   apiSyncRunning = true;
   apiImportResults = [];
-  apiImportMessage = `Syncing ${dateISO} across supported leagues...`;
-  renderApp();
+  if (!silent) {
+    apiImportMessage = `Syncing ${dateISO} across supported leagues...`;
+    renderApp();
+  }
 
   try {
     const batch = writeBatch(db);
@@ -2438,12 +2533,123 @@ async function syncApiSchedule(daysFromToday = 0) {
 
     if (added || updated) await batch.commit();
 
-    apiImportMessage = `Synced ${dateISO}. Fetched ${fetched}; imported ${added} new event${added === 1 ? "" : "s"}; refreshed ${updated} existing event${updated === 1 ? "" : "s"}. ${counts.join(" · ")}`;
+    if (!silent) apiImportMessage = `Synced ${dateISO}. Fetched ${fetched}; imported ${added} new event${added === 1 ? "" : "s"}; refreshed ${updated} existing event${updated === 1 ? "" : "s"}. ${counts.join(" · ")}`;
+    return { added, updated, fetched };
   } catch (error) {
-    apiImportMessage = error.message || "Schedule sync failed.";
+    if (!silent) apiImportMessage = error.message || "Schedule sync failed.";
+    return { added: 0, updated: 0, fetched: 0, error: error.message || "Schedule sync failed." };
   } finally {
     apiSyncRunning = false;
-    renderApp();
+    if (!silent) renderApp();
+  }
+}
+
+function autoKey(name) {
+  return `everyoneLoses:auto:${name}`;
+}
+
+function shouldRunAutoTask(name, intervalMs) {
+  try {
+    const key = autoKey(name);
+    const last = Number(localStorage.getItem(key) || 0);
+    if (Date.now() - last < intervalMs) return false;
+    localStorage.setItem(key, String(Date.now()));
+    return true;
+  } catch {
+    return true;
+  }
+}
+
+function activeTeamEventsForOdds() {
+  const now = Date.now();
+  const windowMs = 48 * 60 * 60 * 1000;
+  return Object.values(state.events || {}).filter(event => {
+    if (event.type !== EVENT_TYPES.TEAM || event.status === "final") return false;
+    const start = new Date(event.startTime || 0).getTime();
+    const nearNow = Number.isFinite(start) && Math.abs(start - now) <= windowMs;
+    return nearNow || eventHasOddsInterest(event.firestoreId || event.id);
+  });
+}
+
+function finalEventsNeedingSettlement() {
+  return Object.values(state.events || {}).filter(event => {
+    if (event.status !== "final") return false;
+    const eventId = event.firestoreId || event.id;
+    return Object.values(state.matches || {}).some(match => match.eventId === eventId && match.status !== "settled");
+  });
+}
+
+async function autoSettleFinalEvents() {
+  let settled = 0;
+  for (const event of finalEventsNeedingSettlement()) {
+    try {
+      await settleEvent(event.firestoreId || event.id, { silent: true });
+      settled += 1;
+    } catch {
+      // keep automatic maintenance non-blocking
+    }
+  }
+  return settled;
+}
+
+async function autoRefreshOddsForActiveEvents() {
+  let refreshed = 0;
+  for (const event of activeTeamEventsForOdds()) {
+    try {
+      await refreshOddsForEvent(event.firestoreId || event.id, "auto-maintenance", false);
+      refreshed += 1;
+    } catch {
+      // odds should never block the app
+    }
+  }
+  return refreshed;
+}
+
+async function runAutoMaintenance(reason = "timer") {
+  if (!isAdmin() || autoMaintenanceRunning) return;
+  autoMaintenanceRunning = true;
+
+  const notes = [];
+  try {
+    if (shouldRunAutoTask("sync-today", AUTO_SYNC_INTERVAL_MS)) {
+      const today = await syncApiSchedule(0, { silent: true });
+      notes.push(`today ${today.fetched || 0} fetched`);
+    }
+
+    if (shouldRunAutoTask("sync-tomorrow", AUTO_SYNC_INTERVAL_MS)) {
+      const tomorrow = await syncApiSchedule(1, { silent: true });
+      notes.push(`tomorrow ${tomorrow.fetched || 0} fetched`);
+    }
+
+    if (shouldRunAutoTask("cleanup", AUTO_CLEANUP_INTERVAL_MS)) {
+      const removed = await cleanupDuplicateApiEvents({ silent: true });
+      notes.push(`cleanup removed ${removed || 0}`);
+    }
+
+    if (shouldRunAutoTask("settle", AUTO_SETTLE_INTERVAL_MS)) {
+      const settled = await autoSettleFinalEvents();
+      notes.push(`settled ${settled}`);
+    }
+
+    if (shouldRunAutoTask("odds", AUTO_ODDS_INTERVAL_MS)) {
+      const odds = await autoRefreshOddsForActiveEvents();
+      notes.push(`odds checked ${odds}`);
+    }
+
+    if (notes.length) {
+      autoMaintenanceMessage = `${formatTime(new Date().toISOString())} ${TIME_ZONE_LABEL}: ${notes.join(" · ")}.`;
+    }
+  } finally {
+    autoMaintenanceRunning = false;
+  }
+}
+
+function maybeStartAutoMaintenance() {
+  if (!isAdmin()) return;
+
+  if (!autoMaintenanceTimer) {
+    runAutoMaintenance("startup");
+    autoMaintenanceTimer = setInterval(() => runAutoMaintenance("interval"), 5 * 60 * 1000);
   }
 }
 

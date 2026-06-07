@@ -223,3 +223,16 @@ History:
 - Weather now falls back to home-team city/state when ESPN venue weather is missing, so indoor/neutral games can still show outside conditions after sync.
 - Today cards no longer show filler rows like "API schedule import," "Weather unavailable," or "Scoreboard active" when better data is unavailable.
 - ESPN summary parsing now tries team boxscore stats, player stat leaders, game leaders, and period scoring before falling back to the score.
+
+## v9.6 admin automation + Eastern time
+
+- Adds Admin user management with a delete profile action for dummy accounts. This removes the app user document plus that user's bets, matches, ledger rows, and settlement rows so they disappear from leaderboard/history math.
+- Moves display and betting-day logic from Central Time to Eastern Time. The betting day now rolls over at 3:00 AM ET.
+- Adds background admin maintenance. When an admin has the app open, the app automatically:
+  - syncs today's schedule/scores,
+  - syncs tomorrow's schedule,
+  - refreshes live odds for active/upcoming team games,
+  - cleans duplicate API events,
+  - settles final events with matched bets when enough result data is available.
+- Manual sync, cleanup, settle, and refresh-odds buttons remain available as backup controls.
+- Refresh odds buttons remain admin-only.
