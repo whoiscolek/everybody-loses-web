@@ -105,3 +105,10 @@ Local Vite dev may not run Vercel serverless functions by default. The endpoint 
 - Team events now render a scoreboard panel with a placeholder for live stats/final stats.
 - ESPN remains the default schedule/score source. The Odds API should be treated as an optional paid/limited enhancement later, ideally only after a bet exists on an event so quota is not burned on games nobody is betting.
 - NASCAR and MotoGP are still dependent on whether the ESPN endpoints return schedule data for the requested date. If ESPN returns zero events, the app now reports that more cleanly but a second racing-specific source may be needed.
+
+
+## v8.4 racing endpoint note
+
+NASCAR now uses ESPN's NASCAR Cup Series slug `nascar-premier` instead of the broken `nascar` slug.
+
+MotoGP currently returns a graceful zero-event message because ESPN's scoreboard endpoints used by this app do not expose MotoGP cleanly. Use a manual ranked-finish event for MotoGP until a dedicated MotoGP source is added.

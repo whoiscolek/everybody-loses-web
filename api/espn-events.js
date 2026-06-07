@@ -9,8 +9,8 @@ const LEAGUE_MAP = {
   MLS: { sport: "soccer", league: "MLS", espnPath: "soccer/usa.1", appSport: "soccer", eventType: "TEAM_HEAD_TO_HEAD" },
   "Champions League": { sport: "soccer", league: "Champions League", espnPath: "soccer/uefa.champions", appSport: "soccer", eventType: "TEAM_HEAD_TO_HEAD" },
   F1: { sport: "racing", league: "F1", espnPath: "racing/f1", appSport: "racing", eventType: "RANKED_FINISH", leagueKey: "f1" },
-  NASCAR: { sport: "racing", league: "NASCAR", espnPath: "racing/nascar", appSport: "racing", eventType: "RANKED_FINISH", leagueKey: "nascar" },
-  MotoGP: { sport: "racing", league: "MotoGP", espnPath: "racing/motogp", appSport: "racing", eventType: "RANKED_FINISH", leagueKey: "motogp" }
+  NASCAR: { sport: "racing", league: "NASCAR", espnPath: "racing/nascar-premier", appSport: "racing", eventType: "RANKED_FINISH", leagueKey: "nascar-premier" },
+  MotoGP: { sport: "racing", league: "MotoGP", espnPath: "", appSport: "racing", eventType: "RANKED_FINISH", leagueKey: "motogp", unavailableOnEspn: true }
 };
 
 const DEFAULT_RACING_PARTICIPANTS = {
@@ -222,14 +222,16 @@ async function fetchEspnJson(url) {
 }
 
 async function fetchLeagueData(config, date, params) {
-  const urls = [
-    `https://site.api.espn.com/apis/site/v2/sports/${config.espnPath}/scoreboard?${params.toString()}`
-  ];
+  const urls = [];
 
-  if (config.sport === "racing") {
-    urls.push(`https://site.web.api.espn.com/apis/personalized/v2/scoreboard/header?sport=racing&league=${encodeURIComponent(config.leagueKey || config.league.toLowerCase())}&dates=${date}`);
-    urls.push(`https://site.api.espn.com/apis/site/v2/sports/racing/${encodeURIComponent(config.leagueKey || config.league.toLowerCase())}/scoreboard?dates=${date}&limit=200`);
-    urls.push(`https://sports.core.api.espn.com/v2/sports/racing/leagues/${encodeURIComponent(config.leagueKey || config.league.toLowerCase())}/events?dates=${date}`);
+  if (config.espnPath) {
+    urls.push(`https://site.api.espn.com/apis/site/v2/sports/${config.espnPath}/scoreboard?${params.toString()}`);
+  }
+
+  if (config.sport === "racing" && config.leagueKey) {
+    const racingLeague = encodeURIComponent(config.leagueKey);
+    urls.push(`https://site.api.espn.com/apis/site/v2/sports/racing/${racingLeague}/scoreboard?dates=${date}&limit=200`);
+    urls.push(`https://site.api.espn.com/apis/v2/scoreboard/header?sport=racing&league=${racingLeague}&dates=${date}`);
   }
 
   let lastError = null;
@@ -263,6 +265,18 @@ export default async function handler(req, res) {
       return res.status(400).json({ error: "Unsupported league", supportedLeagues: Object.keys(LEAGUE_MAP) });
     }
 
+    if (config.unavailableOnEspn) {
+      return res.status(200).json({
+        source: "espn",
+        league: config.league,
+        date,
+        count: 0,
+        url: "",
+        note: `${config.league} is not available through the ESPN scoreboard endpoints currently used by this app. Use a manual racing event for now, or add a dedicated MotoGP source later.`,
+        events: []
+      });
+    }
+
     const params = new URLSearchParams({ dates: date, limit: "200" });
     if (config.groups) params.set("groups", String(config.groups));
 
@@ -275,7 +289,7 @@ export default async function handler(req, res) {
       date,
       count: events.length,
       url,
-      note: config.sport === "racing" ? "Racing imports use ESPN schedule data when available; verify participants before betting." : "",
+      note: config.sport === "racing" ? "Racing imports use ESPN schedule data when available; verify participants before betting. NASCAR uses the ESPN NASCAR Cup Series slug nascar-premier." : "",
       events
     });
   } catch (error) {

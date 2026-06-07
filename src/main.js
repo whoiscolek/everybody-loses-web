@@ -1769,7 +1769,7 @@ async function fetchApiEvents() {
     if (!response.ok) throw new Error(data.error || `API request failed with ${response.status}`);
 
     apiImportResults = data.events || [];
-    apiImportMessage = `Fetched ${apiImportResults.length} ${league} event${apiImportResults.length === 1 ? "" : "s"}. Review before importing.`;
+    apiImportMessage = `Fetched ${apiImportResults.length} ${league} event${apiImportResults.length === 1 ? "" : "s"}. ${data.note ? data.note + " " : ""}Review before importing.`;
     renderApp();
   } catch (error) {
     apiImportResults = [];
@@ -1891,7 +1891,8 @@ async function syncApiSchedule(daysFromToday = 0) {
         }
         if (events.length || leagueAdded) counts.push(`${league}: ${leagueAdded}/${events.length}`);
       } catch (error) {
-        counts.push(`${league}: error`);
+        const cleanError = String(error.message || "error").replace(/^ESPN request failed with /, "");
+        counts.push(`${league}: ${cleanError}`);
       }
     }
 
