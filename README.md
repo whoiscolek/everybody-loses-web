@@ -120,3 +120,10 @@ MotoGP currently returns a graceful zero-event message because ESPN's scoreboard
 - IndyCar has been added through ESPN's `racing/irl` league path.
 - MotoGP now tries MotoGP PulseLive timing (`/timing-gateway/livetiming-lite`) instead of ESPN. This is live/session-focused, not a full future schedule importer yet.
 - API sync now refreshes existing imported events instead of only adding new events, so scores/leaderboards can update when the source updates.
+
+
+## v8.6.1 league-aware import fix
+
+This fixes an importer bug where an ESPN event ID could be treated as already imported globally even when the existing event was from a different league. API imports now only count as existing when sport + league + source identity match.
+
+This matters for racing because ESPN event IDs can be ambiguous across racing endpoints.

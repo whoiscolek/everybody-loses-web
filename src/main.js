@@ -1735,6 +1735,32 @@ function apiEventDocId(event) {
     .toUpperCase();
 }
 
+function eventMatchesApiImport(saved, apiEvent) {
+  if (!saved || !apiEvent) return false;
+
+  const sameLeague = String(saved.league || "") === String(apiEvent.league || "");
+  const sameSport = String(saved.sport || "") === String(apiEvent.sport || "");
+  if (!sameLeague || !sameSport) return false;
+
+  const savedEspn = saved.externalIds?.espnEventId || saved.externalIds?.eventId || "";
+  const apiEspn = apiEvent.apiEventId || apiEvent.externalIds?.espnEventId || apiEvent.externalIds?.eventId || "";
+  if (savedEspn && apiEspn && String(savedEspn) === String(apiEspn)) return true;
+
+  const savedTitle = String(saved.title || "").trim().toLowerCase();
+  const apiTitle = String(apiEvent.title || "").trim().toLowerCase();
+  const savedStart = new Date(saved.startTime || 0).getTime();
+  const apiStart = new Date(apiEvent.startTime || 0).getTime();
+  const startsClose = Number.isFinite(savedStart) && Number.isFinite(apiStart) && Math.abs(savedStart - apiStart) < 60 * 60 * 1000;
+
+  return !!savedTitle && savedTitle === apiTitle && startsClose;
+}
+
+function findExistingApiEvent(apiEvent) {
+  const docId = apiEventDocId(apiEvent);
+  if (state.events[docId]) return state.events[docId];
+  return Object.values(state.events || {}).find(saved => eventMatchesApiImport(saved, apiEvent));
+}
+
 function nextAvailableDisplayCode(league, startTime, usedCodes = null) {
   const prefix = SPORT_PREFIX[league] || SPORT_PREFIX.Custom;
   const mmdd = mmddFromDate(startTime);
@@ -1758,7 +1784,7 @@ function renderApiImportResults() {
 
   return apiImportResults.map(event => {
     const docId = apiEventDocId(event);
-    const existing = state.events[docId] || Object.values(state.events).find(saved => saved.externalIds?.espnEventId === event.apiEventId);
+    const existing = findExistingApiEvent(event);
     const scoreText = event.type === EVENT_TYPES.RANKED
       ? `${(event.participants || []).slice(0, 6).join(", ")}${(event.participants || []).length > 6 ? "..." : ""}`
       : event.score
@@ -1811,7 +1837,7 @@ async function importApiEvent(apiEventId) {
   if (!event) return alert("Could not find fetched event to import.");
 
   const id = apiEventDocId(event);
-  const existing = state.events[id] || Object.values(state.events).find(saved => saved.externalIds?.espnEventId === event.apiEventId);
+  const existing = findExistingApiEvent(event);
   if (existing) return alert("This event already appears to be imported.");
 
   const savedEvent = {
@@ -1826,7 +1852,17 @@ async function importApiEvent(apiEventId) {
   delete savedEvent.apiEventId;
 
   await setDoc(doc(db, "events", id), savedEvent, { merge: true });
-  apiImportMessage = `Imported ${event.title}.`;
+
+  state.events[id] = {
+    firestoreId: id,
+    ...savedEvent,
+    createdAt: new Date(),
+    updatedAt: new Date()
+  };
+
+  apiImportMessage = `Imported ${event.title}. It is now saved as ${savedEvent.shortCode}.`;
+  activeTab = "today";
+  filters = { sport: event.sport || "all", league: event.league || "all" };
   renderApp();
 }
 
@@ -1838,7 +1874,7 @@ function dateISOOffset(daysFromToday = 0) {
 
 async function saveApiEventToBatch(batch, event, usedCodes) {
   const id = apiEventDocId(event);
-  const existing = state.events[id] || Object.values(state.events).find(saved => saved.externalIds?.espnEventId === event.apiEventId || saved.externalIds?.eventId === event.externalIds?.eventId);
+  const existing = findExistingApiEvent(event);
 
   const liveFields = {
     status: event.status,
