@@ -124,6 +124,8 @@ const AVATAR_CHOICES = ["😀", "😎", "🔥", "🧠", "🎯", "🏁", "⚡", "
 let activeTab = "today";
 let authMode = "login";
 let filters = { sport: "all", league: "all" };
+let apiImportResults = [];
+let apiImportMessage = "";
 let authUser = null;
 let loading = true;
 let dataReady = false;
@@ -1129,6 +1131,25 @@ function renderAdmin() {
         <button class="primary" data-action="seed-demo-events">Seed demo events</button>
       </div>
 
+      <div class="admin-card api-import-card">
+        <h3>API event importer</h3>
+        <p class="muted small">Fetch real schedule data, review it, then import selected games into Firestore. Manual events stay available as the fallback.</p>
+        <label>League</label>
+        <select id="apiLeague">
+          ${["NBA", "NFL", "MLB", "NHL", "NCAA Basketball", "NCAA Football", "Premier League", "MLS", "Champions League"].map(league => `<option value="${escapeHtml(league)}">${escapeHtml(league)}</option>`).join("")}
+        </select>
+        <label>Date</label>
+        <input id="apiDate" type="date" value="${escapeHtml(getBettingDayISO())}" />
+        <div class="button-row">
+          <button class="primary" data-action="fetch-api-events">Fetch games</button>
+          <button class="ghost" data-action="import-all-api-events" ${apiImportResults.length ? "" : "disabled"}>Import all fetched</button>
+        </div>
+        ${apiImportMessage ? `<p class="footer-note small">${escapeHtml(apiImportMessage)}</p>` : ""}
+        <div class="api-results">
+          ${renderApiImportResults()}
+        </div>
+      </div>
+
       <div class="admin-card">
         <h3>Create manual event</h3>
         <label>Event type</label>
@@ -1200,6 +1221,9 @@ function wireUi() {
   document.querySelector("[data-action='save-profile']")?.addEventListener("click", saveProfile);
   document.querySelector("[data-action='admin-unlock']")?.addEventListener("click", adminUnlock);
   document.querySelector("[data-action='seed-demo-events']")?.addEventListener("click", seedDemoEvents);
+  document.querySelector("[data-action='fetch-api-events']")?.addEventListener("click", fetchApiEvents);
+  document.querySelector("[data-action='import-all-api-events']")?.addEventListener("click", importAllApiEvents);
+  document.querySelectorAll("[data-import-api-event]").forEach(button => button.addEventListener("click", () => importApiEvent(button.dataset.importApiEvent)));
   document.querySelector("[data-action='create-event']")?.addEventListener("click", createEvent);
   document.querySelector("[data-action='update-event']")?.addEventListener("click", updateEvent);
   document.querySelector("[data-action='settle-event']")?.addEventListener("click", settleEventFromAdmin);
@@ -1568,6 +1592,146 @@ function findEventByIdOrCode(input) {
   const value = String(input || "").trim().toUpperCase();
   if (!value) return null;
   return state.events[value] || Object.values(state.events).find(event => String(event.shortCode || "").toUpperCase() === value) || null;
+}
+
+function apiEventDocId(event) {
+  const date = new Date(event.startTime).toISOString().slice(0, 10);
+  const away = event.away?.code || "AWAY";
+  const home = event.home?.code || "HOME";
+  const sourceId = event.apiEventId || event.externalIds?.espnEventId || `${away}-${home}`;
+  return `${SPORT_PREFIX[event.league] || "API"}-${date}-${away}-${home}-${sourceId}`
+    .replace(/[^a-z0-9-]/gi, "-")
+    .replace(/-+/g, "-")
+    .toUpperCase();
+}
+
+function nextAvailableDisplayCode(league, startTime, usedCodes = null) {
+  const prefix = SPORT_PREFIX[league] || SPORT_PREFIX.Custom;
+  const mmdd = mmddFromDate(startTime);
+  const used = usedCodes || new Set(Object.values(state.events || {}).map(event => event.shortCode).filter(Boolean));
+  let sequence = 1;
+  let code = makeDisplayCode(league, startTime, sequence);
+
+  while (used.has(code) || !String(code).startsWith(`${prefix}${mmdd}-`)) {
+    sequence += 1;
+    code = makeDisplayCode(league, startTime, sequence);
+  }
+
+  used.add(code);
+  return code;
+}
+
+function renderApiImportResults() {
+  if (!apiImportResults.length) {
+    return `<div class="record muted small">No fetched games yet.</div>`;
+  }
+
+  return apiImportResults.map(event => {
+    const docId = apiEventDocId(event);
+    const existing = state.events[docId] || Object.values(state.events).find(saved => saved.externalIds?.espnEventId === event.apiEventId);
+    const scoreText = event.score ? `${event.away.code} ${event.score.away} · ${event.home.code} ${event.score.home}` : `${event.away.code} vs ${event.home.code}`;
+    return `
+      <div class="record api-result-row">
+        <div>
+          <strong>${escapeHtml(event.title)}</strong><br />
+          <span class="muted small">${escapeHtml(event.league)} · ${escapeHtml(formatTime(event.startTime))} CT · ${escapeHtml(label(event.status))}</span><br />
+          <span class="small">${escapeHtml(scoreText)} · Odds: ${escapeHtml(event.odds || "Unavailable")}</span>
+        </div>
+        <button class="${existing ? "ghost" : "primary"}" data-import-api-event="${escapeHtml(event.apiEventId)}" ${existing ? "disabled" : ""}>${existing ? "Imported" : "Import"}</button>
+      </div>
+    `;
+  }).join("");
+}
+
+async function fetchApiEvents() {
+  if (!isAdmin()) return;
+
+  const league = document.querySelector("#apiLeague")?.value || "NBA";
+  const dateRaw = document.querySelector("#apiDate")?.value || getBettingDayISO();
+  const date = dateRaw.replace(/-/g, "");
+
+  apiImportMessage = `Fetching ${league} for ${dateRaw}...`;
+  apiImportResults = [];
+  renderApp();
+
+  try {
+    const response = await fetch(`/api/espn-events?league=${encodeURIComponent(league)}&date=${encodeURIComponent(date)}`);
+    const data = await response.json();
+
+    if (!response.ok) throw new Error(data.error || `API request failed with ${response.status}`);
+
+    apiImportResults = data.events || [];
+    apiImportMessage = `Fetched ${apiImportResults.length} ${league} event${apiImportResults.length === 1 ? "" : "s"}. Review before importing.`;
+    renderApp();
+  } catch (error) {
+    apiImportResults = [];
+    apiImportMessage = error.message || "Could not fetch API events.";
+    renderApp();
+  }
+}
+
+async function importApiEvent(apiEventId) {
+  if (!isAdmin()) return;
+
+  const event = apiImportResults.find(item => String(item.apiEventId) === String(apiEventId));
+  if (!event) return alert("Could not find fetched event to import.");
+
+  const id = apiEventDocId(event);
+  const existing = state.events[id] || Object.values(state.events).find(saved => saved.externalIds?.espnEventId === event.apiEventId);
+  if (existing) return alert("This event already appears to be imported.");
+
+  const savedEvent = {
+    ...event,
+    id,
+    shortCode: nextAvailableDisplayCode(event.league, event.startTime),
+    createdAt: serverTimestamp(),
+    updatedAt: serverTimestamp()
+  };
+
+  delete savedEvent.apiSource;
+  delete savedEvent.apiEventId;
+
+  await setDoc(doc(db, "events", id), savedEvent, { merge: true });
+  apiImportMessage = `Imported ${event.title}.`;
+  renderApp();
+}
+
+async function importAllApiEvents() {
+  if (!isAdmin() || !apiImportResults.length) return;
+
+  const batch = writeBatch(db);
+  let added = 0;
+  const usedCodes = new Set(Object.values(state.events || {}).map(event => event.shortCode).filter(Boolean));
+
+  for (const event of apiImportResults) {
+    const id = apiEventDocId(event);
+    const existing = state.events[id] || Object.values(state.events).find(saved => saved.externalIds?.espnEventId === event.apiEventId);
+    if (existing) continue;
+
+    const savedEvent = {
+      ...event,
+      id,
+      shortCode: nextAvailableDisplayCode(event.league, event.startTime, usedCodes),
+      createdAt: serverTimestamp(),
+      updatedAt: serverTimestamp()
+    };
+
+    delete savedEvent.apiSource;
+    delete savedEvent.apiEventId;
+
+    batch.set(doc(db, "events", id), savedEvent, { merge: true });
+    added += 1;
+  }
+
+  if (!added) {
+    apiImportMessage = "No new events to import.";
+    renderApp();
+    return;
+  }
+
+  await batch.commit();
+  apiImportMessage = `Imported ${added} new event${added === 1 ? "" : "s"}.`;
+  renderApp();
 }
 
 async function seedDemoEvents() {

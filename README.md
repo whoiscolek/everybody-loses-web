@@ -63,3 +63,22 @@ Important: this is prototype security. Since this is frontend-only, the admin un
 3. Enter the admin unlock code/password.
 4. Click Seed demo events.
 5. Create/approve other users from Admin.
+
+
+## v8 API importer
+
+This version adds a Vercel serverless endpoint:
+
+```txt
+/api/espn-events?league=NBA&date=20260608
+```
+
+Admin can fetch ESPN scoreboard events from the Admin tab, review the events, and import selected games into Firestore. Manual events remain the fallback and should stay available.
+
+Supported first-pass leagues:
+
+```txt
+NBA, NFL, MLB, NHL, NCAA Basketball, NCAA Football, Premier League, MLS, Champions League
+```
+
+Local Vite dev may not run Vercel serverless functions by default. The endpoint is intended for the deployed Vercel app or local `vercel dev` testing.
