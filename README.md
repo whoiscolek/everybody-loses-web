@@ -127,3 +127,10 @@ MotoGP currently returns a graceful zero-event message because ESPN's scoreboard
 This fixes an importer bug where an ESPN event ID could be treated as already imported globally even when the existing event was from a different league. API imports now only count as existing when sport + league + source identity match.
 
 This matters for racing because ESPN event IDs can be ambiguous across racing endpoints.
+
+
+## v8.7 verified F1 results
+
+F1 now prefers Jolpica/Ergast-compatible data for race schedule and final results. ESPN remains a fallback for F1 schedule discovery only.
+
+This prevents ESPN's racing ordering from being displayed as a verified final leaderboard when it is actually not reliable for finishing order.

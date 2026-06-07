@@ -8,7 +8,7 @@ const LEAGUE_MAP = {
   "Premier League": { sport: "soccer", league: "Premier League", espnPath: "soccer/eng.1", appSport: "soccer", eventType: "TEAM_HEAD_TO_HEAD" },
   MLS: { sport: "soccer", league: "MLS", espnPath: "soccer/usa.1", appSport: "soccer", eventType: "TEAM_HEAD_TO_HEAD" },
   "Champions League": { sport: "soccer", league: "Champions League", espnPath: "soccer/uefa.champions", appSport: "soccer", eventType: "TEAM_HEAD_TO_HEAD" },
-  F1: { sport: "racing", league: "F1", espnPath: "racing/f1", appSport: "racing", eventType: "RANKED_FINISH", leagueKey: "f1" },
+  F1: { sport: "racing", league: "F1", espnPath: "racing/f1", appSport: "racing", eventType: "RANKED_FINISH", leagueKey: "f1", useJolpicaF1: true },
   NASCAR: { sport: "racing", league: "NASCAR", espnPath: "racing/nascar-premier", appSport: "racing", eventType: "RANKED_FINISH", leagueKey: "nascar-premier", useOfficialLive: true },
   IndyCar: { sport: "racing", league: "IndyCar", espnPath: "racing/irl", appSport: "racing", eventType: "RANKED_FINISH", leagueKey: "irl" },
   MotoGP: { sport: "racing", league: "MotoGP", espnPath: "", appSport: "racing", eventType: "RANKED_FINISH", leagueKey: "motogp", useMotoGpPulseLive: true }
@@ -437,6 +437,116 @@ function labelStatus(status) {
   return "Pregame";
 }
 
+
+function ymdToIsoDate(yyyymmdd) {
+  const clean = String(yyyymmdd || "").replace(/[^0-9]/g, "").slice(0, 8);
+  if (clean.length !== 8) return ymd();
+  return `${clean.slice(0, 4)}-${clean.slice(4, 6)}-${clean.slice(6, 8)}`;
+}
+
+function combineF1DateTime(date, time) {
+  if (date && time) return `${date}T${String(time).replace(/^T/, "")}`;
+  if (date) return `${date}T12:00:00Z`;
+  return new Date().toISOString();
+}
+
+function f1DriverName(result) {
+  const driver = result?.Driver || {};
+  return [driver.givenName, driver.familyName].filter(Boolean).join(" ")
+    || driver.code
+    || driver.driverId
+    || result?.driver
+    || "Driver";
+}
+
+function f1ResultDetail(result) {
+  const constructorName = result?.Constructor?.name || "";
+  const status = result?.status || "";
+  const time = result?.Time?.time || "";
+  const grid = result?.grid && String(result.grid) !== "0" ? `Grid ${result.grid}` : "";
+  return [constructorName, time, status, grid].filter(Boolean).join(" · ");
+}
+
+async function fetchJolpicaF1ForDate(date) {
+  const isoDate = ymdToIsoDate(date);
+  const scheduleUrl = `https://api.jolpi.ca/ergast/f1/current.json`;
+  const scheduleData = await fetchJsonUrl(scheduleUrl, "F1 schedule");
+  const races = scheduleData?.MRData?.RaceTable?.Races || [];
+
+  const matching = races.find(race => race.date === isoDate);
+  if (!matching) {
+    return null;
+  }
+
+  const round = matching.round;
+  const resultsUrl = `https://api.jolpi.ca/ergast/f1/current/${round}/results.json`;
+  const resultsData = await fetchJsonUrl(resultsUrl, "F1 results");
+  const resultRace = resultsData?.MRData?.RaceTable?.Races?.[0];
+  const results = resultRace?.Results || [];
+
+  const startTime = combineF1DateTime(matching.date, matching.time);
+  const baseEvent = {
+    apiSource: "jolpica-f1",
+    apiEventId: `f1-${matching.season || "current"}-${round}`,
+    sport: "racing",
+    league: "F1",
+    type: "RANKED_FINISH",
+    title: matching.raceName || "F1 Grand Prix",
+    startTime,
+    status: results.length ? "final" : "pregame",
+    participants: [],
+    leaderboard: [],
+    leaderboardSource: "Jolpica Ergast F1 results",
+    leaderboardVerified: !!results.length,
+    liveStats: [
+      { label: "Source", value: results.length ? "Jolpica F1 results" : "Jolpica F1 schedule" },
+      { label: "Round", value: String(round || "TBD") },
+      { label: "Circuit", value: matching.Circuit?.circuitName || "TBD" }
+    ],
+    resultOrder: [],
+    score: null,
+    odds: "API schedule import",
+    externalIds: {
+      source: "jolpica-f1",
+      f1Season: String(matching.season || "current"),
+      f1Round: String(round || ""),
+      f1RaceName: matching.raceName || ""
+    },
+    intel: results.length
+      ? "F1 final leaderboard imported from Jolpica/Ergast results, not ESPN ordering."
+      : "F1 event imported from Jolpica/Ergast schedule. Final results will appear after the race results endpoint updates."
+  };
+
+  if (results.length) {
+    const rows = results.map((result, index) => ({
+      position: Number(result.position) || index + 1,
+      name: f1DriverName(result),
+      detail: f1ResultDetail(result),
+      constructorName: result?.Constructor?.name || "",
+      points: result?.points || ""
+    }));
+
+    baseEvent.participants = rows.map(row => row.name);
+    baseEvent.leaderboard = rows;
+    baseEvent.resultOrder = rows.map(row => row.name);
+    baseEvent.liveStats = [
+      { label: "Source", value: "Jolpica F1 results" },
+      { label: "Winner", value: rows[0]?.name || "TBD" },
+      { label: "Classified", value: String(rows.length) },
+      { label: "Circuit", value: matching.Circuit?.circuitName || "TBD" }
+    ];
+  } else {
+    baseEvent.participants = DEFAULT_RACING_PARTICIPANTS.F1;
+    baseEvent.leaderboard = DEFAULT_RACING_PARTICIPANTS.F1.map((name, index) => ({
+      position: index + 1,
+      name,
+      detail: "Entry"
+    }));
+  }
+
+  return baseEvent;
+}
+
 async function fetchLeagueData(config, date, params) {
   const urls = [];
 
@@ -496,11 +606,30 @@ export default async function handler(req, res) {
       });
     }
 
-    const params = new URLSearchParams({ dates: date, limit: "200" });
-    if (config.groups) params.set("groups", String(config.groups));
+    let events = [];
+    let url = "";
 
-    const { events: rawEvents, url } = await fetchLeagueData(config, date, params);
-    let events = Array.isArray(rawEvents) ? rawEvents.map(event => mapEvent(event, config)) : [];
+    if (config.useJolpicaF1) {
+      try {
+        const f1Event = await fetchJolpicaF1ForDate(date);
+        if (f1Event) {
+          events = [f1Event];
+          url = "https://api.jolpi.ca/ergast/f1/current.json";
+        }
+      } catch (error) {
+        // Fall back to ESPN schedule if the verified F1 source is unavailable.
+      }
+    }
+
+    if (!events.length) {
+      const params = new URLSearchParams({ dates: date, limit: "200" });
+      if (config.groups) params.set("groups", String(config.groups));
+
+      const fetched = await fetchLeagueData(config, date, params);
+      const rawEvents = fetched.events;
+      url = fetched.url;
+      events = Array.isArray(rawEvents) ? rawEvents.map(event => mapEvent(event, config)) : [];
+    }
 
     if (config.useOfficialLive) {
       events = applyOfficialRacingFallback(events, config);
@@ -530,7 +659,7 @@ export default async function handler(req, res) {
       date,
       count: events.length,
       url,
-      note: config.sport === "racing" ? "Racing imports use ESPN schedule data when available. NASCAR positions are shown only from NASCAR.com's official live feed when available; otherwise positions are marked pending." : "",
+      note: config.sport === "racing" ? "Racing imports use verified league-specific result sources when available. F1 results use Jolpica/Ergast when available; NASCAR positions use NASCAR.com official live feed when available; ESPN is mainly schedule fallback." : "",
       events
     });
   } catch (error) {
