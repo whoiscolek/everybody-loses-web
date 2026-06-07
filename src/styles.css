@@ -1755,3 +1755,16 @@ button.danger {
     text-align: left;
   }
 }
+
+
+/* v8.5 source-verified event center polish */
+.race-leaderboard-row span:last-child {
+  text-align: right;
+  color: #667085;
+}
+.event-center .mini-stat-grid {
+  margin-top: 12px;
+}
+.event-center-label {
+  letter-spacing: -.035em;
+}

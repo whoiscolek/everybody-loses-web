@@ -112,3 +112,11 @@ Local Vite dev may not run Vercel serverless functions by default. The endpoint 
 NASCAR now uses ESPN's NASCAR Cup Series slug `nascar-premier` instead of the broken `nascar` slug.
 
 MotoGP currently returns a graceful zero-event message because ESPN's scoreboard endpoints used by this app do not expose MotoGP cleanly. Use a manual ranked-finish event for MotoGP until a dedicated MotoGP source is added.
+
+
+## v8.5 official racing live notes
+
+- NASCAR schedule import still starts from ESPN, but live/final running order is only shown when the NASCAR.com live feed verifies positions. This avoids showing ESPN standings/start-grid data as if it were a live leaderboard.
+- IndyCar has been added through ESPN's `racing/irl` league path.
+- MotoGP now tries MotoGP PulseLive timing (`/timing-gateway/livetiming-lite`) instead of ESPN. This is live/session-focused, not a full future schedule importer yet.
+- API sync now refreshes existing imported events instead of only adding new events, so scores/leaderboards can update when the source updates.

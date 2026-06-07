@@ -9,13 +9,15 @@ const LEAGUE_MAP = {
   MLS: { sport: "soccer", league: "MLS", espnPath: "soccer/usa.1", appSport: "soccer", eventType: "TEAM_HEAD_TO_HEAD" },
   "Champions League": { sport: "soccer", league: "Champions League", espnPath: "soccer/uefa.champions", appSport: "soccer", eventType: "TEAM_HEAD_TO_HEAD" },
   F1: { sport: "racing", league: "F1", espnPath: "racing/f1", appSport: "racing", eventType: "RANKED_FINISH", leagueKey: "f1" },
-  NASCAR: { sport: "racing", league: "NASCAR", espnPath: "racing/nascar-premier", appSport: "racing", eventType: "RANKED_FINISH", leagueKey: "nascar-premier" },
-  MotoGP: { sport: "racing", league: "MotoGP", espnPath: "", appSport: "racing", eventType: "RANKED_FINISH", leagueKey: "motogp", unavailableOnEspn: true }
+  NASCAR: { sport: "racing", league: "NASCAR", espnPath: "racing/nascar-premier", appSport: "racing", eventType: "RANKED_FINISH", leagueKey: "nascar-premier", useOfficialLive: true },
+  IndyCar: { sport: "racing", league: "IndyCar", espnPath: "racing/irl", appSport: "racing", eventType: "RANKED_FINISH", leagueKey: "irl" },
+  MotoGP: { sport: "racing", league: "MotoGP", espnPath: "", appSport: "racing", eventType: "RANKED_FINISH", leagueKey: "motogp", useMotoGpPulseLive: true }
 };
 
 const DEFAULT_RACING_PARTICIPANTS = {
   F1: ["Verstappen", "Norris", "Piastri", "Leclerc", "Hamilton", "Russell", "Antonelli", "Sainz", "Alonso", "Tsunoda"],
   NASCAR: ["Kyle Larson", "Denny Hamlin", "William Byron", "Chase Elliott", "Ryan Blaney", "Christopher Bell", "Tyler Reddick", "Joey Logano", "Ross Chastain", "Bubba Wallace", "Brad Keselowski", "Ty Gibbs"],
+  IndyCar: ["Alex Palou", "Pato O'Ward", "Scott Dixon", "Josef Newgarden", "Scott McLaughlin", "Will Power", "Colton Herta", "Marcus Ericsson", "Kyle Kirkwood", "Rinus VeeKay"],
   MotoGP: ["Marc Marquez", "Alex Marquez", "Francesco Bagnaia", "Pedro Acosta", "Fabio Quartararo", "Marco Bezzecchi", "Franco Morbidelli", "Brad Binder", "Maverick Vinales", "Enea Bastianini"]
 };
 
@@ -125,6 +127,13 @@ function mapRacingEvent(event, config) {
     status,
     participants,
     leaderboard,
+    leaderboardSource: "ESPN event data",
+    leaderboardVerified: false,
+    liveStats: [
+      { label: "Source", value: "ESPN schedule" },
+      { label: "Status", value: labelStatus(status) },
+      { label: "Entries", value: String(participants.length) }
+    ],
     resultOrder,
     score: null,
     odds: "API schedule import",
@@ -153,6 +162,14 @@ function mapTeamEvent(event, config) {
     away: Number(away.score ?? 0),
     home: Number(home.score ?? 0)
   };
+  const clock = event?.status?.displayClock || competition?.status?.displayClock || competition?.situation?.clock || "";
+  const period = event?.status?.period || competition?.status?.period || "";
+  const venue = competition?.venue?.fullName || event?.venue?.fullName || "";
+  const liveStats = [
+    { label: "Status", value: status === "live" && period ? `Period ${period}${clock ? ` · ${clock}` : ""}` : labelStatus(status) },
+    { label: "Venue", value: venue || "Unavailable" },
+    { label: "Source", value: "ESPN scoreboard" }
+  ];
 
   return {
     apiSource: "espn",
@@ -172,6 +189,7 @@ function mapTeamEvent(event, config) {
     startTime,
     status,
     score,
+    liveStats,
     odds: typeof odds === "number" ? `O/U ${odds}` : String(odds),
     externalIds: {
       source: "espn",
@@ -221,6 +239,204 @@ async function fetchEspnJson(url) {
   return response.json();
 }
 
+
+async function fetchJsonUrl(url, label = "request") {
+  const response = await fetch(url, {
+    headers: {
+      "accept": "application/json,text/plain,*/*",
+      "user-agent": "Everyone-Loses/1.0"
+    }
+  });
+
+  if (!response.ok) {
+    const error = new Error(`${label} failed with ${response.status}`);
+    error.status = response.status;
+    error.url = url;
+    throw error;
+  }
+
+  return response.json();
+}
+
+function parseNascarDriverName(vehicle) {
+  const driver = vehicle?.driver || vehicle?.Driver || {};
+  return driver.full_name
+    || driver.fullName
+    || driver.display_name
+    || driver.name
+    || [driver.first_name || driver.firstName, driver.last_name || driver.lastName].filter(Boolean).join(" ")
+    || vehicle?.driver_name
+    || vehicle?.driverName
+    || vehicle?.full_name
+    || vehicle?.name
+    || "";
+}
+
+function parseNascarPosition(vehicle, fallback) {
+  const candidates = [
+    vehicle?.running_position,
+    vehicle?.runningPosition,
+    vehicle?.position,
+    vehicle?.Pos,
+    vehicle?.rank,
+    vehicle?.order
+  ];
+  for (const value of candidates) {
+    const n = Number(value);
+    if (Number.isFinite(n) && n > 0) return n;
+  }
+  return fallback;
+}
+
+function nascarDetail(vehicle) {
+  const bits = [];
+  const lap = vehicle?.laps_completed ?? vehicle?.lapsCompleted ?? vehicle?.lap ?? vehicle?.current_lap;
+  const delta = vehicle?.delta ?? vehicle?.delta_leader ?? vehicle?.deltaLeader ?? vehicle?.behind_leader;
+  const status = vehicle?.status ?? vehicle?.vehicle_status ?? vehicle?.running_status;
+  const car = vehicle?.vehicle_number ?? vehicle?.car_number ?? vehicle?.number;
+  if (car) bits.push(`#${car}`);
+  if (lap !== undefined && lap !== null && String(lap) !== "") bits.push(`Lap ${lap}`);
+  if (delta !== undefined && delta !== null && String(delta) !== "") bits.push(String(delta));
+  if (status && !/active/i.test(String(status))) bits.push(String(status));
+  return bits.join(" · ");
+}
+
+async function fetchNascarOfficialLeaderboard() {
+  const url = "https://cf.nascar.com/live/feeds/live-feed.json";
+  const data = await fetchJsonUrl(url, "NASCAR live feed");
+  const vehicles = data?.vehicles || data?.Vehicles || data?.live_feed?.vehicles || [];
+  if (!Array.isArray(vehicles) || !vehicles.length) return null;
+
+  const rows = vehicles
+    .map((vehicle, index) => {
+      const name = parseNascarDriverName(vehicle);
+      if (!name) return null;
+      return {
+        position: parseNascarPosition(vehicle, index + 1),
+        name,
+        detail: nascarDetail(vehicle),
+        carNumber: vehicle?.vehicle_number || vehicle?.car_number || vehicle?.number || ""
+      };
+    })
+    .filter(Boolean)
+    .sort((a, b) => Number(a.position || 999) - Number(b.position || 999));
+
+  if (!rows.length) return null;
+  return {
+    source: "NASCAR official live feed",
+    sourceUrl: url,
+    rows,
+    stats: [
+      { label: "Source", value: "NASCAR.com live feed" },
+      { label: "Cars", value: String(rows.length) },
+      { label: "Leader", value: rows[0]?.name || "Pending" }
+    ]
+  };
+}
+
+function motoGpDateFromHead(head) {
+  const raw = String(head?.datet || head?.datst || "");
+  if (/^\d{8}$/.test(raw)) return `${raw.slice(0,4)}-${raw.slice(4,6)}-${raw.slice(6,8)}T12:00:00Z`;
+  return new Date().toISOString();
+}
+
+function motoGpStatus(head) {
+  const status = String(head?.session_status_name || head?.session_status_id || "").toUpperCase();
+  if (["F", "FINISHED", "FINAL"].includes(status)) return "final";
+  if (["L", "LIVE", "A", "ACTIVE", "R", "RUNNING"].includes(status)) return "live";
+  return "pregame";
+}
+
+async function fetchMotoGpPulseLiveEvents(date) {
+  const url = "https://api.motogp.pulselive.com/motogp/v1/timing-gateway/livetiming-lite";
+  const data = await fetchJsonUrl(url, "MotoGP PulseLive timing");
+  const head = data?.head || {};
+  const ridersObj = data?.rider || data?.riders || {};
+  const rows = Object.values(ridersObj)
+    .map((rider, index) => {
+      const surname = rider?.rider_surname ? String(rider.rider_surname).toLowerCase().replace(/\b\w/g, c => c.toUpperCase()) : "";
+      const first = rider?.rider_name || "";
+      const short = rider?.rider_shortname || "";
+      const name = [first, surname].filter(Boolean).join(" ") || short;
+      if (!name) return null;
+      const position = Number(rider?.pos || rider?.order || index + 1);
+      const detailBits = [];
+      if (rider?.gap_first) detailBits.push(`Gap ${rider.gap_first}`);
+      if (rider?.last_lap_time) detailBits.push(`Last ${rider.last_lap_time}`);
+      if (rider?.team_name) detailBits.push(rider.team_name);
+      return { position: Number.isFinite(position) && position > 0 ? position : index + 1, name, detail: detailBits.join(" · ") };
+    })
+    .filter(Boolean)
+    .sort((a, b) => Number(a.position || 999) - Number(b.position || 999));
+
+  if (!rows.length) {
+    return [];
+  }
+
+  const startTime = motoGpDateFromHead(head);
+  const eventDate = startTime.slice(0, 10).replace(/-/g, "");
+  if (date && eventDate !== date) {
+    return [];
+  }
+
+  const status = motoGpStatus(head);
+  return [{
+    apiSource: "motogp-pulselive",
+    apiEventId: `motogp-${head?.event_id || eventDate}-${head?.session_id || "live"}`,
+    sport: "racing",
+    league: "MotoGP",
+    type: "RANKED_FINISH",
+    title: head?.event_tv_name || head?.session_name || "MotoGP live timing",
+    startTime,
+    status,
+    participants: rows.map(row => row.name),
+    leaderboard: rows,
+    leaderboardSource: "MotoGP PulseLive timing",
+    leaderboardVerified: true,
+    liveStats: [
+      { label: "Source", value: "MotoGP PulseLive" },
+      { label: "Session", value: head?.session_name || head?.session_shortname || "Live timing" },
+      { label: "Leader", value: rows[0]?.name || "Pending" }
+    ],
+    resultOrder: status === "final" ? rows.map(row => row.name) : [],
+    score: null,
+    odds: "API timing import",
+    externalIds: {
+      source: "motogp-pulselive",
+      eventId: String(head?.event_id || ""),
+      sessionId: String(head?.session_id || ""),
+      sourceUrl: url
+    },
+    intel: "MotoGP event imported from MotoGP PulseLive timing data. Verify the session before users bet."
+  }];
+}
+
+function applyOfficialRacingFallback(events, config) {
+  if (!Array.isArray(events)) return [];
+  if (config.league !== "NASCAR") return events;
+
+  // ESPN's NASCAR event object is useful for schedule/import, but its competitor ordering can be standings/start/grid-like.
+  // Do not show those rows as a live leaderboard unless NASCAR.com's official live feed replaces them.
+  return events.map(event => ({
+    ...event,
+    leaderboard: [],
+    leaderboardSource: "NASCAR official live feed pending",
+    leaderboardVerified: false,
+    liveStats: [
+      { label: "Source", value: "NASCAR.com feed pending" },
+      { label: "Status", value: labelStatus(event.status) },
+      { label: "Leaderboard", value: "Not verified yet" }
+    ],
+    intel: "NASCAR schedule imported from ESPN. Live running order is only shown after the NASCAR.com live feed verifies positions."
+  }));
+}
+
+function labelStatus(status) {
+  if (status === "final") return "Final";
+  if (status === "live") return "Live";
+  return "Pregame";
+}
+
 async function fetchLeagueData(config, date, params) {
   const urls = [];
 
@@ -265,15 +481,18 @@ export default async function handler(req, res) {
       return res.status(400).json({ error: "Unsupported league", supportedLeagues: Object.keys(LEAGUE_MAP) });
     }
 
-    if (config.unavailableOnEspn) {
+    if (config.useMotoGpPulseLive) {
+      const events = await fetchMotoGpPulseLiveEvents(date);
       return res.status(200).json({
-        source: "espn",
+        source: "motogp-pulselive",
         league: config.league,
         date,
-        count: 0,
-        url: "",
-        note: `${config.league} is not available through the ESPN scoreboard endpoints currently used by this app. Use a manual racing event for now, or add a dedicated MotoGP source later.`,
-        events: []
+        count: events.length,
+        url: "https://api.motogp.pulselive.com/motogp/v1/timing-gateway/livetiming-lite",
+        note: events.length
+          ? "MotoGP imported from MotoGP PulseLive timing data. Verify the session before betting."
+          : "No MotoGP live timing session matched this date. The MotoGP PulseLive fallback is live/session-focused, not a full season scheduler yet.",
+        events
       });
     }
 
@@ -281,7 +500,29 @@ export default async function handler(req, res) {
     if (config.groups) params.set("groups", String(config.groups));
 
     const { events: rawEvents, url } = await fetchLeagueData(config, date, params);
-    const events = Array.isArray(rawEvents) ? rawEvents.map(event => mapEvent(event, config)) : [];
+    let events = Array.isArray(rawEvents) ? rawEvents.map(event => mapEvent(event, config)) : [];
+
+    if (config.useOfficialLive) {
+      events = applyOfficialRacingFallback(events, config);
+      try {
+        const official = await fetchNascarOfficialLeaderboard();
+        if (official?.rows?.length) {
+          events = events.map(event => ({
+            ...event,
+            leaderboard: official.rows,
+            participants: official.rows.map(row => row.name),
+            resultOrder: event.status === "final" ? official.rows.map(row => row.name) : [],
+            leaderboardSource: official.source,
+            leaderboardVerified: true,
+            liveStats: official.stats,
+            externalIds: { ...event.externalIds, nascarLiveFeed: official.sourceUrl },
+            intel: "NASCAR event imported from ESPN schedule data with live running order from NASCAR.com's official live feed."
+          }));
+        }
+      } catch (error) {
+        // Keep schedule imports, but do not present unverified ESPN driver ordering as a live leaderboard.
+      }
+    }
 
     return res.status(200).json({
       source: "espn",
@@ -289,7 +530,7 @@ export default async function handler(req, res) {
       date,
       count: events.length,
       url,
-      note: config.sport === "racing" ? "Racing imports use ESPN schedule data when available; verify participants before betting. NASCAR uses the ESPN NASCAR Cup Series slug nascar-premier." : "",
+      note: config.sport === "racing" ? "Racing imports use ESPN schedule data when available. NASCAR positions are shown only from NASCAR.com's official live feed when available; otherwise positions are marked pending." : "",
       events
     });
   } catch (error) {

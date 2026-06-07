@@ -41,7 +41,7 @@ const SPORT_GROUPS = {
   baseball: ["MLB"],
   hockey: ["NHL"],
   soccer: ["Champions League", "Premier League", "MLS", "World Cup"],
-  racing: ["F1", "NASCAR", "MotoGP"],
+  racing: ["F1", "NASCAR", "IndyCar", "MotoGP"],
   olympics: ["Summer Olympics", "Winter Olympics"],
   custom: ["Custom"]
 };
@@ -59,6 +59,7 @@ const SPORT_PREFIX = {
   "World Cup": "WC",
   F1: "F1",
   NASCAR: "NAS",
+  IndyCar: "IND",
   MotoGP: "MGP",
   "Summer Olympics": "OLY",
   "Winter Olympics": "WOLY",
@@ -89,6 +90,7 @@ const LEAGUE_ICONS = {
   "World Cup": "🌍",
   F1: "🏎️",
   NASCAR: "🚗",
+  IndyCar: "🏁",
   MotoGP: "🏍️",
   "Summer Olympics": "☀️",
   "Winter Olympics": "❄️",
@@ -108,6 +110,7 @@ const LEAGUE_LOGO_MARKS = {
   "World Cup": { text: "WC" },
   F1: { url: "/logos/f1.png", text: "F1" },
   NASCAR: { url: "/logos/nascar.png", text: "NASCAR" },
+  IndyCar: { url: "/logos/indycar.png", text: "INDYCAR" },
   MotoGP: { url: "/logos/motogp.png", text: "MotoGP" },
   "Summer Olympics": { url: "/logos/olympics.png", text: "OLY" },
   "Winter Olympics": { url: "/logos/olympics.png", text: "OLY" },
@@ -119,7 +122,7 @@ const EVENT_TYPES = {
   RANKED: "RANKED_FINISH"
 };
 
-const API_IMPORT_LEAGUES = ["NBA", "NFL", "MLB", "NHL", "NCAA Basketball", "NCAA Football", "Premier League", "MLS", "Champions League", "F1", "NASCAR", "MotoGP"];
+const API_IMPORT_LEAGUES = ["NBA", "NFL", "MLB", "NHL", "NCAA Basketball", "NCAA Football", "Premier League", "MLS", "Champions League", "F1", "NASCAR", "IndyCar", "MotoGP"];
 
 const AVATAR_CHOICES = ["😀", "😎", "🔥", "🧠", "🎯", "🏁", "⚡", "👑", "🐐", "💸", "🎲", "🦈"];
 
@@ -717,6 +720,19 @@ function normalizedRacingRows(event) {
     .slice(0, 18);
 }
 
+
+function renderLiveStats(stats = [], fallback = []) {
+  const rows = Array.isArray(stats) && stats.length ? stats : fallback;
+  if (!rows.length) return "";
+  return `
+    <div class="mini-stat-grid">
+      ${rows.slice(0, 6).map(stat => `
+        <span><strong>${escapeHtml(stat.label || "Stat")}</strong>${escapeHtml(String(stat.value ?? "Unavailable"))}</span>
+      `).join("")}
+    </div>
+  `;
+}
+
 function renderScoreLine(event) {
   if (event.type === EVENT_TYPES.TEAM) {
     const hasScore = !!event.score;
@@ -744,18 +760,23 @@ function renderScoreLine(event) {
             <strong>${escapeHtml(String(homeScore))}</strong>
           </div>
         </div>
-        <div class="mini-stat-grid">
-          <span><strong>Status</strong>${escapeHtml(label(event.status))}</span>
-          <span><strong>Odds</strong>${escapeHtml(event.odds || "Unavailable")}</span>
-          <span><strong>${event.status === "final" ? "Winner" : "Stats"}</strong>${escapeHtml(winner || "Live stats coming soon")}</span>
-        </div>
+        ${renderLiveStats(event.liveStats, [
+          { label: "Status", value: label(event.status) },
+          { label: "Odds", value: event.odds || "Unavailable" },
+          { label: event.status === "final" ? "Winner" : "Live", value: winner || "Scoreboard active" }
+        ])}
       </div>
     `;
   }
 
   const rows = normalizedRacingRows(event);
   const heading = event.status === "final" ? "Final leaderboard" : event.status === "live" ? "Live leaderboard" : "Entry list";
-  const sub = event.status === "pregame" ? "Positions will update when race data is available." : "Positions from imported event data.";
+  const sourceLabel = event.leaderboardSource || "Imported event data";
+  const sub = event.leaderboardVerified
+    ? `Verified positions from ${sourceLabel}.`
+    : event.status === "pregame"
+      ? "Entry list now; live positions appear when a verified feed is available."
+      : "Leaderboard pending verification so we do not show misleading standings as live positions.";
 
   return `
     <div class="score-card event-center racing-center">
@@ -775,6 +796,11 @@ function renderScoreLine(event) {
           </div>
         `).join("")}
       </div>
+      ${renderLiveStats(event.liveStats, [
+        { label: "Source", value: sourceLabel },
+        { label: "Status", value: label(event.status) },
+        { label: "Entries", value: String(rows.length) }
+      ])}
       <div class="score-sub odds-line">Odds: ${escapeHtml(event.odds || "Unavailable")}</div>
     </div>
   `;
@@ -1229,13 +1255,13 @@ function renderAdmin() {
 
       <div class="admin-card api-import-card">
         <h3>API schedule sync</h3>
-        <p class="muted small">Pull real ESPN schedule data into Firestore. Manual events stay available as the fallback. Racing is now included when ESPN exposes the event data.</p>
+        <p class="muted small">Pull real schedule/score data into Firestore. ESPN is the default free source; NASCAR live order uses NASCAR.com when available; MotoGP uses PulseLive timing when available. Manual events stay available as the fallback.</p>
         <div class="button-row">
           <button class="primary" data-action="sync-api-today" ${apiSyncRunning ? "disabled" : ""}>Sync today across leagues</button>
           <button class="ghost" data-action="sync-api-tomorrow" ${apiSyncRunning ? "disabled" : ""}>Sync tomorrow</button>
           <button class="ghost" data-action="delete-demo-events">Delete old demo events</button>
         </div>
-        <p class="footer-note small">This is the semi-automatic step: one click imports all supported leagues for that day. The next version can move this to a scheduled Vercel cron so it runs without you pressing anything.</p>
+        <p class="footer-note small">This is the semi-automatic step: one click imports or refreshes all supported leagues for that day. The next version can move this to a scheduled Vercel cron so it runs without you pressing anything.</p>
         <label>Manual league/date fetch</label>
         <select id="apiLeague">
           ${API_IMPORT_LEAGUES.map(league => `<option value="${escapeHtml(league)}">${escapeHtml(league)}</option>`).join("")}
@@ -1812,8 +1838,27 @@ function dateISOOffset(daysFromToday = 0) {
 
 async function saveApiEventToBatch(batch, event, usedCodes) {
   const id = apiEventDocId(event);
-  const existing = state.events[id] || Object.values(state.events).find(saved => saved.externalIds?.espnEventId === event.apiEventId);
-  if (existing) return false;
+  const existing = state.events[id] || Object.values(state.events).find(saved => saved.externalIds?.espnEventId === event.apiEventId || saved.externalIds?.eventId === event.externalIds?.eventId);
+
+  const liveFields = {
+    status: event.status,
+    score: event.score || null,
+    odds: event.odds || "Unavailable",
+    participants: event.participants || [],
+    leaderboard: event.leaderboard || [],
+    leaderboardSource: event.leaderboardSource || "Imported event data",
+    leaderboardVerified: !!event.leaderboardVerified,
+    liveStats: event.liveStats || [],
+    resultOrder: event.resultOrder || [],
+    intel: event.intel || "",
+    externalIds: event.externalIds || {},
+    updatedAt: serverTimestamp()
+  };
+
+  if (existing) {
+    batch.set(doc(db, "events", existing.id || id), liveFields, { merge: true });
+    return "updated";
+  }
 
   const savedEvent = {
     ...event,
@@ -1827,7 +1872,7 @@ async function saveApiEventToBatch(batch, event, usedCodes) {
   delete savedEvent.apiEventId;
 
   batch.set(doc(db, "events", id), savedEvent, { merge: true });
-  return true;
+  return "added";
 }
 
 async function importAllApiEvents() {
@@ -1835,21 +1880,23 @@ async function importAllApiEvents() {
 
   const batch = writeBatch(db);
   let added = 0;
+  let updated = 0;
   const usedCodes = new Set(Object.values(state.events || {}).map(event => event.shortCode).filter(Boolean));
 
   for (const event of apiImportResults) {
-    const didAdd = await saveApiEventToBatch(batch, event, usedCodes);
-    if (didAdd) added += 1;
+    const result = await saveApiEventToBatch(batch, event, usedCodes);
+    if (result === "added") added += 1;
+    if (result === "updated") updated += 1;
   }
 
-  if (!added) {
-    apiImportMessage = "No new events to import.";
+  if (!added && !updated) {
+    apiImportMessage = "No events to import or refresh.";
     renderApp();
     return;
   }
 
   await batch.commit();
-  apiImportMessage = `Imported ${added} new event${added === 1 ? "" : "s"}.`;
+  apiImportMessage = `Imported ${added} new event${added === 1 ? "" : "s"}; refreshed ${updated} existing event${updated === 1 ? "" : "s"}.`;
   renderApp();
 }
 
@@ -1875,6 +1922,7 @@ async function syncApiSchedule(daysFromToday = 0) {
     const usedCodes = new Set(Object.values(state.events || {}).map(event => event.shortCode).filter(Boolean));
     const counts = [];
     let added = 0;
+    let updated = 0;
     let fetched = 0;
 
     for (const league of API_IMPORT_LEAGUES) {
@@ -1883,11 +1931,12 @@ async function syncApiSchedule(daysFromToday = 0) {
         fetched += events.length;
         let leagueAdded = 0;
         for (const event of events) {
-          const didAdd = await saveApiEventToBatch(batch, event, usedCodes);
-          if (didAdd) {
+          const result = await saveApiEventToBatch(batch, event, usedCodes);
+          if (result === "added") {
             added += 1;
             leagueAdded += 1;
           }
+          if (result === "updated") updated += 1;
         }
         if (events.length || leagueAdded) counts.push(`${league}: ${leagueAdded}/${events.length}`);
       } catch (error) {
@@ -1896,9 +1945,9 @@ async function syncApiSchedule(daysFromToday = 0) {
       }
     }
 
-    if (added) await batch.commit();
+    if (added || updated) await batch.commit();
 
-    apiImportMessage = `Synced ${dateISO}. Fetched ${fetched}; imported ${added} new event${added === 1 ? "" : "s"}. ${counts.join(" · ")}`;
+    apiImportMessage = `Synced ${dateISO}. Fetched ${fetched}; imported ${added} new event${added === 1 ? "" : "s"}; refreshed ${updated} existing event${updated === 1 ? "" : "s"}. ${counts.join(" · ")}`;
   } catch (error) {
     apiImportMessage = error.message || "Schedule sync failed.";
   } finally {
