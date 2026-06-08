@@ -1973,3 +1973,176 @@ button.danger {
   max-width: 100%;
   max-height: 100%;
 }
+
+
+/* v10.0 mobile fit + wrapping patch */
+.event-code {
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
+.event-code > div + div {
+  margin-top: 4px;
+}
+
+.code-label {
+  font-weight: 800;
+  color: #4b5563;
+}
+
+.code-value {
+  color: inherit;
+}
+
+@media (max-width: 820px) {
+  .app-shell {
+    padding: 10px 10px 56px;
+  }
+
+  .topbar-main {
+    padding: 14px 14px 10px;
+    gap: 12px;
+  }
+
+  .navbar {
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+    scrollbar-width: thin;
+  }
+
+  .nav-btn {
+    flex: 0 0 auto;
+    min-width: max-content;
+  }
+
+  .event-top,
+  .event-main,
+  .profile-header,
+  .compact-history-head,
+  .pending-user,
+  .api-maintenance-row,
+  .auth-pill {
+    min-width: 0;
+  }
+
+  .event-main {
+    align-items: flex-start;
+  }
+
+  .event-title {
+    font-size: 1.1rem;
+  }
+
+  .money-row,
+  .money-row.single {
+    grid-template-columns: 1fr !important;
+    align-items: stretch;
+  }
+
+  .money-row > button,
+  .money-row.single > button,
+  .bet-actions > button,
+  .button-row > button,
+  .api-maintenance-row button {
+    width: 100%;
+  }
+
+  .bet-actions,
+  .button-row {
+    display: grid;
+    grid-template-columns: 1fr;
+  }
+
+  .event-code,
+  .event-desc,
+  .footer-note,
+  .record,
+  .auth-pill,
+  .compact-history-card,
+  .upload-text strong,
+  .upload-text small {
+    overflow-wrap: anywhere;
+    word-break: break-word;
+  }
+
+  .event-code {
+    display: grid;
+    gap: 4px;
+  }
+
+  .event-code .tiny-action {
+    margin-left: 0;
+    margin-top: 6px;
+    justify-self: start;
+  }
+
+  .topbar,
+  .page-hero,
+  .panel,
+  .event-card,
+  .admin-card,
+  .profile-block,
+  .compact-history-card {
+    border-radius: 16px;
+  }
+}
+
+@media (max-width: 560px) {
+  .brand-title {
+    font-size: 1.12rem;
+  }
+
+  .brand-subtitle {
+    font-size: 0.84rem;
+  }
+
+  .auth-pill {
+    width: 100%;
+    border-radius: 14px;
+  }
+
+  .profile-meta {
+    min-width: 0;
+  }
+
+  .profile-meta strong,
+  .profile-meta .tiny {
+    overflow-wrap: anywhere;
+    word-break: break-word;
+  }
+
+  .event-card,
+  .panel,
+  .admin-card,
+  .profile-block {
+    padding: 14px;
+  }
+
+  .event-top {
+    gap: 10px;
+  }
+
+  .sport-icon {
+    width: 42px;
+    height: 42px;
+    border-radius: 14px;
+  }
+
+  .sport-logo-img {
+    width: 32px;
+    height: 32px;
+  }
+
+  .team-score-row {
+    grid-template-columns: 1fr;
+    gap: 10px;
+  }
+
+  .score-divider {
+    display: none;
+  }
+
+  .compact-history-head {
+    flex-direction: column;
+  }
+}

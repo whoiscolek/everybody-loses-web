@@ -449,6 +449,36 @@ function renderLeagueLogo(sport, league) {
   return escapeHtml(getSportIcon(sport, league));
 }
 
+function formatExternalRefs(externalIds) {
+  if (!externalIds || typeof externalIds !== "object") return "";
+
+  const labelMap = {
+    source: "Source",
+    espnEventId: "ESPN",
+    apiEventId: "API",
+    oddsApiEventId: "Odds",
+    shortCode: "Code"
+  };
+
+  const preferredKeys = ["source", "espnEventId", "apiEventId", "oddsApiEventId", "shortCode"];
+  const orderedKeys = [
+    ...preferredKeys.filter(key => key in externalIds),
+    ...Object.keys(externalIds).filter(key => !preferredKeys.includes(key))
+  ];
+
+  return orderedKeys
+    .map(key => {
+      const value = externalIds[key];
+      if (value === undefined || value === null || value === "") return "";
+      const label = labelMap[key] || key.replace(/([A-Z])/g, " $1").replace(/^./, char => char.toUpperCase());
+      const shortValue = String(value).trim();
+      if (!shortValue) return "";
+      return `${label}: ${shortValue}`;
+    })
+    .filter(Boolean)
+    .join(" · ");
+}
+
 function getBettingDayISO(date = new Date()) {
   const parts = new Intl.DateTimeFormat("en-CA", {
     timeZone: DISPLAY_TIME_ZONE,
@@ -747,6 +777,7 @@ function renderToday() {
 
 function renderEventCard(event) {
   const locked = eventIsLocked(event);
+  const externalRefs = formatExternalRefs(event.externalIds);
 
   return `
     <article class="event-card">
@@ -776,9 +807,9 @@ function renderEventCard(event) {
       </div>
       ${renderEventQueues(event)}
       <div class="event-code">
-        Code: <strong>${escapeHtml(event.shortCode || nextEventDisplayCode(event.league, event.startTime))}</strong>
-        · Internal ID: ${escapeHtml(event.id)}
-        ${event.externalIds && Object.keys(event.externalIds).length ? `· External refs: ${escapeHtml(JSON.stringify(event.externalIds))}` : ""}
+        <div><span class="code-label">Code:</span> <strong>${escapeHtml(event.shortCode || nextEventDisplayCode(event.league, event.startTime))}</strong></div>
+        <div><span class="code-label">Internal ID:</span> <span class="code-value">${escapeHtml(event.id)}</span></div>
+        ${externalRefs ? `<div><span class="code-label">External refs:</span> <span class="code-value">${escapeHtml(externalRefs)}</span></div>` : ""}
         ${renderAdminOddsButton(event)}
       </div>
     </article>
