@@ -2363,3 +2363,35 @@ button.danger {
     font-size: .92rem;
   }
 }
+
+
+/* v10.14 keep selected tab visible in the horizontal mobile nav */
+.navbar {
+  scroll-padding-inline: 18px;
+  overscroll-behavior-inline: contain;
+}
+
+.nav-btn.active {
+  scroll-margin-inline: 18px;
+}
+
+/* v10.15: keep operational IDs off Today cards; show them in History only */
+.event-admin-actions {
+  margin-top: 12px;
+  display: flex;
+  justify-content: flex-end;
+}
+
+.history-event-code {
+  margin-top: 12px;
+}
+
+@media (max-width: 820px) {
+  .event-admin-actions {
+    justify-content: stretch;
+  }
+
+  .event-admin-actions .tiny-action {
+    width: 100%;
+  }
+}

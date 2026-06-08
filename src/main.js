@@ -714,7 +714,19 @@ function renderApp() {
     </main>
   `;
   wireUi();
+  keepActiveNavVisible();
   maybeStartAutoMaintenance();
+}
+
+function keepActiveNavVisible() {
+  requestAnimationFrame(() => {
+    const nav = document.querySelector(".navbar");
+    const active = nav?.querySelector(".nav-btn.active");
+    if (!nav || !active) return;
+
+    const targetLeft = active.offsetLeft - ((nav.clientWidth - active.clientWidth) / 2);
+    nav.scrollTo({ left: Math.max(0, targetLeft), behavior: "smooth" });
+  });
 }
 
 function renderFirebaseNotice() {
@@ -949,12 +961,7 @@ function renderEventCard(event) {
         ${event.type === EVENT_TYPES.TEAM ? renderTeamBetForm(event, locked) : event.type === EVENT_TYPES.FIGHT_CARD ? renderFightCardBetForm(event, locked) : renderRankedBetForm(event, locked)}
       </div>
       ${renderEventQueues(event)}
-      <div class="event-code">
-        <div><span class="code-label">Code:</span> <strong>${escapeHtml(event.shortCode || nextEventDisplayCode(event.league, event.startTime))}</strong></div>
-        <div><span class="code-label">Internal ID:</span> <span class="code-value">${escapeHtml(event.id)}</span></div>
-        ${externalRefs ? `<div><span class="code-label">External refs:</span> <span class="code-value">${escapeHtml(externalRefs)}</span></div>` : ""}
-        ${renderAdminOddsButton(event)}
-      </div>
+      ${renderAdminOddsButton(event) ? `<div class="event-admin-actions">${renderAdminOddsButton(event)}</div>` : ""}
     </article>
   `;
 }
@@ -1507,6 +1514,7 @@ function renderHistoryResultLine(event) {
 
 function renderHistoryEventCard(event) {
   const eventId = event.firestoreId || event.id;
+  const externalRefs = formatExternalRefs(event.externalIds);
   const matchup = event.type === EVENT_TYPES.TEAM
     ? `${event.away?.code || "Away"} vs ${event.home?.code || "Home"}`
     : `${(event.participants || []).length} entries`;
@@ -1523,8 +1531,12 @@ function renderHistoryEventCard(event) {
       </div>
       ${renderCompactLeaderboard(event)}
       <div class="compact-history-foot">
-        <span><strong>Game ID</strong> ${escapeHtml(event.shortCode || eventId)}</span>
         <span>${escapeHtml(historyBetSummary(event))}</span>
+      </div>
+      <div class="event-code history-event-code">
+        <div><span class="code-label">Code:</span> <strong>${escapeHtml(event.shortCode || nextEventDisplayCode(event.league, event.startTime))}</strong></div>
+        <div><span class="code-label">Internal ID:</span> <span class="code-value">${escapeHtml(eventId)}</span></div>
+        ${externalRefs ? `<div><span class="code-label">External refs:</span> <span class="code-value">${escapeHtml(externalRefs)}</span></div>` : ""}
       </div>
     </article>
   `;
