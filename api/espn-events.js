@@ -689,7 +689,8 @@ function addStatRow(rows, label, value, max = 12, meta = {}) {
   const cleanLabel = String(label || "").trim();
   const cleanValue = String(value ?? "").trim();
   if (!cleanLabel || !cleanValue || rows.length >= max) return false;
-  if (/^(source|venue|status|odds|weather)$/i.test(cleanLabel)) return false;
+  if (/^(source|venue|status|odds|weather|away scoring|home scoring)$/i.test(cleanLabel)) return false;
+  if (/\bby period\b|^\d+(?:-\d+)+$/i.test(cleanValue)) return false;
   if (/^(scoreboard active|detailed boxscore unavailable|unavailable)$/i.test(cleanValue)) return false;
   if (rows.some(row => row.label === cleanLabel && row.value === cleanValue)) return false;
   rows.push({ label: cleanLabel, value: cleanValue, ...meta });
@@ -776,20 +777,6 @@ function getTeamStatCandidates(summary, mappedEvent, rawEvent) {
     result.set(code, rows.sort((a, b) => b.score - a.score));
   }
 
-  const competition = rawEvent?.competitions?.[0] || {};
-  const away = getCompetitor(competition, "away") || competition.competitors?.[1] || {};
-  const home = getCompetitor(competition, "home") || competition.competitors?.[0] || {};
-  const fallbackPairs = [
-    [cleanCode(mappedEvent?.away?.code, ""), formatPeriodLine(mappedEvent?.away?.code, away)],
-    [cleanCode(mappedEvent?.home?.code, ""), formatPeriodLine(mappedEvent?.home?.code, home)]
-  ];
-
-  for (const [code, line] of fallbackPairs) {
-    if (!code || !line) continue;
-    const arr = result.get(code) || [];
-    arr.push({ label: `${code} scoring`, value: line.replace(/^.*?:\s*/, ""), teamCode: code, score: 75 });
-    result.set(code, arr);
-  }
 
   return { result, teamCodes: desiredCodes.length >= 2 ? desiredCodes : Array.from(result.keys()).slice(0, 2) };
 }
@@ -843,33 +830,33 @@ function pickUsefulTeamStats(summary, mappedEvent, rawEvent) {
   const rows = [];
   const { result: teamStats, teamCodes } = getTeamStatCandidates(summary, mappedEvent, rawEvent);
   const playerStats = getPlayerOrLeaderCandidates(summary, mappedEvent);
-  const maxRows = 9;
+  const maxRows = 4;
+  const maxPerTeam = 2;
+  const teamCounts = new Map(teamCodes.map(code => [code, 0]));
 
-  // Show meaningful team-level stats first, paired by side. This prevents ESPN's first
-  // returned player/team block from filling the whole card.
-  for (let round = 0; round < 3 && rows.length < 6; round += 1) {
+  function addBalanced(candidate) {
+    if (!candidate || rows.length >= maxRows) return false;
+    const code = candidate.teamCode || "";
+    if (code && (teamCounts.get(code) || 0) >= maxPerTeam) return false;
+    const added = addStatRow(rows, candidate.label, candidate.value, maxRows, { teamCode: code });
+    if (added && code) teamCounts.set(code, (teamCounts.get(code) || 0) + 1);
+    return added;
+  }
+
+  // Team-level rows come first. These are better than raw player dumps because they
+  // describe the whole game, not just whichever athletes ESPN returns first.
+  for (let round = 0; round < 4 && rows.length < maxRows; round += 1) {
     for (const code of teamCodes.slice(0, 2)) {
-      const candidate = (teamStats.get(code) || [])[round];
-      if (candidate) addStatRow(rows, candidate.label, candidate.value, maxRows, { teamCode: code });
+      addBalanced((teamStats.get(code) || [])[round]);
     }
   }
 
-  // If team-level data is thin, add the most useful player/leader rows, still balanced by side.
-  for (let round = 0; round < 3 && rows.length < maxRows; round += 1) {
+  // If ESPN does not expose enough team-level stats, fall back to the best player /
+  // leader rows, still capped per side so one team cannot fill the whole box.
+  for (let round = 0; round < 4 && rows.length < maxRows; round += 1) {
     for (const code of teamCodes.slice(0, 2)) {
-      const candidate = (playerStats.get(code) || [])[round];
-      if (candidate) addStatRow(rows, candidate.label, candidate.value, maxRows, { teamCode: code });
+      addBalanced((playerStats.get(code) || [])[round]);
     }
-  }
-
-  const leaders = summary?.leaders || [];
-  for (const leaderGroup of leaders) {
-    if (rows.length >= maxRows) break;
-    const label = leaderGroup?.name || leaderGroup?.displayName || "Leader";
-    const first = leaderGroup?.leaders?.[0];
-    const athlete = first?.athlete?.displayName || first?.displayName || "";
-    const value = first?.displayValue || first?.value || "";
-    addStatRow(rows, label, athlete ? `${athlete}${value ? ` · ${value}` : ""}` : value, maxRows);
   }
 
   return rows.slice(0, maxRows);
@@ -953,10 +940,9 @@ async function enrichTeamEvent(mappedEvent, rawEvent, config) {
 
   const liveStats = [
     { label: "Status", value: statusText },
-    { label: "Odds", value: mappedEvent.odds || "Unavailable" },
     { label: "Weather", value: weatherText || "Weather unavailable" },
     ...usefulStats
-  ].slice(0, 12);
+  ].slice(0, 6);
 
   if (!usefulStats.length && mappedEvent.status !== "pregame") {
     const scoreText = mappedEvent.score ? `${mappedEvent.away.code} ${mappedEvent.score.away} · ${mappedEvent.home.code} ${mappedEvent.score.home}` : "Score active";

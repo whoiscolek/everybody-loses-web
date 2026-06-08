@@ -964,6 +964,8 @@ function renderLiveStats(stats = [], fallback = [], event = null) {
       const value = String(stat.value ?? "").trim();
       if (!value) return false;
       if (/^(unavailable|weather unavailable|api schedule import|scoreboard active|detailed boxscore unavailable)$/i.test(value)) return false;
+      if (/^(away scoring|home scoring)$/i.test(String(stat.label || ""))) return false;
+      if (/\bby period\b|^\d+(?:-\d+)+$/i.test(value)) return false;
       return true;
     });
 
@@ -1006,7 +1008,6 @@ function renderScoreLine(event) {
         </div>
         ${renderLiveStats(event.liveStats, [
           { label: "Status", value: label(event.status) },
-          { label: "Odds", value: eventOddsText(event) },
           { label: "Weather", value: eventWeatherText(event) },
           { label: event.status === "final" ? "Winner" : "Live", value: winner || "Scoreboard active" }
         ], event)}
