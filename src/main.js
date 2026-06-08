@@ -1732,10 +1732,10 @@ function renderApiEventMaintenance() {
     const source = event.externalIds?.source || event.leaderboardSource || "unknown";
     return `
       <div class="record api-maintenance-row">
-        <div>
+        <div class="api-maintenance-main">
           <strong>${escapeHtml(event.title || eventId)}</strong><br />
-          <span class="muted small">${escapeHtml(event.league || "Unknown")} · ${escapeHtml(formatTime(event.startTime))} ET · ${escapeHtml(event.shortCode || eventId)}</span><br />
-          <span class="small">Source: ${escapeHtml(source)} · ${escapeHtml(protectedLabel)}</span>
+          <span class="muted small api-maintenance-meta">${escapeHtml(event.league || "Unknown")} · ${escapeHtml(formatTime(event.startTime))} ET · ${escapeHtml(event.shortCode || eventId)}</span><br />
+          <span class="small api-maintenance-meta">Source: ${escapeHtml(source)} · ${escapeHtml(protectedLabel)}</span>
         </div>
         <button class="danger" data-delete-api-event="${escapeHtml(eventId)}" ${bets || matches || ledger ? "disabled" : ""}>Delete</button>
       </div>

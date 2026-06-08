@@ -2269,3 +2269,42 @@ button.danger {
   height: 40px;
   object-fit: contain;
 }
+
+/* v10.11 mobile-safe API maintenance rows */
+.api-maintenance-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 12px;
+}
+
+.api-maintenance-main,
+.api-maintenance-meta {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  word-break: normal;
+}
+
+.api-maintenance-row button {
+  min-width: 96px;
+  max-width: 170px;
+  white-space: nowrap;
+}
+
+@media (max-width: 640px) {
+  .api-maintenance-row {
+    grid-template-columns: 1fr;
+    align-items: stretch;
+  }
+
+  .api-maintenance-row button {
+    width: 100%;
+    max-width: none;
+  }
+
+  .api-maintenance-card .api-results {
+    max-height: none;
+    overflow: visible;
+    padding-right: 0;
+  }
+}
