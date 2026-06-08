@@ -983,31 +983,92 @@ function normalizedRacingRows(event) {
 
 function renderLiveStats(stats = [], fallback = [], event = null) {
   const sourceRows = Array.isArray(stats) && stats.length ? stats : fallback;
-  const rows = sourceRows
-    .filter(stat => stat && !/^(source|venue)$/i.test(String(stat.label || "")))
-    .map(stat => {
-      const statLabel = String(stat.label || "");
-      if (event && /^odds$/i.test(statLabel)) {
-        return { ...stat, value: eventOddsText(event) };
-      }
-      if (event && /^weather$/i.test(statLabel)) {
-        return { ...stat, value: eventWeatherText(event) };
-      }
-      return stat;
-    })
-    .filter(stat => {
-      const value = String(stat.value ?? "").trim();
-      if (!value) return false;
-      if (/^(unavailable|weather unavailable|api schedule import|scoreboard active|detailed boxscore unavailable)$/i.test(value)) return false;
-      if (/^(away scoring|home scoring)$/i.test(String(stat.label || ""))) return false;
-      if (/\bby period\b|^\d+(?:-\d+)+$/i.test(value)) return false;
-      return true;
-    });
+  const awayCode = String(event?.away?.code || "").toUpperCase();
+  const homeCode = String(event?.home?.code || "").toUpperCase();
+  const teamCodes = [awayCode, homeCode].filter(Boolean);
 
-  if (!rows.length) return "";
+  function cleanRow(stat) {
+    if (!stat) return null;
+    const labelText = String(stat.label || "").trim();
+    const statLabel = labelText;
+    let value = String(stat.value ?? "").trim();
+
+    if (!labelText || /^(source|venue|odds)$/i.test(labelText)) return null;
+    if (event && /^weather$/i.test(statLabel)) value = eventWeatherText(event);
+    if (!value) return null;
+    if (/^(unavailable|weather unavailable|api schedule import|scoreboard active|detailed boxscore unavailable)$/i.test(value)) return null;
+    if (/^(away scoring|home scoring)$/i.test(labelText)) return null;
+    if (/\bby period\b|^\d+(?:-\d+)+$/i.test(value)) return null;
+
+    const labelUpper = labelText.toUpperCase();
+    const teamCode = teamCodes.find(code => labelUpper === code || labelUpper.startsWith(`${code} `)) || "";
+    return { ...stat, label: labelText, value, teamCode };
+  }
+
+  function statImportance(row) {
+    const label = `${row.label} ${row.value}`.toLowerCase();
+    if (/^status$/i.test(row.label)) return 1000;
+    if (/^weather$/i.test(row.label)) return 995;
+    if (/runs?|hits?|errors?|left on base|lob|pitch|strikeout|\bso\b|era|whip|shots?|possession|saves?|rebounds?|assists?|turnovers?|yards?|first downs?|power play/i.test(label)) return 90;
+    if (/leader|goal|rbi|hr|pts|reb|ast|yds|td|sog|sv/i.test(label)) return 70;
+    return 40;
+  }
+
+  const rows = sourceRows.map(cleanRow).filter(Boolean);
+  const pinned = [];
+  for (const name of ["Status", "Weather"]) {
+    const found = rows.find(row => row.label.toLowerCase() === name.toLowerCase());
+    if (found) pinned.push(found);
+  }
+
+  const usedKeys = new Set(pinned.map(row => `${row.label}|${row.value}`));
+  const teamRows = new Map(teamCodes.map(code => [code, []]));
+  const generalRows = [];
+
+  for (const row of rows) {
+    const key = `${row.label}|${row.value}`;
+    if (usedKeys.has(key)) continue;
+    if (row.teamCode && teamRows.has(row.teamCode)) teamRows.get(row.teamCode).push(row);
+    else generalRows.push(row);
+  }
+
+  for (const code of teamCodes) {
+    teamRows.get(code)?.sort((a, b) => statImportance(b) - statImportance(a));
+  }
+  generalRows.sort((a, b) => statImportance(b) - statImportance(a));
+
+  const selected = [...pinned];
+  const teamCounts = new Map(teamCodes.map(code => [code, 0]));
+  const maxRows = 6;
+  const perTeamCap = 2;
+
+  function add(row) {
+    if (!row || selected.length >= maxRows) return false;
+    const key = `${row.label}|${row.value}`;
+    if (usedKeys.has(key)) return false;
+    if (row.teamCode) {
+      if ((teamCounts.get(row.teamCode) || 0) >= perTeamCap) return false;
+      teamCounts.set(row.teamCode, (teamCounts.get(row.teamCode) || 0) + 1);
+    }
+    usedKeys.add(key);
+    selected.push(row);
+    return true;
+  }
+
+  // Reserve visible space for both sides. This prevents old/stale ESPN rows from
+  // filling the whole stat box with only the first team returned by the API.
+  for (let round = 0; round < perTeamCap && selected.length < maxRows; round += 1) {
+    for (const code of teamCodes) {
+      add((teamRows.get(code) || [])[round]);
+    }
+  }
+
+  for (const row of generalRows) add(row);
+
+  if (!selected.length) return "";
   return `
     <div class="mini-stat-grid">
-      ${rows.slice(0, 12).map(stat => `
+      ${selected.slice(0, maxRows).map(stat => `
         <span><strong>${escapeHtml(stat.label || "Stat")}</strong>${escapeHtml(String(stat.value ?? "Unavailable"))}</span>
       `).join("")}
     </div>
