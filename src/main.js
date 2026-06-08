@@ -627,6 +627,41 @@ function eventIsLocked(event) {
   return event.status !== "pregame" || (!Number.isNaN(start.getTime()) && Date.now() >= start.getTime());
 }
 
+function eventHasBegun(event) {
+  const start = new Date(event?.startTime);
+  if (!event || event.status === "final") return false;
+  if (event.status === "live") return true;
+  return !Number.isNaN(start.getTime()) && Date.now() >= start.getTime();
+}
+
+function matchUserRequestedDouble(match, userId) {
+  const requested = match?.doubleUp?.requestedBy || [];
+  return Array.isArray(requested) && requested.includes(userId);
+}
+
+function matchIsDoubled(match) {
+  return Boolean(match?.doubleUp?.applied || match?.doubledUp);
+}
+
+function renderDoubleUpControl(event, match) {
+  const user = currentUser();
+  const matchId = match.firestoreId || match.id;
+  if (!user?.approved || !matchId) return "";
+  if (!eventHasBegun(event)) return "";
+  if (event.status === "final" || match.status !== "matched") return "";
+  if (match.userA !== user.id && match.userB !== user.id) return "";
+
+  if (matchIsDoubled(match)) {
+    return `<span class="double-up-status doubled">Doubled up · ${money(Number(match.amount || 0))}</span>`;
+  }
+
+  if (matchUserRequestedDouble(match, user.id)) {
+    return `<span class="double-up-status waiting">Double up requested — waiting for ${escapeHtml(userName(match.userA === user.id ? match.userB : match.userA))}</span>`;
+  }
+
+  return `<button class="danger double-up-btn" data-double-up="${escapeHtml(matchId)}">Double up</button>`;
+}
+
 function toDateValue(value) {
   if (!value) return 0;
   if (typeof value === "string") return new Date(value).getTime() || 0;
@@ -1154,6 +1189,7 @@ function renderEventQueues(event) {
           <div class="record">
             <strong>Matched</strong><br />
             <span class="muted small">${escapeHtml(userName(match.userA))} vs ${escapeHtml(userName(match.userB))} · ${money(match.amount || match.exposure || 0)} · ${escapeHtml(label(match.status))}</span>
+            ${renderDoubleUpControl(event, match)}
           </div>
         `).join("")}
       </div>
@@ -1193,7 +1229,12 @@ function renderBetRecord(bet) {
 
 function renderMatchRecord(match) {
   const event = state.events[match.eventId];
-  return `<div class="record"><strong>${escapeHtml(event?.title || match.eventId)}</strong><br><span class="muted small">${escapeHtml(userName(match.userA))} vs ${escapeHtml(userName(match.userB))} · ${escapeHtml(label(match.status))} · ${money(match.amount || match.exposure || 0)}</span><br><span class="tiny muted">${escapeHtml(event?.shortCode || match.eventId)}</span></div>`;
+  const doubleText = matchIsDoubled(match)
+    ? " · Doubled up"
+    : Array.isArray(match.doubleUp?.requestedBy) && match.doubleUp.requestedBy.length
+      ? " · Double up pending"
+      : "";
+  return `<div class="record"><strong>${escapeHtml(event?.title || match.eventId)}</strong><br><span class="muted small">${escapeHtml(userName(match.userA))} vs ${escapeHtml(userName(match.userB))} · ${escapeHtml(label(match.status))} · ${money(match.amount || match.exposure || 0)}${escapeHtml(doubleText)}</span><br><span class="tiny muted">${escapeHtml(event?.shortCode || match.eventId)}</span></div>`;
 }
 
 function renderLedger() {
@@ -1829,6 +1870,7 @@ function wireUi() {
   document.querySelectorAll("[data-bet-ranked]").forEach(button => button.addEventListener("click", () => placeRankedBet(button.dataset.betRanked)));
   document.querySelectorAll("[data-bet-fight]").forEach(button => button.addEventListener("click", () => placeFightCardBet(button.dataset.betFight, button.dataset.fightId, button.dataset.side)));
   document.querySelectorAll("[data-clear-event-bets]").forEach(button => button.addEventListener("click", () => clearCurrentUserEventBets(button.dataset.clearEventBets)));
+  document.querySelectorAll("[data-double-up]").forEach(button => button.addEventListener("click", () => requestDoubleUp(button.dataset.doubleUp)));
   document.querySelectorAll("[data-settle]").forEach(button => button.addEventListener("click", () => settleBalance(button.dataset.settle, Number(button.dataset.amount))));
   document.querySelectorAll("[data-approve]").forEach(button => button.addEventListener("click", () => approveUser(button.dataset.approve)));
   document.querySelectorAll("[data-delete-user]").forEach(button => button.addEventListener("click", () => deleteUserProfile(button.dataset.deleteUser)));
@@ -2117,6 +2159,53 @@ async function refreshOddsForEvent(eventId, reason = "bet-created", showFeedback
   }
 }
 
+
+async function requestDoubleUp(matchId) {
+  const user = currentUser();
+  const match = state.matches[matchId];
+  const event = state.events[match?.eventId];
+
+  if (!user?.approved) return alert("Approved login required.");
+  if (!match || !event) return alert("Matched bet not found.");
+  if (match.status !== "matched") return alert("Only active matched bets can be doubled.");
+  if (event.status === "final" || !eventHasBegun(event)) return alert("Double up is only available after the game starts and before it ends.");
+  if (match.userA !== user.id && match.userB !== user.id) return alert("Only the two users in this matched bet can double it.");
+  if (matchIsDoubled(match)) return alert("This matched bet is already doubled.");
+
+  const otherUserId = match.userA === user.id ? match.userB : match.userA;
+  const requestedBy = Array.isArray(match.doubleUp?.requestedBy) ? [...match.doubleUp.requestedBy] : [];
+  const nextRequestedBy = Array.from(new Set([...requestedBy, user.id]));
+  const bothConfirmed = nextRequestedBy.includes(match.userA) && nextRequestedBy.includes(match.userB);
+  const originalAmount = Number(match.doubleUp?.originalAmount || match.amount || match.exposure || 0);
+
+  if (!Number.isFinite(originalAmount) || originalAmount <= 0) return alert("Cannot double this match because the amount is invalid.");
+
+  const patch = {
+    doubleUp: {
+      requestedBy: nextRequestedBy,
+      requestedAt: match.doubleUp?.requestedAt || new Date().toISOString(),
+      originalAmount,
+      applied: bothConfirmed,
+      appliedAt: bothConfirmed ? new Date().toISOString() : match.doubleUp?.appliedAt || ""
+    },
+    updatedAt: serverTimestamp()
+  };
+
+  if (bothConfirmed) {
+    patch.amount = originalAmount * 2;
+    patch.doubleUpAmount = originalAmount * 2;
+    patch.doubledUp = true;
+  }
+
+  await updateDoc(doc(db, "matches", matchId), patch);
+
+  if (bothConfirmed) {
+    alert(`Double up confirmed. This matched bet is now ${money(originalAmount * 2)}.`);
+  } else {
+    alert(`Double up requested. Waiting for ${userName(otherUserId)} to confirm.`);
+  }
+}
+
 async function placeTeamBet(eventId, side) {
   const user = currentUser();
   const event = state.events[eventId];
@@ -2179,6 +2268,7 @@ async function tryMatchTeamBet(newBet) {
     sideA: candidate.side,
     sideB: newBet.side,
     amount: newBet.amount,
+    doubleUp: { requestedBy: [], applied: false, originalAmount: Number(newBet.amount) },
     status: "matched",
     createdAt: serverTimestamp(),
     updatedAt: serverTimestamp()
@@ -2260,6 +2350,7 @@ async function tryMatchFightCardBet(newBet) {
     sideA: candidate.side,
     sideB: newBet.side,
     amount: newBet.amount,
+    doubleUp: { requestedBy: [], applied: false, originalAmount: Number(newBet.amount) },
     status: "matched",
     createdAt: serverTimestamp(),
     updatedAt: serverTimestamp()
@@ -3316,6 +3407,7 @@ async function repairAdminMatchup() {
   const commonBetFields = {
     eventId: event.id,
     amount,
+    doubleUp: { requestedBy: [], applied: false, originalAmount: Number(amount) },
     status: "matched",
     adminRepaired: true,
     updatedAt: serverTimestamp()
@@ -3362,6 +3454,7 @@ async function repairAdminMatchup() {
     sideA: pickA,
     sideB: pickB,
     amount,
+    doubleUp: { requestedBy: [], applied: false, originalAmount: Number(amount) },
     status: "matched",
     adminRepaired: true,
     createdAt: serverTimestamp(),

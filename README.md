@@ -261,3 +261,12 @@ History:
 
 - Adds a thumbs-down favicon as a small browser-tab easter egg.
 - Keeps v9.8 odds behavior: ESPN/imported odds by default, Odds API only when an event has betting interest.
+
+
+## v10.5 double-up
+
+- Adds a live-only Double Up control for matched bets.
+- The control only appears to the two users in that specific matched bet.
+- It only appears after the game/card has begun and disappears once the event is final.
+- Both users must confirm the same match before the amount doubles.
+- Double-up state is stored on the match, so multiple matched bets on one event can be doubled independently.
