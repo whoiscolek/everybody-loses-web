@@ -248,3 +248,11 @@ History:
 - Automatic Odds API refresh has a local admin daily cap of 25 requests per betting day.
 - Admin manual Refresh odds buttons remain available as backup controls.
 - Schedule syncing, duplicate cleanup, and final settlement automation are unchanged.
+
+
+## v9.8 Odds API lock
+
+- The board is ESPN/imported-odds first.
+- The Odds API cannot be manually or automatically refreshed for an event until that exact event has at least one bet or match.
+- Admin refresh odds remains available only after betting interest exists.
+- Existing stale Odds API data on unbet events is hidden from the Today card so it does not look like the default source.

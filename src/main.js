@@ -310,27 +310,37 @@ function eventWeatherText(event) {
   return text || "Weather pending — sync today to refresh.";
 }
 
+function eventHasOddsInterest(eventId) {
+  return Object.values(state.bets || {}).some(bet => bet.eventId === eventId)
+    || Object.values(state.matches || {}).some(match => match.eventId === eventId);
+}
+
+function eventCanUseOddsApi(event) {
+  const eventId = event?.firestoreId || event?.id;
+  return Boolean(eventId && event?.type === EVENT_TYPES.TEAM && event?.status !== "final" && eventHasOddsInterest(eventId));
+}
+
 function eventOddsText(event) {
-  if (event?.oddsLive?.summary) return event.oddsLive.summary;
-  if (event?.oddsLive?.moneyline) return event.oddsLive.moneyline;
+  // ESPN/imported odds are the default for the board. The Odds API is only allowed
+  // to display once this exact event has a bet or match tied to it.
+  if (eventCanUseOddsApi(event)) {
+    if (event?.oddsLive?.summary) return event.oddsLive.summary;
+    if (event?.oddsLive?.moneyline) return event.oddsLive.moneyline;
+  }
   return event?.odds || "Unavailable";
 }
 
 function eventOddsMeta(event) {
-  if (!event?.oddsLive) return "";
+  if (!eventCanUseOddsApi(event) || !event?.oddsLive) return "";
   const book = event.oddsLive.bookmaker ? `Book: ${event.oddsLive.bookmaker}` : "";
   const matched = event.oddsLive.matchedGame ? `Matched: ${event.oddsLive.matchedGame}` : "";
   const fetched = event.oddsLive.fetchedAt ? `${TIME_ZONE_LABEL} updated ${formatTime(event.oddsLive.fetchedAt)}` : "";
   return [book, matched, fetched].filter(Boolean).join(" · ");
 }
 
-function eventHasOddsInterest(eventId) {
-  return Object.values(state.bets || {}).some(bet => bet.eventId === eventId)
-    || Object.values(state.matches || {}).some(match => match.eventId === eventId);
-}
-
 function renderAdminOddsButton(event) {
   if (!isAdmin() || event.type !== EVENT_TYPES.TEAM || event.status === "final") return "";
+  if (!eventCanUseOddsApi(event)) return `<span class="tiny muted">Odds API locked until someone bets this matchup.</span>`;
   return `<button class="ghost tiny-action" data-refresh-odds="${escapeHtml(event.firestoreId || event.id)}">Refresh odds</button>`;
 }
 
@@ -1839,6 +1849,18 @@ async function refreshOddsForEvent(eventId, reason = "bet-created", showFeedback
   }
   if (event.status === "final") {
     if (showFeedback) alert("Odds refresh skipped because this event is final.");
+    return;
+  }
+
+  if (!eventCanUseOddsApi(event)) {
+    const reasonText = "Odds API locked until this exact matchup has at least one bet or match. Showing ESPN/imported odds only.";
+    await setDoc(doc(db, "events", eventId), {
+      oddsStatus: reasonText,
+      updatedAt: serverTimestamp()
+    }, { merge: true });
+    state.events[eventId] = { ...event, oddsStatus: reasonText };
+    renderApp();
+    if (showFeedback) alert(`Odds not updated: ${reasonText}`);
     return;
   }
 
