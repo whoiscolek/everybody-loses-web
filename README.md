@@ -270,3 +270,11 @@ History:
 - It only appears after the game/card has begun and disappears once the event is final.
 - Both users must confirm the same match before the amount doubles.
 - Double-up state is stored on the match, so multiple matched bets on one event can be doubled independently.
+
+
+## v10.9 proper IndyCar live timing
+
+- Based on v10.8, not the rejected manual-override version.
+- Keeps IndyCar automatic only; no manual racing override UI was added.
+- Strengthens the INDYCAR live leaderboard fetcher to try official JSON-style endpoints first, then parse the official leaderboard pages with cache-busting and browser-like headers.
+- If the official live leaderboard exposes positions during an active session, the IndyCar card updates from that source.

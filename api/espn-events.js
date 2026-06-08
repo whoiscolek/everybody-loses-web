@@ -375,8 +375,11 @@ async function fetchEspnJson(url) {
 async function fetchTextUrl(url, label = "request") {
   const response = await fetch(url, {
     headers: {
-      "accept": "text/html,application/json,text/plain,*/*",
-      "user-agent": "Everyone-Loses/1.0"
+      "accept": "text/html,application/xhtml+xml,application/xml;q=0.9,application/json,text/plain,*/*;q=0.8",
+      "accept-language": "en-US,en;q=0.9",
+      "cache-control": "no-cache",
+      "pragma": "no-cache",
+      "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0 Safari/537.36"
     }
   });
 
@@ -394,7 +397,10 @@ async function fetchJsonUrl(url, label = "request") {
   const response = await fetch(url, {
     headers: {
       "accept": "application/json,text/plain,*/*",
-      "user-agent": "Everyone-Loses/1.0"
+      "accept-language": "en-US,en;q=0.9",
+      "cache-control": "no-cache",
+      "pragma": "no-cache",
+      "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0 Safari/537.36"
     }
   });
 
@@ -587,6 +593,96 @@ function rowsFromIndyCarHtml(html) {
   for (const object of objects) collectIndyCarArrays(object, arrays);
   const best = arrays.sort((a, b) => b.length - a.length)[0] || [];
   const seen = new Set();
+  const rows = best
+    .map((row, index) => {
+      const name = indyCarNameFromRow(row).trim();
+      if (!name || seen.has(name.toLowerCase())) return null;
+      seen.add(name.toLowerCase());
+      return {
+        position: indyCarPositionFromRow(row, index + 1),
+        name,
+        detail: indyCarDetailFromRow(row)
+      };
+    })
+    .filter(Boolean)
+    .sort((a, b) => Number(a.position || 999) - Number(b.position || 999));
+
+  return rows.length >= 3 ? rows : rowsFromIndyCarText(html);
+}
+
+function stripHtmlToLines(html) {
+  return String(html || "")
+    .replace(/<script[\s\S]*?<\/script>/gi, "\n")
+    .replace(/<style[\s\S]*?<\/style>/gi, "\n")
+    .replace(/<br\s*\/?\s*>/gi, "\n")
+    .replace(/<\/(tr|div|li|p|span|td|th|h\d)>/gi, "\n")
+    .replace(/<[^>]+>/g, " ")
+    .replace(/&nbsp;/gi, " ")
+    .replace(/&amp;/gi, "&")
+    .replace(/&#39;/g, "'")
+    .replace(/&quot;/gi, '"')
+    .split(/\n+/)
+    .map(line => line.replace(/\s+/g, " ").trim())
+    .filter(Boolean);
+}
+
+function rowsFromIndyCarText(html) {
+  const text = stripHtmlToLines(html).join("\n");
+  if (/no track activity|browser not compatible/i.test(text) && !/\b1\b.+\b(Palou|Dixon|O'Ward|Newgarden|McLaughlin|Herta|Kirkwood|Ericsson|Power|Rosenqvist)\b/i.test(text)) return [];
+
+  const lines = stripHtmlToLines(html);
+  const rows = [];
+  const seen = new Set();
+  const driverNamePattern = "([A-Z][A-Za-z.'’\-]+(?:\s+[A-Z][A-Za-z.'’\-]+){0,3})";
+  const detailPattern = "((?:#?\d{1,2}|Lap\s*\d+|Laps?\s*\d+|[+\-]?\d+(?:\.\d+)?s?|Pits?\s*\d+|Running|Out|Pit|Stopped|Retired|[A-Z]{2,})[^\n]*)?";
+  const patterns = [
+    new RegExp(`^\s*(\d{1,2})\s+(?:#\s*\d{1,2}\s+)?${driverNamePattern}\s*${detailPattern}$`, "i"),
+    new RegExp(`^\s*(?:P|Pos|Position)\s*(\d{1,2})\s+${driverNamePattern}\s*${detailPattern}$`, "i"),
+    new RegExp(`^\s*${driverNamePattern}\s+(?:P|Pos|Position)?\s*(\d{1,2})\s*${detailPattern}$`, "i")
+  ];
+
+  for (const line of lines) {
+    if (/^(pos|position|driver|car|lap|time|gap|interval|rank|leaderboard|live timing|privacy|terms|schedule|results|standings)$/i.test(line)) continue;
+    if (line.length > 160) continue;
+
+    for (const pattern of patterns) {
+      const match = line.match(pattern);
+      if (!match) continue;
+
+      let position;
+      let name;
+      let detail;
+      if (/^[A-Z]/.test(match[1]) && match[2]) {
+        name = match[1];
+        position = Number(match[2]);
+        detail = match[3] || "";
+      } else {
+        position = Number(match[1]);
+        name = match[2];
+        detail = match[3] || "";
+      }
+
+      if (!Number.isFinite(position) || position < 1 || position > 40 || !name) continue;
+      name = name.replace(/\s+(Running|Out|Pit|Stopped|Retired).*$/i, "").trim();
+      if (name.split(/\s+/).length < 2) continue;
+      const key = name.toLowerCase();
+      if (seen.has(key)) continue;
+      seen.add(key);
+      rows.push({ position, name, detail: String(detail || "").trim() });
+      break;
+    }
+  }
+
+  return rows
+    .sort((a, b) => Number(a.position || 999) - Number(b.position || 999))
+    .slice(0, 35);
+}
+
+function rowsFromIndyCarPayload(payload) {
+  const arrays = [];
+  collectIndyCarArrays(payload, arrays);
+  const best = arrays.sort((a, b) => b.length - a.length)[0] || [];
+  const seen = new Set();
   return best
     .map((row, index) => {
       const name = indyCarNameFromRow(row).trim();
@@ -602,10 +698,49 @@ function rowsFromIndyCarHtml(html) {
     .sort((a, b) => Number(a.position || 999) - Number(b.position || 999));
 }
 
+async function tryIndyCarJsonEndpoint(url) {
+  try {
+    const payload = await fetchJsonUrl(url, "INDYCAR live data");
+    const rows = rowsFromIndyCarPayload(payload);
+    if (rows.length >= 3) return { rows, url };
+  } catch {
+    // Some candidate URLs are intentionally speculative and may 404 outside live sessions.
+  }
+  return null;
+}
+
 async function fetchIndyCarOfficialLeaderboard() {
+  const cacheBust = Date.now();
+  const jsonCandidates = [
+    `https://leaderboard.indycar.com/api/leaderboard?t=${cacheBust}`,
+    `https://leaderboard.indycar.com/api/live?t=${cacheBust}`,
+    `https://leaderboard.indycar.com/api/timing?t=${cacheBust}`,
+    `https://leaderboard.indycar.com/api/session?t=${cacheBust}`,
+    `https://leaderboard.indycar.com/api/scoring?t=${cacheBust}`,
+    `https://www.indycar.com/api/leaderboard?t=${cacheBust}`,
+    `https://www.indycar.com/api/live/leaderboard?t=${cacheBust}`
+  ];
+
+  for (const url of jsonCandidates) {
+    const result = await tryIndyCarJsonEndpoint(url);
+    if (result?.rows?.length >= 3) {
+      return {
+        source: "INDYCAR official live leaderboard",
+        sourceUrl: result.url,
+        rows: result.rows,
+        stats: [
+          { label: "Source", value: "INDYCAR live timing" },
+          { label: "Cars", value: String(result.rows.length) },
+          { label: "Leader", value: result.rows[0]?.name || "Pending" }
+        ]
+      };
+    }
+  }
+
   const urls = [
-    "https://leaderboard.indycar.com/",
-    "https://www.indycar.com/leaderboard"
+    `https://leaderboard.indycar.com/?t=${cacheBust}`,
+    `https://www.indycar.com/leaderboard?type=false&t=${cacheBust}`,
+    `https://www.indycar.com/leaderboard?t=${cacheBust}`
   ];
 
   for (const url of urls) {
