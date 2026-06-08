@@ -33,6 +33,47 @@ const TEAM_LOCATION_FALLBACKS = {
   KC: ["Kansas City", "MO"], BAL: ["Baltimore", "MD"], BOS: ["Boston", "MA"], ATL: ["Atlanta", "GA"], PIT: ["Pittsburgh", "PA"]
 };
 
+
+const MLB_TEAM_IDS = {
+  ARI: 109,
+  ATL: 144,
+  BAL: 110,
+  BOS: 111,
+  CHC: 112,
+  CWS: 145,
+  CHW: 145,
+  CIN: 113,
+  CLE: 114,
+  COL: 115,
+  DET: 116,
+  HOU: 117,
+  KC: 118,
+  KCR: 118,
+  LAA: 108,
+  LAD: 119,
+  MIA: 146,
+  MIL: 158,
+  MIN: 142,
+  NYM: 121,
+  NYY: 147,
+  OAK: 133,
+  ATH: 133,
+  PHI: 143,
+  PIT: 134,
+  SD: 135,
+  SDP: 135,
+  SEA: 136,
+  SF: 137,
+  SFG: 137,
+  STL: 138,
+  TB: 139,
+  TBR: 139,
+  TEX: 140,
+  TOR: 141,
+  WSH: 120,
+  WSN: 120
+};
+
 const DEFAULT_RACING_PARTICIPANTS = {
   F1: ["Verstappen", "Norris", "Piastri", "Leclerc", "Hamilton", "Russell", "Antonelli", "Sainz", "Alonso", "Tsunoda"],
   NASCAR: ["Kyle Larson", "Denny Hamlin", "William Byron", "Chase Elliott", "Ryan Blaney", "Christopher Bell", "Tyler Reddick", "Joey Logano", "Ross Chastain", "Bubba Wallace", "Brad Keselowski", "Ty Gibbs"],
@@ -1192,6 +1233,121 @@ function getPlayerOrLeaderCandidates(summary, mappedEvent) {
   return result;
 }
 
+
+function mlbTeamIdForCode(code) {
+  return MLB_TEAM_IDS[String(code || "").toUpperCase()] || null;
+}
+
+function seasonFromEvent(event) {
+  const d = new Date(event?.startTime || Date.now());
+  return Number.isFinite(d.getTime()) ? d.getUTCFullYear() : new Date().getUTCFullYear();
+}
+
+function formatMlbDecimal(value) {
+  const str = String(value ?? "").trim();
+  if (!str || str === "-.--" || /^nan$/i.test(str)) return "";
+  const num = Number(str);
+  if (!Number.isFinite(num)) return str;
+  if (num > 1) return num.toFixed(3).replace(/^0/, "");
+  return num.toFixed(3).replace(/^0/, "");
+}
+
+function formatMlbRate(value) {
+  const str = String(value ?? "").trim();
+  if (!str || str === "-.--" || /^nan$/i.test(str)) return "";
+  const num = Number(str);
+  return Number.isFinite(num) ? num.toFixed(2) : str;
+}
+
+function findMlbStatSplit(data) {
+  const splits = data?.stats?.[0]?.splits || data?.stats?.[0]?.splits || [];
+  return Array.isArray(splits) && splits.length ? splits[0]?.stat || {} : {};
+}
+
+async function fetchMlbTeamSeasonBlock(teamId, season, group) {
+  if (!teamId) return {};
+  const url = `https://statsapi.mlb.com/api/v1/teams/${teamId}/stats?stats=season&group=${encodeURIComponent(group)}&season=${encodeURIComponent(String(season))}`;
+  try {
+    const data = await fetchJsonUrl(url, `MLB ${group} stats`);
+    return findMlbStatSplit(data);
+  } catch {
+    return {};
+  }
+}
+
+function makeMlbTeamRows(code, hitting, pitching) {
+  const rows = [];
+  const avg = formatMlbDecimal(hitting.avg);
+  const ops = formatMlbDecimal(hitting.ops);
+  const runs = hitting.runs;
+  const games = Number(hitting.gamesPlayed || hitting.games || 0);
+  const runsPerGame = games && Number.isFinite(Number(runs)) ? (Number(runs) / games).toFixed(1) : "";
+  const hr = hitting.homeRuns;
+  const era = formatMlbRate(pitching.era);
+  const whip = formatMlbRate(pitching.whip);
+  const so = pitching.strikeOuts;
+  const bb = pitching.baseOnBalls || pitching.walks;
+
+  const hittingParts = [
+    avg ? `${avg} AVG` : "",
+    ops ? `${ops} OPS` : "",
+    runsPerGame ? `${runsPerGame} R/G` : "",
+    hr ? `${hr} HR` : ""
+  ].filter(Boolean).slice(0, 3);
+
+  const pitchingParts = [
+    era ? `${era} ERA` : "",
+    whip ? `${whip} WHIP` : "",
+    so ? `${so} K` : "",
+    bb ? `${bb} BB` : ""
+  ].filter(Boolean).slice(0, 3);
+
+  if (hittingParts.length) rows.push({ label: `${code} Hitting`, value: hittingParts.join(" · "), teamCode: code, source: "mlb-statsapi" });
+  if (pitchingParts.length) rows.push({ label: `${code} Pitching`, value: pitchingParts.join(" · "), teamCode: code, source: "mlb-statsapi" });
+  return rows;
+}
+
+async function fetchMlbPregameTeamStats(mappedEvent) {
+  if (!mappedEvent || mappedEvent.league !== "MLB") return [];
+  const season = seasonFromEvent(mappedEvent);
+  const teams = [
+    { code: mappedEvent.away?.code || "", id: mlbTeamIdForCode(mappedEvent.away?.code) },
+    { code: mappedEvent.home?.code || "", id: mlbTeamIdForCode(mappedEvent.home?.code) }
+  ].filter(team => team.code && team.id);
+
+  if (teams.length < 2) return [];
+
+  const rows = [];
+  for (const team of teams) {
+    const [hitting, pitching] = await Promise.all([
+      fetchMlbTeamSeasonBlock(team.id, season, "hitting"),
+      fetchMlbTeamSeasonBlock(team.id, season, "pitching")
+    ]);
+    rows.push(...makeMlbTeamRows(team.code, hitting, pitching));
+  }
+
+  // Order as away hitting, home hitting, away pitching, home pitching so both teams
+  // appear before one side can fill the grid.
+  const awayCode = teams[0]?.code;
+  const homeCode = teams[1]?.code;
+  const ordered = [
+    rows.find(row => row.teamCode === awayCode && /hitting/i.test(row.label)),
+    rows.find(row => row.teamCode === homeCode && /hitting/i.test(row.label)),
+    rows.find(row => row.teamCode === awayCode && /pitching/i.test(row.label)),
+    rows.find(row => row.teamCode === homeCode && /pitching/i.test(row.label))
+  ].filter(Boolean);
+
+  return ordered;
+}
+
+function mergeStatRows(primary = [], secondary = [], max = 4) {
+  const rows = [];
+  for (const row of [...primary, ...secondary]) {
+    addStatRow(rows, row?.label, row?.value, max, { teamCode: row?.teamCode || "", source: row?.source || "" });
+  }
+  return rows.slice(0, max);
+}
+
 function pickUsefulTeamStats(summary, mappedEvent, rawEvent) {
   const rows = [];
   const { result: teamStats, teamCodes } = getTeamStatCandidates(summary, mappedEvent, rawEvent);
@@ -1311,7 +1467,11 @@ async function enrichTeamEvent(mappedEvent, rawEvent, config) {
   const venueParts = venueCityStateFromSummary(summary, competition, mappedEvent);
   const espnWeather = summaryWeather(summary);
   const weatherText = espnWeather || await fetchWeatherForCity(venueParts.city, venueParts.state);
-  const usefulStats = pickUsefulTeamStats(summary, mappedEvent, rawEvent);
+  const espnUsefulStats = pickUsefulTeamStats(summary, mappedEvent, rawEvent);
+  const mlbPregameStats = config.league === "MLB" ? await fetchMlbPregameTeamStats(mappedEvent) : [];
+  const usefulStats = config.league === "MLB"
+    ? mergeStatRows(mlbPregameStats, espnUsefulStats, 4)
+    : espnUsefulStats;
   const statusText = mappedEvent.liveStats?.find(stat => stat.label === "Status")?.value || labelStatus(mappedEvent.status);
 
   const liveStats = [
