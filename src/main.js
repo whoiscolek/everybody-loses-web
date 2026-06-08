@@ -326,14 +326,44 @@ function eventCanUseOddsApi(event) {
   return Boolean(eventId && event?.type === EVENT_TYPES.TEAM && event?.status !== "final" && eventHasOddsInterest(eventId));
 }
 
+function cleanOddsText(value) {
+  if (value === undefined || value === null) return "";
+  if (typeof value === "string") return value.trim();
+  if (typeof value === "number") return String(value);
+  return "";
+}
+
 function eventOddsText(event) {
   // ESPN/imported odds are the default for the board. The Odds API is only allowed
   // to display once this exact event has a bet or match tied to it.
-  if (eventCanUseOddsApi(event)) {
-    if (event?.oddsLive?.summary) return event.oddsLive.summary;
-    if (event?.oddsLive?.moneyline) return event.oddsLive.moneyline;
+  if (eventCanUseOddsApi(event) && event?.oddsLive) {
+    const liveParts = [
+      cleanOddsText(event.oddsLive.summary),
+      cleanOddsText(event.oddsLive.moneyline) ? `ML ${cleanOddsText(event.oddsLive.moneyline)}` : "",
+      cleanOddsText(event.oddsLive.spread) ? `Spread ${cleanOddsText(event.oddsLive.spread)}` : "",
+      cleanOddsText(event.oddsLive.total)
+    ].filter(Boolean);
+
+    const preferred = liveParts.find(part => !/^(odds unavailable|live odds unavailable)$/i.test(part));
+    if (preferred) return preferred;
   }
-  return event?.odds || "Unavailable";
+
+  return cleanOddsText(event?.odds) || "Unavailable";
+}
+
+function shouldShowOddsText(event) {
+  const text = eventOddsText(event);
+  return Boolean(text && !/^(unavailable|api schedule import|odds unavailable|live odds unavailable)$/i.test(text));
+}
+
+function renderOddsDisplay(event) {
+  if (!shouldShowOddsText(event)) return "";
+  return `
+    <div class="odds-display">
+      <strong>Odds</strong>
+      <span>${escapeHtml(eventOddsText(event))}</span>
+    </div>
+  `;
 }
 
 function eventOddsMeta(event) {
@@ -864,7 +894,7 @@ function renderToday() {
   const leagues = filters.sport === "all" ? Object.values(SPORT_GROUPS).flat() : SPORT_GROUPS[filters.sport] || [];
 
   return `
-    <div class="toolbar panel">
+    <div class="toolbar panel today-filters">
       <div>
         <label>Sport</label>
         <select id="sportFilter">
@@ -1107,6 +1137,7 @@ function renderScoreLine(event) {
           { label: "Weather", value: eventWeatherText(event) },
           { label: event.status === "final" ? "Winner" : "Live", value: winner || "Scoreboard active" }
         ], event)}
+        ${renderOddsDisplay(event)}
         ${eventOddsMeta(event) ? `<div class="score-sub odds-line">${escapeHtml(eventOddsMeta(event))}</div>` : ""}
       </div>
     `;
