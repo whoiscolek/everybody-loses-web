@@ -256,3 +256,8 @@ History:
 - The Odds API cannot be manually or automatically refreshed for an event until that exact event has at least one bet or match.
 - Admin refresh odds remains available only after betting interest exists.
 - Existing stale Odds API data on unbet events is hidden from the Today card so it does not look like the default source.
+
+## v9.9 browser tab icon
+
+- Adds a thumbs-down favicon as a small browser-tab easter egg.
+- Keeps v9.8 odds behavior: ESPN/imported odds by default, Odds API only when an event has betting interest.
