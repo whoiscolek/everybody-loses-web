@@ -25,7 +25,12 @@ const TEAM_LOCATION_FALLBACKS = {
   SAC: ["Sacramento", "CA"], SAS: ["San Antonio", "TX"], TOR: ["Toronto", "ON"], UTA: ["Salt Lake City", "UT"], WAS: ["Washington", "DC"],
   ARI: ["Phoenix", "AZ"], BAL: ["Baltimore", "MD"], BUF: ["Buffalo", "NY"], CAR: ["Charlotte", "NC"], CIN: ["Cincinnati", "OH"],
   GB: ["Green Bay", "WI"], JAX: ["Jacksonville", "FL"], KC: ["Kansas City", "MO"], LV: ["Las Vegas", "NV"], NE: ["Foxborough", "MA"],
-  NO: ["New Orleans", "LA"], PIT: ["Pittsburgh", "PA"], SEA: ["Seattle", "WA"], SF: ["Santa Clara", "CA"], TB: ["Tampa", "FL"], TEN: ["Nashville", "TN"]
+  NO: ["New Orleans", "LA"], PIT: ["Pittsburgh", "PA"], SEA: ["Seattle", "WA"], SF: ["San Francisco", "CA"], TB: ["Tampa", "FL"], TEN: ["Nashville", "TN"],
+  CHC: ["Chicago", "IL"], CWS: ["Chicago", "IL"], NYY: ["New York", "NY"], NYM: ["New York", "NY"], LAD: ["Los Angeles", "CA"], LAA: ["Anaheim", "CA"],
+  SD: ["San Diego", "CA"], COL: ["Denver", "CO"], OAK: ["West Sacramento", "CA"], ATH: ["West Sacramento", "CA"], TEX: ["Arlington", "TX"], HOU: ["Houston", "TX"],
+  STL: ["St. Louis", "MO"], MIN: ["Minneapolis", "MN"], DET: ["Detroit", "MI"], CLE: ["Cleveland", "OH"], TOR: ["Toronto", "ON"], PHI: ["Philadelphia", "PA"],
+  WSH: ["Washington", "DC"], MIA: ["Miami", "FL"], MIL: ["Milwaukee", "WI"], ARI: ["Phoenix", "AZ"], SEA: ["Seattle", "WA"], CIN: ["Cincinnati", "OH"],
+  KC: ["Kansas City", "MO"], BAL: ["Baltimore", "MD"], BOS: ["Boston", "MA"], ATL: ["Atlanta", "GA"], PIT: ["Pittsburgh", "PA"]
 };
 
 const DEFAULT_RACING_PARTICIPANTS = {
@@ -1096,6 +1101,25 @@ function getTeamStatCandidates(summary, mappedEvent, rawEvent) {
 }
 
 
+function recordSummaryFromCompetitor(competitor) {
+  const candidates = [];
+  for (const record of competitor?.records || []) {
+    candidates.push(record?.summary, record?.displayValue, record?.value, record?.record);
+  }
+  candidates.push(
+    competitor?.record,
+    competitor?.summary,
+    competitor?.team?.recordSummary,
+    competitor?.team?.record,
+    competitor?.team?.records?.[0]?.summary,
+    competitor?.team?.records?.[0]?.displayValue
+  );
+
+  return candidates
+    .map(value => String(value || "").trim())
+    .find(value => /^\d+\s*[-–]\s*\d+/.test(value) || /^\d+\s*[-–]\s*\d+\s*[-–]\s*\d+/.test(value)) || "";
+}
+
 function getCompetitorRecordCandidates(rawEvent, mappedEvent) {
   const competition = rawEvent?.competitions?.[0] || {};
   const desired = [
@@ -1107,20 +1131,13 @@ function getCompetitorRecordCandidates(rawEvent, mappedEvent) {
   for (const item of desired) {
     const code = cleanCode(item.code, "");
     if (!code) continue;
-    const competitor = getCompetitor(competition, item.side) || competition?.competitors?.find(comp => cleanCode(comp?.team?.abbreviation || comp?.team?.shortDisplayName || comp?.team?.displayName || "", "") === code);
-    const records = Array.isArray(competitor?.records) ? competitor.records : [];
-    const useful = records
-      .map(record => {
-        const name = String(record?.name || record?.type || record?.summary || "").toLowerCase();
-        const summary = String(record?.summary || record?.displayValue || record?.value || "").trim();
-        return { name, summary };
-      })
-      .filter(record => record.summary && /overall|total|record|league|regular/i.test(record.name || "overall"));
-    const best = useful[0] || records.map(record => ({ summary: String(record?.summary || record?.displayValue || "").trim() })).find(record => record.summary);
-    if (best?.summary) {
+    const competitor = getCompetitor(competition, item.side)
+      || competition?.competitors?.find(comp => cleanCode(comp?.team?.abbreviation || comp?.team?.shortDisplayName || comp?.team?.displayName || "", "") === code);
+    const summary = recordSummaryFromCompetitor(competitor);
+    if (summary) {
       result.set(code, [{
         label: `${code} Record`,
-        value: best.summary,
+        value: summary,
         teamCode: code,
         score: 60
       }]);

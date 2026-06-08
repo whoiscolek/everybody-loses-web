@@ -334,7 +334,7 @@ function cleanOddsText(value) {
 
 function eventOddsText(event) {
   // ESPN/imported odds are the default for the board. The Odds API is only allowed
-  // to display once this exact event has a bet or match tied to it.
+  // to display once this exact event has a matched bet tied to it.
   if (eventCanUseOddsApi(event) && event?.oddsLive) {
     const liveParts = [
       cleanOddsText(event.oddsLive.summary),
@@ -356,11 +356,14 @@ function shouldShowOddsText(event) {
 }
 
 function renderOddsDisplay(event) {
-  if (!shouldShowOddsText(event)) return "";
+  if (event?.type !== EVENT_TYPES.TEAM) return "";
+  const text = eventOddsText(event);
+  const canShow = shouldShowOddsText(event);
+  const pending = event?.status !== "final" ? "ESPN odds pending" : "Odds unavailable";
   return `
-    <div class="odds-display">
+    <div class="odds-display ${canShow ? "" : "pending"}">
       <strong>Odds</strong>
-      <span>${escapeHtml(eventOddsText(event))}</span>
+      <span>${escapeHtml(canShow ? text : pending)}</span>
     </div>
   `;
 }
@@ -1029,10 +1032,10 @@ function renderLiveStats(stats = [], fallback = [], event = null) {
     const statLabel = labelText;
     let value = String(stat.value ?? "").trim();
 
-    if (!labelText || /^(source|venue|odds)$/i.test(labelText)) return null;
+    if (!labelText || /^(source|venue|odds|status)$/i.test(labelText)) return null;
     if (event && /^weather$/i.test(statLabel)) value = eventWeatherText(event);
     if (!value) return null;
-    if (/^(unavailable|weather unavailable|api schedule import|scoreboard active|detailed boxscore unavailable)$/i.test(value)) return null;
+    if (/^(unavailable|api schedule import|scoreboard active|detailed boxscore unavailable)$/i.test(value)) return null;
     if (/^(away scoring|home scoring)$/i.test(labelText)) return null;
     if (/\bby period\b|^\d+(?:-\d+)+$/i.test(value)) return null;
 
@@ -1043,7 +1046,6 @@ function renderLiveStats(stats = [], fallback = [], event = null) {
 
   function statImportance(row) {
     const label = `${row.label} ${row.value}`.toLowerCase();
-    if (/^status$/i.test(row.label)) return 1000;
     if (/^weather$/i.test(row.label)) return 995;
     if (/runs?|hits?|errors?|left on base|lob|pitch|strikeout|\bso\b|era|whip|shots?|possession|saves?|rebounds?|assists?|turnovers?|yards?|first downs?|power play/i.test(label)) return 90;
     if (/leader|goal|rbi|hr|pts|reb|ast|yds|td|sog|sv/i.test(label)) return 70;
@@ -1052,7 +1054,7 @@ function renderLiveStats(stats = [], fallback = [], event = null) {
 
   const rows = sourceRows.map(cleanRow).filter(Boolean);
   const pinned = [];
-  for (const name of ["Status", "Weather"]) {
+  for (const name of ["Weather"]) {
     const found = rows.find(row => row.label.toLowerCase() === name.toLowerCase());
     if (found) pinned.push(found);
   }
@@ -1100,6 +1102,10 @@ function renderLiveStats(stats = [], fallback = [], event = null) {
   }
 
   for (const row of generalRows) add(row);
+
+  if (!selected.length && event?.type === EVENT_TYPES.TEAM && event?.status !== "final") {
+    selected.push({ label: "Weather", value: eventWeatherText(event) });
+  }
 
   if (!selected.length) return "";
   return `
