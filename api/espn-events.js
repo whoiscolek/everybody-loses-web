@@ -8,10 +8,12 @@ const LEAGUE_MAP = {
   "Premier League": { sport: "soccer", league: "Premier League", espnPath: "soccer/eng.1", appSport: "soccer", eventType: "TEAM_HEAD_TO_HEAD" },
   MLS: { sport: "soccer", league: "MLS", espnPath: "soccer/usa.1", appSport: "soccer", eventType: "TEAM_HEAD_TO_HEAD" },
   "Champions League": { sport: "soccer", league: "Champions League", espnPath: "soccer/uefa.champions", appSport: "soccer", eventType: "TEAM_HEAD_TO_HEAD" },
+  "World Cup": { sport: "soccer", league: "World Cup", espnPath: "soccer/fifa.world", appSport: "soccer", eventType: "TEAM_HEAD_TO_HEAD" },
   F1: { sport: "racing", league: "F1", espnPath: "racing/f1", appSport: "racing", eventType: "RANKED_FINISH", leagueKey: "f1", useJolpicaF1: true },
   NASCAR: { sport: "racing", league: "NASCAR", espnPath: "racing/nascar-premier", appSport: "racing", eventType: "RANKED_FINISH", leagueKey: "nascar-premier", useOfficialLive: true },
   IndyCar: { sport: "racing", league: "IndyCar", espnPath: "racing/irl", appSport: "racing", eventType: "RANKED_FINISH", leagueKey: "irl" },
-  MotoGP: { sport: "racing", league: "MotoGP", espnPath: "", appSport: "racing", eventType: "RANKED_FINISH", leagueKey: "motogp", useMotoGpPulseLive: true }
+  MotoGP: { sport: "racing", league: "MotoGP", espnPath: "", appSport: "racing", eventType: "RANKED_FINISH", leagueKey: "motogp", useMotoGpPulseLive: true },
+  UFC: { sport: "mma", league: "UFC", espnPath: "mma/ufc", appSport: "combat", eventType: "FIGHT_CARD", useUfcFightCard: true }
 };
 
 const TEAM_LOCATION_FALLBACKS = {
@@ -216,8 +218,122 @@ function mapTeamEvent(event, config) {
   };
 }
 
+
+function normalizeFightId(value, fallback = "fight") {
+  return String(value || fallback)
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-|-$/g, "")
+    || fallback;
+}
+
+function ufcFighterName(competitor) {
+  return competitor?.athlete?.displayName
+    || competitor?.athlete?.shortName
+    || competitor?.team?.displayName
+    || competitor?.displayName
+    || competitor?.name
+    || competitor?.displayName
+    || "";
+}
+
+function ufcFightStatus(competition, event) {
+  const type = competition?.status?.type || event?.status?.type || {};
+  if (type.completed) return "final";
+  if (type.state === "in") return "live";
+  return "pregame";
+}
+
+function ufcWinnerFromCompetition(competition) {
+  const winner = (competition?.competitors || []).find(item => item.winner === true || item.result?.type === "win");
+  return ufcFighterName(winner);
+}
+
+function extractUfcFightsFromEvent(event) {
+  const fights = [];
+  const competitions = Array.isArray(event?.competitions) ? event.competitions : [];
+
+  competitions.forEach((competition, index) => {
+    const competitors = Array.isArray(competition?.competitors) ? competition.competitors.filter(Boolean) : [];
+    if (competitors.length < 2) return;
+
+    const fighterA = ufcFighterName(competitors[0]);
+    const fighterB = ufcFighterName(competitors[1]);
+    if (!fighterA || !fighterB || fighterA === fighterB) return;
+
+    const fightId = normalizeFightId(competition.id || `${event.id || "ufc"}-${index + 1}-${fighterA}-${fighterB}`, `fight-${index + 1}`);
+    const detailBits = [competition?.type?.text, competition?.note, competition?.weightClass?.text || competition?.weightClass?.displayName]
+      .filter(Boolean);
+
+    fights.push({
+      id: fightId,
+      order: fights.length + 1,
+      fighterA,
+      fighterB,
+      label: `${fighterA} vs ${fighterB}`,
+      status: ufcFightStatus(competition, event),
+      winner: ufcWinnerFromCompetition(competition),
+      detail: detailBits.join(" · ")
+    });
+  });
+
+  return fights;
+}
+
+function mapUfcFightCards(rawEvents, config, date) {
+  const events = Array.isArray(rawEvents) ? rawEvents : [];
+  const cards = [];
+
+  for (const event of events) {
+    const fights = extractUfcFightsFromEvent(event);
+    if (!fights.length) continue;
+
+    const mainCard = fights.slice(0, 5).map((fight, index) => ({ ...fight, order: index + 1 }));
+    const startTime = event.date || event.competitions?.[0]?.date || new Date().toISOString();
+    const statuses = mainCard.map(fight => fight.status);
+    const status = statuses.includes("live") ? "live" : statuses.length && statuses.every(item => item === "final") ? "final" : getStatus(event);
+    const fightResults = Object.fromEntries(mainCard.filter(fight => fight.winner).map(fight => [fight.id, fight.winner]));
+    const venue = event.competitions?.[0]?.venue?.fullName || event.venue?.fullName || "";
+
+    cards.push({
+      apiSource: "espn",
+      apiEventId: String(event.id || `ufc-${date}-${cards.length + 1}`),
+      sport: config.appSport,
+      league: config.league,
+      type: "FIGHT_CARD",
+      title: event.shortName || event.name || `UFC Fight Card ${date || ""}`.trim(),
+      startTime,
+      status,
+      fights: mainCard,
+      fightResults,
+      score: null,
+      odds: event.competitions?.[0]?.odds?.[0]?.details || "API schedule import",
+      venue,
+      liveStats: [
+        { label: "Status", value: labelStatus(status) },
+        { label: "Fights", value: String(mainCard.length) },
+        { label: "Main event", value: mainCard[0]?.label || "TBD" },
+        { label: "Venue", value: venue || "Venue pending" }
+      ],
+      externalIds: {
+        source: "espn",
+        espnEventId: String(event.id || ""),
+        espnUid: event.uid || "",
+        espnGuid: event.guid || ""
+      },
+      intel: "UFC fight card imported from ESPN MMA scoreboard data. Main card is treated as one card, with independent bets inside each fight."
+    });
+  }
+
+  if (cards.length) return cards;
+
+  return [];
+}
+
 function mapEvent(event, config) {
   if (config.eventType === "RANKED_FINISH") return mapRacingEvent(event, config);
+  if (config.eventType === "FIGHT_CARD") return mapUfcFightCards([event], config, "")[0] || mapTeamEvent(event, config);
   return mapTeamEvent(event, config);
 }
 
@@ -616,29 +732,40 @@ function pickUsefulTeamStats(summary, mappedEvent, rawEvent) {
   const boxscoreTeams = summary?.boxscore?.teams || [];
   const preferred = /field goal|fg|3pt|three|free throw|rebounds?|assists?|turnovers?|steals?|blocks?|shots?|saves?|corners?|fouls?|hits?|errors?|yards?|first downs?|third down|power play|faceoffs?|possession|total/i;
 
-  for (const teamBlock of boxscoreTeams) {
+  const addTeamRows = (teamBlock, limit = 3) => {
     const teamCode = teamBlock?.team?.abbreviation || teamBlock?.team?.shortDisplayName || teamBlock?.team?.displayName || "";
     const stats = teamBlock?.statistics || [];
+    let added = 0;
+
     for (const stat of stats) {
       const label = stat?.label || stat?.displayName || stat?.name || "";
       const value = statValue(stat);
-      if (preferred.test(label)) addStatRow(rows, `${teamCode} ${label}`.trim(), value);
-      if (rows.length >= 4) break;
+      if (!preferred.test(label)) continue;
+      const before = rows.length;
+      addStatRow(rows, `${teamCode} ${label}`.trim(), value, 12);
+      if (rows.length > before) added += 1;
+      if (added >= limit) break;
     }
-    if (rows.length >= 4) break;
-  }
 
-  if (rows.length < 4) {
-    for (const teamBlock of boxscoreTeams) {
-      const teamCode = teamBlock?.team?.abbreviation || teamBlock?.team?.shortDisplayName || teamBlock?.team?.displayName || "";
-      for (const stat of teamBlock?.statistics || []) {
+    if (added < limit) {
+      for (const stat of stats) {
         const label = stat?.label || stat?.displayName || stat?.name || "";
-        addStatRow(rows, `${teamCode} ${label}`.trim(), statValue(stat));
-        if (rows.length >= 4) break;
+        const before = rows.length;
+        addStatRow(rows, `${teamCode} ${label}`.trim(), statValue(stat), 12);
+        if (rows.length > before) added += 1;
+        if (added >= limit) break;
       }
-      if (rows.length >= 4) break;
     }
-  }
+  };
+
+  // Balance team stats so the first team's boxscore cannot crowd out the second team's rows.
+  for (const teamBlock of boxscoreTeams.slice(0, 2)) addTeamRows(teamBlock, 3);
+
+  const competition = rawEvent?.competitions?.[0] || {};
+  const away = getCompetitor(competition, "away") || competition.competitors?.[1] || {};
+  const home = getCompetitor(competition, "home") || competition.competitors?.[0] || {};
+  addStatRow(rows, "Away scoring", formatPeriodLine(mappedEvent?.away?.code, away), 12);
+  addStatRow(rows, "Home scoring", formatPeriodLine(mappedEvent?.home?.code, home), 12);
 
   pickPlayerRows(summary, rows);
 
@@ -648,16 +775,10 @@ function pickUsefulTeamStats(summary, mappedEvent, rawEvent) {
     const first = leaderGroup?.leaders?.[0];
     const athlete = first?.athlete?.displayName || first?.displayName || "";
     const value = first?.displayValue || first?.value || "";
-    addStatRow(rows, label, athlete ? `${athlete}${value ? ` · ${value}` : ""}` : value);
+    addStatRow(rows, label, athlete ? `${athlete}${value ? ` · ${value}` : ""}` : value, 12);
   }
 
-  const competition = rawEvent?.competitions?.[0] || {};
-  const away = getCompetitor(competition, "away") || competition.competitors?.[1] || {};
-  const home = getCompetitor(competition, "home") || competition.competitors?.[0] || {};
-  addStatRow(rows, "Away scoring", formatPeriodLine(mappedEvent?.away?.code, away));
-  addStatRow(rows, "Home scoring", formatPeriodLine(mappedEvent?.home?.code, home));
-
-  return rows.slice(0, 6);
+  return rows.slice(0, 9);
 }
 
 function summaryWeather(summary) {
@@ -741,7 +862,7 @@ async function enrichTeamEvent(mappedEvent, rawEvent, config) {
     { label: "Odds", value: mappedEvent.odds || "Unavailable" },
     { label: "Weather", value: weatherText || "Weather unavailable" },
     ...usefulStats
-  ].slice(0, 6);
+  ].slice(0, 12);
 
   if (!usefulStats.length && mappedEvent.status !== "pregame") {
     const scoreText = mappedEvent.score ? `${mappedEvent.away.code} ${mappedEvent.score.away} · ${mappedEvent.home.code} ${mappedEvent.score.home}` : "Score active";
@@ -756,8 +877,9 @@ async function enrichTeamEvent(mappedEvent, rawEvent, config) {
   };
 }
 
-async function mapEventsWithEnrichment(rawEvents, config) {
-  const mapped = Array.isArray(rawEvents) ? rawEvents.map(event => mapEvent(event, config)) : [];
+async function mapEventsWithEnrichment(rawEvents, config, date = "") {
+  if (config.eventType === "FIGHT_CARD") return mapUfcFightCards(rawEvents, config, date);
+  const mapped = Array.isArray(rawEvents) ? rawEvents.map(event => mapEvent(event, config)).filter(Boolean) : [];
   if (config.eventType !== "TEAM_HEAD_TO_HEAD") return mapped;
 
   const enriched = [];
@@ -848,7 +970,7 @@ export default async function handler(req, res) {
       const fetched = await fetchLeagueData(config, date, params);
       const rawEvents = fetched.events;
       url = fetched.url;
-      events = await mapEventsWithEnrichment(rawEvents, config);
+      events = await mapEventsWithEnrichment(rawEvents, config, date);
     }
 
     if (config.useOfficialLive) {
@@ -879,7 +1001,7 @@ export default async function handler(req, res) {
       date,
       count: events.length,
       url,
-      note: config.sport === "racing" ? "Racing imports use verified league-specific result sources when available. F1 results use Jolpica/Ergast when available; NASCAR positions use NASCAR.com official live feed when available; ESPN is mainly schedule fallback." : "",
+      note: config.sport === "racing" ? "Racing imports use verified league-specific result sources when available. F1 results use Jolpica/Ergast when available; NASCAR positions use NASCAR.com official live feed when available; ESPN is mainly schedule fallback." : config.league === "World Cup" ? "World Cup uses ESPN soccer league key fifa.world. This endpoint returns games only for dates ESPN has scheduled/scoreboard data available." : config.league === "UFC" ? "UFC uses ESPN MMA league key ufc and imports one fight-card event with main-card fights inside it when ESPN exposes fights for the selected date." : "",
       events
     });
   } catch (error) {

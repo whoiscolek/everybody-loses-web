@@ -53,6 +53,7 @@ const SPORT_GROUPS = {
   hockey: ["NHL"],
   soccer: ["Champions League", "Premier League", "MLS", "World Cup"],
   racing: ["F1", "NASCAR", "IndyCar", "MotoGP"],
+  combat: ["UFC"],
   olympics: ["Summer Olympics", "Winter Olympics"],
   custom: ["Custom"]
 };
@@ -72,6 +73,7 @@ const SPORT_PREFIX = {
   NASCAR: "NAS",
   IndyCar: "IND",
   MotoGP: "MGP",
+  UFC: "UFC",
   "Summer Olympics": "OLY",
   "Winter Olympics": "WOLY",
   Custom: "CUS"
@@ -84,6 +86,7 @@ const SPORT_ICONS = {
   hockey: "🏒",
   soccer: "⚽",
   racing: "🏎️",
+  combat: "🥊",
   olympics: "🏅",
   custom: "🎲"
 };
@@ -103,6 +106,7 @@ const LEAGUE_ICONS = {
   NASCAR: "🚗",
   IndyCar: "🏁",
   MotoGP: "🏍️",
+  UFC: "🥊",
   "Summer Olympics": "☀️",
   "Winter Olympics": "❄️",
   Custom: "🎲"
@@ -123,6 +127,7 @@ const LEAGUE_LOGO_MARKS = {
   NASCAR: { url: "/logos/nascar.png", text: "NASCAR" },
   IndyCar: { url: "/logos/indycar.png", text: "INDYCAR" },
   MotoGP: { url: "/logos/motogp.png", text: "MotoGP" },
+  UFC: { text: "UFC" },
   "Summer Olympics": { url: "/logos/olympics.png", text: "OLY" },
   "Winter Olympics": { url: "/logos/olympics.png", text: "OLY" },
   Custom: { text: "CUS" }
@@ -130,10 +135,11 @@ const LEAGUE_LOGO_MARKS = {
 
 const EVENT_TYPES = {
   TEAM: "TEAM_HEAD_TO_HEAD",
-  RANKED: "RANKED_FINISH"
+  RANKED: "RANKED_FINISH",
+  FIGHT_CARD: "FIGHT_CARD"
 };
 
-const API_IMPORT_LEAGUES = ["NBA", "NFL", "MLB", "NHL", "NCAA Basketball", "NCAA Football", "Premier League", "MLS", "Champions League", "F1", "NASCAR", "IndyCar", "MotoGP"];
+const API_IMPORT_LEAGUES = ["NBA", "NFL", "MLB", "NHL", "NCAA Basketball", "NCAA Football", "Premier League", "MLS", "Champions League", "World Cup", "F1", "NASCAR", "IndyCar", "MotoGP", "UFC"];
 
 const AVATAR_CHOICES = ["😀", "😎", "🔥", "🧠", "🎯", "🏁", "⚡", "👑", "🐐", "💸", "🎲", "🦈"];
 
@@ -360,6 +366,7 @@ function safeRefreshFieldsForEvent(event, existing = null) {
     weatherText: event.weatherText || event.weather?.summary || "",
     venue: event.venue || "",
     resultOrder: event.resultOrder || [],
+    fightResults: event.fightResults || {},
     intel: event.intel || "",
     externalIds: event.externalIds || {},
     updatedAt: serverTimestamp()
@@ -369,6 +376,7 @@ function safeRefreshFieldsForEvent(event, existing = null) {
     fields.title = event.title;
     fields.startTime = event.startTime;
     fields.participants = event.participants || [];
+    fields.fights = event.fights || [];
   }
 
   if (hasFinancials) {
@@ -477,6 +485,74 @@ function formatExternalRefs(externalIds) {
     })
     .filter(Boolean)
     .join(" · ");
+}
+
+
+function normalizeFightId(value, fallback = "fight") {
+  return String(value || fallback)
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-|-$/g, "")
+    || fallback;
+}
+
+function fighterCode(name) {
+  const parts = String(name || "")
+    .trim()
+    .split(/\s+/)
+    .filter(Boolean);
+  if (!parts.length) return "TBD";
+  const last = parts[parts.length - 1] || parts[0];
+  return last.replace(/[^a-z0-9]/gi, "").slice(0, 10).toUpperCase() || "TBD";
+}
+
+function parseFightLine(line, index) {
+  const raw = String(line || "").trim();
+  if (!raw) return null;
+
+  const parts = raw
+    .split(/\s+(?:vs\.?|v\.?|versus)\s+|\s*\|\s*|\s+\/\s+/i)
+    .map(part => part.trim())
+    .filter(Boolean);
+
+  if (parts.length < 2) return null;
+
+  const fighterA = parts[0];
+  const fighterB = parts.slice(1).join(" vs ");
+  const id = normalizeFightId(`${index + 1}-${fighterA}-${fighterB}`, `fight-${index + 1}`);
+
+  return {
+    id,
+    order: index + 1,
+    fighterA,
+    fighterB,
+    label: `${fighterA} vs ${fighterB}`,
+    status: "pregame",
+    winner: ""
+  };
+}
+
+function parseFightCardInput(value) {
+  return String(value || "")
+    .split(/\n|,/)
+    .map((line, index) => parseFightLine(line, index))
+    .filter(Boolean)
+    .slice(0, 8);
+}
+
+function fightById(event, fightId) {
+  return (event?.fights || []).find(fight => fight.id === fightId) || null;
+}
+
+function fightPickName(fight, side) {
+  if (!fight) return side;
+  return side === "fighterB" ? fight.fighterB : fight.fighterA;
+}
+
+function fightResultWinner(event, fightId) {
+  const fight = fightById(event, fightId);
+  return event?.fightResults?.[fightId] || fight?.winner || "";
 }
 
 function getBettingDayISO(date = new Date()) {
@@ -785,7 +861,7 @@ function renderEventCard(event) {
         <div class="event-main">
           <div class="sport-icon">${renderLeagueLogo(event.sport, event.league)}</div>
           <div>
-            <div class="kicker">${escapeHtml(event.league)} · ${event.type === EVENT_TYPES.TEAM ? "Head-to-head" : "Ranked finish"}</div>
+            <div class="kicker">${escapeHtml(event.league)} · ${event.type === EVENT_TYPES.TEAM ? "Head-to-head" : event.type === EVENT_TYPES.FIGHT_CARD ? "Fight card" : "Ranked finish"}</div>
             <h3 class="event-title">${escapeHtml(event.title)}</h3>
             <div class="meta-line">
               <span class="status-badge ${escapeHtml(event.status)}">${escapeHtml(label(event.status))}</span>
@@ -794,7 +870,9 @@ function renderEventCard(event) {
             <div class="logo-stack">
               ${event.type === EVENT_TYPES.TEAM
                 ? `<span class="soft-badge">${escapeHtml(event.away.code)}</span><span class="soft-badge">vs</span><span class="soft-badge">${escapeHtml(event.home.code)}</span>`
-                : `<span class="soft-badge">${event.participants.length} participants</span>`}
+                : event.type === EVENT_TYPES.FIGHT_CARD
+                  ? `<span class="soft-badge">${(event.fights || []).length} fights</span>`
+                  : `<span class="soft-badge">${event.participants.length} participants</span>`}
             </div>
           </div>
         </div>
@@ -803,7 +881,7 @@ function renderEventCard(event) {
       <div class="event-desc">${escapeHtml(event.intel || "No event intel configured yet.")}${event.oddsStatus ? `<br><span class="tiny muted">Odds: ${escapeHtml(event.oddsStatus)}</span>` : ""}</div>
       <div class="bet-box">
         <h4>Quick bet panel</h4>
-        ${event.type === EVENT_TYPES.TEAM ? renderTeamBetForm(event, locked) : renderRankedBetForm(event, locked)}
+        ${event.type === EVENT_TYPES.TEAM ? renderTeamBetForm(event, locked) : event.type === EVENT_TYPES.FIGHT_CARD ? renderFightCardBetForm(event, locked) : renderRankedBetForm(event, locked)}
       </div>
       ${renderEventQueues(event)}
       <div class="event-code">
@@ -892,7 +970,7 @@ function renderLiveStats(stats = [], fallback = [], event = null) {
   if (!rows.length) return "";
   return `
     <div class="mini-stat-grid">
-      ${rows.slice(0, 6).map(stat => `
+      ${rows.slice(0, 9).map(stat => `
         <span><strong>${escapeHtml(stat.label || "Stat")}</strong>${escapeHtml(String(stat.value ?? "Unavailable"))}</span>
       `).join("")}
     </div>
@@ -933,6 +1011,28 @@ function renderScoreLine(event) {
           { label: event.status === "final" ? "Winner" : "Live", value: winner || "Scoreboard active" }
         ], event)}
         ${eventOddsMeta(event) ? `<div class="score-sub odds-line">${escapeHtml(eventOddsMeta(event))}</div>` : ""}
+      </div>
+    `;
+  }
+
+
+  if (event.type === EVENT_TYPES.FIGHT_CARD) {
+    const fights = event.fights || [];
+    return `
+      <div class="score-card fight-card-score">
+        <div class="event-center-label">Main card</div>
+        <div class="fight-list">
+          ${fights.length ? fights.map(fight => `
+            <div class="fight-row">
+              <span class="fight-number">#${escapeHtml(fight.order || "")}</span>
+              <strong>${escapeHtml(fight.fighterA)}</strong>
+              <span class="score-divider">vs</span>
+              <strong>${escapeHtml(fight.fighterB)}</strong>
+              ${fightResultWinner(event, fight.id) ? `<em>Winner: ${escapeHtml(fightResultWinner(event, fight.id))}</em>` : ""}
+            </div>
+          `).join("") : `<div class="record">No fights listed yet.</div>`}
+        </div>
+        <div class="score-sub odds-line">Odds: ${escapeHtml(eventOddsText(event))}</div>
       </div>
     `;
   }
@@ -990,6 +1090,30 @@ function renderTeamBetForm(event, locked) {
   `;
 }
 
+
+function renderFightCardBetForm(event, locked) {
+  const fights = event.fights || [];
+
+  return `
+    ${!canBet() ? `<p class="warning small">Log in with an approved account to place bets.</p>` : ""}
+    <div class="fight-bet-list">
+      ${fights.length ? fights.map(fight => `
+        <div class="fight-bet-row">
+          <div>
+            <strong>${escapeHtml(fight.label || `${fight.fighterA} vs ${fight.fighterB}`)}</strong>
+            <span class="muted tiny">Fight ${escapeHtml(fight.order || "")}</span>
+          </div>
+          <input id="amount-${escapeHtml(event.id)}-${escapeHtml(fight.id)}" type="number" min="1" step="1" value="1" ${locked ? "disabled" : ""} />
+          <button class="primary" data-bet-fight="${escapeHtml(event.id)}" data-fight-id="${escapeHtml(fight.id)}" data-side="fighterA" ${locked || !canBet() ? "disabled" : ""}>Pick ${escapeHtml(fighterCode(fight.fighterA))}</button>
+          <button class="primary" data-bet-fight="${escapeHtml(event.id)}" data-fight-id="${escapeHtml(fight.id)}" data-side="fighterB" ${locked || !canBet() ? "disabled" : ""}>Pick ${escapeHtml(fighterCode(fight.fighterB))}</button>
+        </div>
+      `).join("") : `<div class="record">No UFC fights have been added yet.</div>`}
+    </div>
+    <p class="footer-note small">${locked ? "This fight card is locked." : "Each fight is bet independently inside this one UFC card."}</p>
+    ${canBet() && !locked ? `<div class="bet-actions"><button class="ghost" data-clear-event-bets="${escapeHtml(event.id)}">Clear my bets for this card</button></div>` : ""}
+  `;
+}
+
 function renderRankedBetForm(event, locked) {
   return `
     ${!canBet() ? `<p class="warning small">Log in with an approved account to place bets.</p>` : ""}
@@ -1038,6 +1162,10 @@ function renderEventQueues(event) {
 
 function displayPick(event, bet) {
   if (event?.type === EVENT_TYPES.TEAM) return bet.side === "home" ? event.home.code : event.away.code;
+  if (event?.type === EVENT_TYPES.FIGHT_CARD) {
+    const fight = fightById(event, bet.fightId);
+    return `${fight?.label || "Fight"} · ${fightPickName(fight, bet.side)}`;
+  }
   return bet.participant || "Unknown";
 }
 
@@ -1602,7 +1730,7 @@ function renderAdmin() {
       <div class="admin-card">
         <h3>Create manual event</h3>
         <label>Event type</label>
-        <select id="adminEventType"><option value="${EVENT_TYPES.TEAM}">Two-option head-to-head</option><option value="${EVENT_TYPES.RANKED}">Ranked finish</option></select>
+        <select id="adminEventType"><option value="${EVENT_TYPES.TEAM}">Two-option head-to-head</option><option value="${EVENT_TYPES.RANKED}">Ranked finish</option><option value="${EVENT_TYPES.FIGHT_CARD}">UFC fight card</option></select>
         <label>Sport</label>
         <select id="adminSport">${Object.keys(SPORT_GROUPS).map(sport => `<option value="${sport}">${escapeHtml(label(sport))}</option>`).join("")}</select>
         <label>League / origin</label>
@@ -1613,8 +1741,8 @@ function renderAdmin() {
         <input id="adminTitle" placeholder="Away at Home, driver event, or custom title" />
         <label>Start time</label>
         <input id="adminStart" type="datetime-local" />
-        <label>Away option / Participants</label>
-        <input id="adminAway" placeholder="BOS or Option A or Verstappen,Norris,Leclerc" />
+        <label>Away option / Participants / UFC fights</label>
+        <textarea id="adminAway" placeholder="BOS or Option A or Verstappen,Norris,Leclerc\nFor UFC: Fighter A vs Fighter B, Fighter C vs Fighter D"></textarea>
         <label>Home option</label>
         <input id="adminHome" placeholder="DAL or Option B; leave blank for ranked events" />
         <button class="primary" data-action="create-event">Create event</button>
@@ -1629,10 +1757,44 @@ function renderAdmin() {
         <select id="adminStatus"><option value="pregame">Pregame</option><option value="live">Live</option><option value="final">Final</option></select>
         <label>Team/custom score: away,home</label>
         <input id="adminScore" placeholder="104,99" />
-        <label>Ranked result order</label>
-        <input id="adminResult" placeholder="Norris,Piastri,Verstappen" />
+        <label>Ranked result order / UFC winners</label>
+        <input id="adminResult" placeholder="Norris,Piastri,Verstappen or fight-1-name:winner, fight-2-name:winner" />
         <button class="primary" data-action="update-event">Update event</button>
         <button class="ghost" data-action="settle-event">Settle final event</button>
+      </div>
+
+
+      <div class="admin-card">
+        <h3>Matchup repair</h3>
+        <p class="muted small">Use this when automatic matching paired the wrong people. It removes unsettled matches involving these two users for the selected event, reopens displaced bets, and creates the intended match.</p>
+        <label>Event ID / display code</label>
+        <input id="repairEventId" placeholder="MLB0607-1 or UFC0607-1" />
+        <label>Fight ID/order (UFC only)</label>
+        <input id="repairFightId" placeholder="1 or fight-1-name; leave blank for team games" />
+        <div class="input-row">
+          <div>
+            <label>User A</label>
+            <select id="repairUserA">${approvedUsers.map(user => `<option value="${escapeHtml(user.id)}">${escapeHtml(user.displayName)}</option>`).join("")}</select>
+          </div>
+          <div>
+            <label>User B</label>
+            <select id="repairUserB">${approvedUsers.map(user => `<option value="${escapeHtml(user.id)}">${escapeHtml(user.displayName)}</option>`).join("")}</select>
+          </div>
+        </div>
+        <div class="input-row">
+          <div>
+            <label>User A pick</label>
+            <input id="repairPickA" placeholder="away/home or fighterA/fighterB" />
+          </div>
+          <div>
+            <label>User B pick</label>
+            <input id="repairPickB" placeholder="home/away or fighterB/fighterA" />
+          </div>
+        </div>
+        <label>Amount</label>
+        <input id="repairAmount" type="number" min="1" step="1" value="1" />
+        <button class="primary" data-action="repair-matchup">Repair/create match</button>
+        <p class="footer-note small">For team games use away/home. For UFC use fighterA/fighterB and provide the fight number or fight ID.</p>
       </div>
 
       <div class="admin-card">
@@ -1664,6 +1826,7 @@ function wireUi() {
   document.querySelector("#leagueFilter")?.addEventListener("change", event => { filters.league = event.target.value; renderApp(); });
   document.querySelectorAll("[data-bet-team]").forEach(button => button.addEventListener("click", () => placeTeamBet(button.dataset.betTeam, button.dataset.side)));
   document.querySelectorAll("[data-bet-ranked]").forEach(button => button.addEventListener("click", () => placeRankedBet(button.dataset.betRanked)));
+  document.querySelectorAll("[data-bet-fight]").forEach(button => button.addEventListener("click", () => placeFightCardBet(button.dataset.betFight, button.dataset.fightId, button.dataset.side)));
   document.querySelectorAll("[data-clear-event-bets]").forEach(button => button.addEventListener("click", () => clearCurrentUserEventBets(button.dataset.clearEventBets)));
   document.querySelectorAll("[data-settle]").forEach(button => button.addEventListener("click", () => settleBalance(button.dataset.settle, Number(button.dataset.amount))));
   document.querySelectorAll("[data-approve]").forEach(button => button.addEventListener("click", () => approveUser(button.dataset.approve)));
@@ -1684,6 +1847,7 @@ function wireUi() {
   document.querySelector("[data-action='update-event']")?.addEventListener("click", updateEvent);
   document.querySelector("[data-action='settle-event']")?.addEventListener("click", settleEventFromAdmin);
   document.querySelector("[data-action='manual-ledger']")?.addEventListener("click", manualLedgerAdd);
+  document.querySelector("[data-action='repair-matchup']")?.addEventListener("click", repairAdminMatchup);
 }
 
 function updateProfileUploadTile() {
@@ -1830,6 +1994,7 @@ function getUserEventBets(eventId, userId) {
 function getBetSelection(event, bet) {
   if (!event || !bet) return "";
   if (event.type === EVENT_TYPES.TEAM) return bet.side || "";
+  if (event.type === EVENT_TYPES.FIGHT_CARD) return `${bet.fightId || ""}:${bet.side || ""}`;
   return bet.participant || "";
 }
 
@@ -2021,6 +2186,111 @@ async function tryMatchTeamBet(newBet) {
   await batch.commit();
 }
 
+
+async function placeFightCardBet(eventId, fightId, side) {
+  const user = currentUser();
+  const event = state.events[eventId];
+  const fight = fightById(event, fightId);
+  const amount = Number(document.querySelector(`#amount-${CSS.escape(eventId)}-${CSS.escape(fightId)}`)?.value);
+
+  if (!user?.approved) return alert("Approved login required.");
+  if (!event || event.type !== EVENT_TYPES.FIGHT_CARD) return alert("Invalid UFC fight card.");
+  if (!fight) return alert("Fight not found on this card.");
+  if (eventIsLocked(event)) return alert("Bets are locked for this fight card.");
+  if (!Number.isFinite(amount) || amount <= 0) return alert("Enter a valid amount.");
+
+  const existingDifferentFightPick = getUserEventBets(eventId, user.id)
+    .some(bet => bet.fightId === fightId && bet.side && bet.side !== side);
+
+  if (existingDifferentFightPick) {
+    await removeUserFightBets(eventId, user.id, fightId);
+  }
+
+  const betRef = await addDoc(collection(db, "bets"), {
+    eventId,
+    userId: user.id,
+    type: EVENT_TYPES.FIGHT_CARD,
+    fightId,
+    fightLabel: fight.label || `${fight.fighterA} vs ${fight.fighterB}`,
+    side,
+    pickName: fightPickName(fight, side),
+    amount,
+    status: "open",
+    createdAt: serverTimestamp(),
+    updatedAt: serverTimestamp()
+  });
+
+  await tryMatchFightCardBet({ firestoreId: betRef.id, eventId, userId: user.id, fightId, side, amount });
+}
+
+async function tryMatchFightCardBet(newBet) {
+  const opposite = newBet.side === "fighterA" ? "fighterB" : "fighterA";
+  const candidate = Object.values(state.bets)
+    .filter(
+      bet =>
+        (bet.firestoreId || bet.id) !== newBet.firestoreId &&
+        bet.eventId === newBet.eventId &&
+        bet.fightId === newBet.fightId &&
+        bet.status === "open" &&
+        bet.side === opposite &&
+        Number(bet.amount) === Number(newBet.amount) &&
+        bet.userId !== newBet.userId
+    )
+    .sort((a, b) => toDateValue(a.createdAt) - toDateValue(b.createdAt))[0];
+
+  if (!candidate) return;
+
+  const candidateId = candidate.firestoreId || candidate.id;
+  const batch = writeBatch(db);
+
+  batch.update(doc(db, "bets", candidateId), { status: "matched", updatedAt: serverTimestamp() });
+  batch.update(doc(db, "bets", newBet.firestoreId), { status: "matched", updatedAt: serverTimestamp() });
+
+  const matchRef = doc(collection(db, "matches"));
+  batch.set(matchRef, {
+    id: matchRef.id,
+    type: EVENT_TYPES.FIGHT_CARD,
+    eventId: newBet.eventId,
+    fightId: newBet.fightId,
+    betA: candidateId,
+    betB: newBet.firestoreId,
+    userA: candidate.userId,
+    userB: newBet.userId,
+    sideA: candidate.side,
+    sideB: newBet.side,
+    amount: newBet.amount,
+    status: "matched",
+    createdAt: serverTimestamp(),
+    updatedAt: serverTimestamp()
+  });
+
+  await batch.commit();
+}
+
+async function removeUserFightBets(eventId, userId, fightId) {
+  const userBets = getUserEventBets(eventId, userId).filter(bet => bet.fightId === fightId);
+  const userBetIds = new Set(userBets.map(bet => bet.firestoreId || bet.id));
+  const batch = writeBatch(db);
+
+  for (const match of Object.values(state.matches)) {
+    if (match.eventId !== eventId || match.fightId !== fightId) continue;
+    if (!userBetIds.has(match.betA) && !userBetIds.has(match.betB)) continue;
+
+    const otherBetId = userBetIds.has(match.betA) ? match.betB : match.betA;
+    if (state.bets[otherBetId]) {
+      batch.update(doc(db, "bets", otherBetId), { status: "open", updatedAt: serverTimestamp() });
+    }
+
+    batch.delete(doc(db, "matches", match.firestoreId || match.id));
+  }
+
+  for (const bet of userBets) {
+    batch.delete(doc(db, "bets", bet.firestoreId || bet.id));
+  }
+
+  await batch.commit();
+}
+
 async function placeRankedBet(eventId) {
   const user = currentUser();
   const event = state.events[eventId];
@@ -2055,6 +2325,7 @@ async function settleEvent(eventId, options = {}) {
   if (event.status !== "final") { if (!options.silent) alert("Set event status to final before settling."); return; }
   if (event.type === EVENT_TYPES.TEAM) return settleTeamEvent(event, options);
   if (event.type === EVENT_TYPES.RANKED) return settleRankedEvent(event, options);
+  if (event.type === EVENT_TYPES.FIGHT_CARD) return settleFightCardEvent(event, options);
 }
 
 async function settleTeamEvent(event, options = {}) {
@@ -2140,6 +2411,52 @@ async function settleRankedEvent(event, options = {}) {
       updatedAt: serverTimestamp()
     });
   });
+
+  await batch.commit();
+}
+
+
+async function settleFightCardEvent(event, options = {}) {
+  const resultMap = event.fightResults || Object.fromEntries((event.fights || []).map(fight => [fight.id, fight.winner]).filter(([, winner]) => winner));
+  if (!Object.keys(resultMap).length) {
+    if (!options.silent) alert("UFC fight card needs winners first. Use fightId:winner in Ranked result order, separated by commas.");
+    return;
+  }
+
+  const batch = writeBatch(db);
+
+  Object.values(state.matches)
+    .filter(match => match.eventId === event.id && match.type === EVENT_TYPES.FIGHT_CARD && match.status !== "settled")
+    .forEach(match => {
+      const fight = fightById(event, match.fightId);
+      const winnerName = String(resultMap[match.fightId] || "").toLowerCase();
+      if (!fight || !winnerName) return;
+
+      const sideAName = fightPickName(fight, match.sideA).toLowerCase();
+      const sideBName = fightPickName(fight, match.sideB).toLowerCase();
+      const winner = winnerName === sideAName ? match.userA : winnerName === sideBName ? match.userB : null;
+      if (!winner) return;
+
+      const loser = winner === match.userA ? match.userB : match.userA;
+      const ledgerRef = doc(collection(db, "ledgerEntries"));
+
+      batch.set(ledgerRef, {
+        id: ledgerRef.id,
+        eventId: event.id,
+        fromUser: loser,
+        toUser: winner,
+        amount: Number(match.amount),
+        note: `UFC settled: ${event.title} · ${fight.label}`,
+        settled: false,
+        createdAt: serverTimestamp(),
+        updatedAt: serverTimestamp()
+      });
+
+      batch.update(doc(db, "matches", match.firestoreId || match.id), {
+        status: "settled",
+        updatedAt: serverTimestamp()
+      });
+    });
 
   await batch.commit();
 }
@@ -2848,6 +3165,19 @@ async function createEvent() {
       home: { code: home.toUpperCase(), name: home },
       score: null
     };
+  } else if (type === EVENT_TYPES.FIGHT_CARD) {
+    const fights = parseFightCardInput(away);
+    if (fights.length < 1) return alert("UFC fight cards need at least one fight like Fighter A vs Fighter B.");
+    event = {
+      ...base,
+      sport: "combat",
+      league: leagueInput || "UFC",
+      type: EVENT_TYPES.FIGHT_CARD,
+      fights,
+      fightResults: {},
+      odds: "UFC card",
+      intel: "UFC main-card event. Bet each fight independently inside this card."
+    };
   } else {
     const participants = away.split(",").map(item => item.trim()).filter(Boolean);
     if (participants.length < 2) return alert("Ranked events need at least two participants.");
@@ -2881,6 +3211,25 @@ async function updateEvent() {
     patch.resultOrder = resultInput.split(",").map(item => item.trim()).filter(Boolean);
   }
 
+  if (resultInput && event.type === EVENT_TYPES.FIGHT_CARD) {
+    const resultPairs = resultInput.split(",").map(item => item.trim()).filter(Boolean);
+    const fightResults = { ...(event.fightResults || {}) };
+    const fights = [...(event.fights || [])];
+
+    for (const pair of resultPairs) {
+      const [rawFightId, rawWinner] = pair.split(":").map(item => item?.trim());
+      if (!rawFightId || !rawWinner) continue;
+      const fight = fights.find(item => item.id === rawFightId || String(item.order) === rawFightId || item.label === rawFightId);
+      if (!fight) continue;
+      fightResults[fight.id] = rawWinner;
+      fight.winner = rawWinner;
+      fight.status = "final";
+    }
+
+    patch.fightResults = fightResults;
+    patch.fights = fights;
+  }
+
   await updateDoc(doc(db, "events", event.id), patch);
 }
 
@@ -2890,6 +3239,136 @@ async function settleEventFromAdmin() {
   const event = findEventByIdOrCode(id);
   if (!event) return alert("Event not found.");
   await settleEvent(event.id);
+}
+
+
+async function repairAdminMatchup() {
+  if (!isAdmin()) return;
+
+  const eventInput = document.querySelector("#repairEventId")?.value.trim();
+  const event = findEventByIdOrCode(eventInput);
+  const userA = document.querySelector("#repairUserA")?.value;
+  const userB = document.querySelector("#repairUserB")?.value;
+  const rawPickA = document.querySelector("#repairPickA")?.value.trim();
+  const rawPickB = document.querySelector("#repairPickB")?.value.trim();
+  const amount = Number(document.querySelector("#repairAmount")?.value);
+  const rawFightId = document.querySelector("#repairFightId")?.value.trim();
+
+  if (!event) return alert("Event not found.");
+  if (!userA || !userB || userA === userB) return alert("Pick two different users.");
+  if (!Number.isFinite(amount) || amount <= 0) return alert("Enter a valid amount.");
+  if (!rawPickA || !rawPickB || rawPickA === rawPickB) return alert("Enter opposite picks.");
+
+  let fightId = "";
+  let pickA = rawPickA;
+  let pickB = rawPickB;
+
+  if (event.type === EVENT_TYPES.TEAM) {
+    pickA = rawPickA.toLowerCase();
+    pickB = rawPickB.toLowerCase();
+    if (!["away", "home"].includes(pickA) || !["away", "home"].includes(pickB)) return alert("Team picks must be away/home.");
+  } else if (event.type === EVENT_TYPES.FIGHT_CARD) {
+    const fight = (event.fights || []).find(item => item.id === rawFightId || String(item.order) === rawFightId || item.label === rawFightId);
+    if (!fight) return alert("UFC repair needs a valid fight ID or fight number.");
+    fightId = fight.id;
+    pickA = rawPickA.toLowerCase();
+    pickB = rawPickB.toLowerCase();
+    if (!["fightera", "fighterb"].includes(pickA) || !["fightera", "fighterb"].includes(pickB)) return alert("UFC picks must be fighterA/fighterB.");
+    pickA = pickA === "fightera" ? "fighterA" : "fighterB";
+    pickB = pickB === "fightera" ? "fighterA" : "fighterB";
+  } else {
+    return alert("Matchup repair currently supports team games and UFC fight cards.");
+  }
+
+  const affectedUsers = new Set([userA, userB]);
+  const batch = writeBatch(db);
+
+  for (const match of Object.values(state.matches)) {
+    if (match.eventId !== event.id || match.status === "settled") continue;
+    if (event.type === EVENT_TYPES.FIGHT_CARD && match.fightId !== fightId) continue;
+    if (!affectedUsers.has(match.userA) && !affectedUsers.has(match.userB)) continue;
+
+    if (state.bets[match.betA]) batch.update(doc(db, "bets", match.betA), { status: "open", updatedAt: serverTimestamp() });
+    if (state.bets[match.betB]) batch.update(doc(db, "bets", match.betB), { status: "open", updatedAt: serverTimestamp() });
+    batch.delete(doc(db, "matches", match.firestoreId || match.id));
+  }
+
+  const existingBetA = Object.values(state.bets).find(bet =>
+    bet.eventId === event.id &&
+    bet.userId === userA &&
+    (event.type !== EVENT_TYPES.FIGHT_CARD || bet.fightId === fightId) &&
+    bet.side === pickA &&
+    Number(bet.amount) === amount
+  );
+
+  const existingBetB = Object.values(state.bets).find(bet =>
+    bet.eventId === event.id &&
+    bet.userId === userB &&
+    (event.type !== EVENT_TYPES.FIGHT_CARD || bet.fightId === fightId) &&
+    bet.side === pickB &&
+    Number(bet.amount) === amount
+  );
+
+  const betARef = existingBetA ? doc(db, "bets", existingBetA.firestoreId || existingBetA.id) : doc(collection(db, "bets"));
+  const betBRef = existingBetB ? doc(db, "bets", existingBetB.firestoreId || existingBetB.id) : doc(collection(db, "bets"));
+
+  const commonBetFields = {
+    eventId: event.id,
+    amount,
+    status: "matched",
+    adminRepaired: true,
+    updatedAt: serverTimestamp()
+  };
+
+  if (existingBetA) {
+    batch.update(betARef, { ...commonBetFields, side: pickA });
+  } else {
+    batch.set(betARef, {
+      id: betARef.id,
+      ...commonBetFields,
+      type: event.type,
+      userId: userA,
+      side: pickA,
+      fightId,
+      createdAt: serverTimestamp()
+    });
+  }
+
+  if (existingBetB) {
+    batch.update(betBRef, { ...commonBetFields, side: pickB });
+  } else {
+    batch.set(betBRef, {
+      id: betBRef.id,
+      ...commonBetFields,
+      type: event.type,
+      userId: userB,
+      side: pickB,
+      fightId,
+      createdAt: serverTimestamp()
+    });
+  }
+
+  const matchRef = doc(collection(db, "matches"));
+  batch.set(matchRef, {
+    id: matchRef.id,
+    type: event.type,
+    eventId: event.id,
+    fightId,
+    betA: betARef.id,
+    betB: betBRef.id,
+    userA,
+    userB,
+    sideA: pickA,
+    sideB: pickB,
+    amount,
+    status: "matched",
+    adminRepaired: true,
+    createdAt: serverTimestamp(),
+    updatedAt: serverTimestamp()
+  });
+
+  await batch.commit();
+  alert("Matchup repaired.");
 }
 
 async function manualLedgerAdd() {
