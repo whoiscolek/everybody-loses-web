@@ -2260,3 +2260,12 @@ button.danger {
     width: 100%;
   }
 }
+
+
+/* v10.7 supplied UFC + World Cup logo fit */
+.sport-logo-img[alt="UFC logo"],
+.sport-logo-img[alt="World Cup logo"] {
+  width: 40px;
+  height: 40px;
+  object-fit: contain;
+}
