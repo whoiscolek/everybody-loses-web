@@ -379,6 +379,8 @@ async function fetchTextUrl(url, label = "request") {
       "accept-language": "en-US,en;q=0.9",
       "cache-control": "no-cache",
       "pragma": "no-cache",
+      "origin": "https://leaderboard.indycar.com",
+      "referer": "https://leaderboard.indycar.com/",
       "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0 Safari/537.36"
     }
   });
@@ -400,6 +402,8 @@ async function fetchJsonUrl(url, label = "request") {
       "accept-language": "en-US,en;q=0.9",
       "cache-control": "no-cache",
       "pragma": "no-cache",
+      "origin": "https://leaderboard.indycar.com",
+      "referer": "https://leaderboard.indycar.com/",
       "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0 Safari/537.36"
     }
   });
@@ -507,6 +511,8 @@ function indyCarNameFromRow(row) {
 
 function indyCarPositionFromRow(row, fallback) {
   const candidates = [
+    row?.liveRank,
+    row?.overallRank,
     row?.runningPosition,
     row?.running_position,
     row?.position,
@@ -527,8 +533,8 @@ function indyCarDetailFromRow(row) {
   const bits = [];
   const car = row?.carNumber || row?.car_number || row?.number || row?.no || row?.car;
   const lap = row?.lapsCompleted ?? row?.laps_completed ?? row?.lap ?? row?.currentLap ?? row?.laps;
-  const speed = row?.speed ?? row?.lastLapSpeed ?? row?.bestLapSpeed;
-  const gap = row?.gap ?? row?.interval ?? row?.behind ?? row?.delta ?? row?.timeBehindLeader;
+  const speed = row?.LastSpeed ?? row?.BestSpeed ?? row?.AverageSpeed ?? row?.speed ?? row?.lastLapSpeed ?? row?.bestLapSpeed;
+  const gap = row?.liveGap ?? row?.gap ?? row?.interval ?? row?.behind ?? row?.diff ?? row?.delta ?? row?.timeBehindLeader;
   const status = row?.status || row?.trackStatus || row?.runningStatus || row?.state;
   if (car) bits.push(`#${car}`);
   if (lap !== undefined && lap !== null && String(lap) !== "") bits.push(`Lap ${lap}`);
@@ -542,7 +548,7 @@ function looksLikeIndyCarRow(row) {
   if (!row || typeof row !== "object") return false;
   const name = indyCarNameFromRow(row);
   if (!name || String(name).length < 3) return false;
-  return ["position", "rank", "pos", "runningPosition", "running_position", "carNumber", "car_number", "lap", "laps", "gap", "interval"].some(key => row[key] !== undefined)
+  return ["liveRank", "overallRank", "position", "rank", "pos", "runningPosition", "running_position", "carNumber", "car_number", "DriverID", "resultID", "firstName", "lastName", "lap", "laps", "gap", "liveGap", "interval"].some(key => row[key] !== undefined)
     || row.driver
     || row.competitor
     || row.entrant;
@@ -712,6 +718,9 @@ async function tryIndyCarJsonEndpoint(url) {
 async function fetchIndyCarOfficialLeaderboard() {
   const cacheBust = Date.now();
   const jsonCandidates = [
+    `https://indycar.blob.core.windows.net/racecontrol/timingscoring-ris.json?${cacheBust}`,
+    `https://indycar.blob.core.windows.net/racecontrol/timingscoring.json?${cacheBust}`,
+    `https://indycar.blob.core.windows.net/racecontrol/driversfeed.json?${cacheBust}`,
     `https://leaderboard.indycar.com/api/leaderboard?t=${cacheBust}`,
     `https://leaderboard.indycar.com/api/live?t=${cacheBust}`,
     `https://leaderboard.indycar.com/api/timing?t=${cacheBust}`,
@@ -729,7 +738,7 @@ async function fetchIndyCarOfficialLeaderboard() {
         sourceUrl: result.url,
         rows: result.rows,
         stats: [
-          { label: "Source", value: "INDYCAR live timing" },
+          { label: "Source", value: "INDYCAR Race Control" },
           { label: "Cars", value: String(result.rows.length) },
           { label: "Leader", value: result.rows[0]?.name || "Pending" }
         ]
@@ -753,7 +762,7 @@ async function fetchIndyCarOfficialLeaderboard() {
           sourceUrl: url,
           rows,
           stats: [
-            { label: "Source", value: "INDYCAR live timing" },
+            { label: "Source", value: "INDYCAR Race Control" },
             { label: "Cars", value: String(rows.length) },
             { label: "Leader", value: rows[0]?.name || "Pending" }
           ]
