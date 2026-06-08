@@ -316,14 +316,13 @@ function eventWeatherText(event) {
   return text || "Weather pending — sync today to refresh.";
 }
 
-function eventHasOddsInterest(eventId) {
-  return Object.values(state.bets || {}).some(bet => bet.eventId === eventId)
-    || Object.values(state.matches || {}).some(match => match.eventId === eventId);
+function eventHasMatchedOddsInterest(eventId) {
+  return Object.values(state.matches || {}).some(match => match.eventId === eventId && match.status !== "settled");
 }
 
-function eventCanUseOddsApi(event) {
+function eventCanUseOddsApi(event, forceMatched = false) {
   const eventId = event?.firestoreId || event?.id;
-  return Boolean(eventId && event?.type === EVENT_TYPES.TEAM && event?.status !== "final" && eventHasOddsInterest(eventId));
+  return Boolean(eventId && event?.type === EVENT_TYPES.TEAM && event?.status !== "final" && (forceMatched || eventHasMatchedOddsInterest(eventId)));
 }
 
 function cleanOddsText(value) {
@@ -376,7 +375,7 @@ function eventOddsMeta(event) {
 
 function renderAdminOddsButton(event) {
   if (!isAdmin() || event.type !== EVENT_TYPES.TEAM || event.status === "final") return "";
-  if (!eventCanUseOddsApi(event)) return `<span class="tiny muted">Odds API locked until someone bets this matchup.</span>`;
+  if (!eventCanUseOddsApi(event)) return `<span class="tiny muted">Odds API locked until this matchup has a matched bet.</span>`;
   return `<button class="ghost tiny-action" data-refresh-odds="${escapeHtml(event.firestoreId || event.id)}">Refresh odds</button>`;
 }
 
@@ -2184,7 +2183,7 @@ async function clearCurrentUserEventBets(eventId) {
 }
 
 
-async function refreshOddsForEvent(eventId, reason = "bet-created", showFeedback = false) {
+async function refreshOddsForEvent(eventId, reason = "bet-matched", showFeedback = false, forceMatched = false) {
   const event = state.events[eventId];
   if (!event || event.type !== EVENT_TYPES.TEAM) {
     if (showFeedback) alert("Odds refresh only works for team games right now.");
@@ -2195,8 +2194,8 @@ async function refreshOddsForEvent(eventId, reason = "bet-created", showFeedback
     return;
   }
 
-  if (!eventCanUseOddsApi(event)) {
-    const reasonText = "Odds API locked until this exact matchup has at least one bet or match. Showing ESPN/imported odds only.";
+  if (!eventCanUseOddsApi(event, forceMatched)) {
+    const reasonText = "Odds API locked until this exact matchup has a matched bet. Showing ESPN/imported odds only.";
     await setDoc(doc(db, "events", eventId), {
       oddsStatus: reasonText,
       updatedAt: serverTimestamp()
@@ -2334,7 +2333,6 @@ async function placeTeamBet(eventId, side) {
     updatedAt: serverTimestamp()
   });
 
-  await refreshOddsForEvent(eventId, "team-bet-created");
   await tryMatchTeamBet({ firestoreId: betRef.id, eventId, userId: user.id, side, amount });
 }
 
@@ -2379,6 +2377,7 @@ async function tryMatchTeamBet(newBet) {
   });
 
   await batch.commit();
+  await refreshOddsForEvent(newBet.eventId, "team-bet-matched", false, true);
 }
 
 
@@ -3171,7 +3170,7 @@ function activeTeamEventsForOdds() {
     if (event.type !== EVENT_TYPES.TEAM || event.status === "final") return false;
 
     const eventId = event.firestoreId || event.id;
-    if (!eventHasOddsInterest(eventId)) return false;
+    if (!eventHasMatchedOddsInterest(eventId)) return false;
     if (eventHasFreshAutoOdds(event)) return false;
 
     const start = new Date(event.startTime || 0).getTime();

@@ -1095,6 +1095,41 @@ function getTeamStatCandidates(summary, mappedEvent, rawEvent) {
   return { result, teamCodes: desiredCodes.length >= 2 ? desiredCodes : Array.from(result.keys()).slice(0, 2) };
 }
 
+
+function getCompetitorRecordCandidates(rawEvent, mappedEvent) {
+  const competition = rawEvent?.competitions?.[0] || {};
+  const desired = [
+    { side: "away", code: mappedEvent?.away?.code },
+    { side: "home", code: mappedEvent?.home?.code }
+  ];
+  const result = new Map(desired.map(item => [cleanCode(item.code, ""), []]).filter(([code]) => code));
+
+  for (const item of desired) {
+    const code = cleanCode(item.code, "");
+    if (!code) continue;
+    const competitor = getCompetitor(competition, item.side) || competition?.competitors?.find(comp => cleanCode(comp?.team?.abbreviation || comp?.team?.shortDisplayName || comp?.team?.displayName || "", "") === code);
+    const records = Array.isArray(competitor?.records) ? competitor.records : [];
+    const useful = records
+      .map(record => {
+        const name = String(record?.name || record?.type || record?.summary || "").toLowerCase();
+        const summary = String(record?.summary || record?.displayValue || record?.value || "").trim();
+        return { name, summary };
+      })
+      .filter(record => record.summary && /overall|total|record|league|regular/i.test(record.name || "overall"));
+    const best = useful[0] || records.map(record => ({ summary: String(record?.summary || record?.displayValue || "").trim() })).find(record => record.summary);
+    if (best?.summary) {
+      result.set(code, [{
+        label: `${code} Record`,
+        value: best.summary,
+        teamCode: code,
+        score: 60
+      }]);
+    }
+  }
+
+  return result;
+}
+
 function getPlayerOrLeaderCandidates(summary, mappedEvent) {
   const desiredCodes = [mappedEvent?.away?.code, mappedEvent?.home?.code].map(code => cleanCode(code, "")).filter(Boolean);
   const result = new Map(desiredCodes.map(code => [code, []]));
@@ -1143,6 +1178,7 @@ function getPlayerOrLeaderCandidates(summary, mappedEvent) {
 function pickUsefulTeamStats(summary, mappedEvent, rawEvent) {
   const rows = [];
   const { result: teamStats, teamCodes } = getTeamStatCandidates(summary, mappedEvent, rawEvent);
+  const recordStats = getCompetitorRecordCandidates(rawEvent, mappedEvent);
   const playerStats = getPlayerOrLeaderCandidates(summary, mappedEvent);
   const maxRows = 4;
   const maxPerTeam = 2;
@@ -1162,6 +1198,15 @@ function pickUsefulTeamStats(summary, mappedEvent, rawEvent) {
   for (let round = 0; round < 4 && rows.length < maxRows; round += 1) {
     for (const code of teamCodes.slice(0, 2)) {
       addBalanced((teamStats.get(code) || [])[round]);
+    }
+  }
+
+  // Pregame MLB often has no boxscore/player blocks yet, but ESPN usually still
+  // exposes real team records on the event competitors. Use those before player rows
+  // so tomorrow baseball cards are not blank just because lineups are not live yet.
+  for (let round = 0; round < 2 && rows.length < maxRows; round += 1) {
+    for (const code of teamCodes.slice(0, 2)) {
+      addBalanced((recordStats.get(code) || [])[round]);
     }
   }
 
