@@ -685,14 +685,15 @@ function statValue(stat) {
   return "";
 }
 
-function addStatRow(rows, label, value, max = 6) {
+function addStatRow(rows, label, value, max = 12, meta = {}) {
   const cleanLabel = String(label || "").trim();
   const cleanValue = String(value ?? "").trim();
-  if (!cleanLabel || !cleanValue || rows.length >= max) return;
-  if (/^(source|venue|status|odds|weather)$/i.test(cleanLabel)) return;
-  if (/^(scoreboard active|detailed boxscore unavailable|unavailable)$/i.test(cleanValue)) return;
-  if (rows.some(row => row.label === cleanLabel && row.value === cleanValue)) return;
-  rows.push({ label: cleanLabel, value: cleanValue });
+  if (!cleanLabel || !cleanValue || rows.length >= max) return false;
+  if (/^(source|venue|status|odds|weather)$/i.test(cleanLabel)) return false;
+  if (/^(scoreboard active|detailed boxscore unavailable|unavailable)$/i.test(cleanValue)) return false;
+  if (rows.some(row => row.label === cleanLabel && row.value === cleanValue)) return false;
+  rows.push({ label: cleanLabel, value: cleanValue, ...meta });
+  return true;
 }
 
 function formatPeriodLine(teamCode, competitor) {
@@ -702,83 +703,176 @@ function formatPeriodLine(teamCode, competitor) {
   return values.length ? `${teamCode} by period: ${values.join("-")}` : "";
 }
 
-function pickPlayerRows(summary, rows) {
+function teamCodeFromBlock(teamBlock) {
+  return cleanCode(teamBlock?.team?.abbreviation || teamBlock?.team?.shortDisplayName || teamBlock?.team?.displayName || "", "");
+}
+
+function statLabel(stat) {
+  return String(stat?.label || stat?.displayName || stat?.name || "").trim();
+}
+
+function statKey(label) {
+  return String(label || "").toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
+}
+
+function statMeaningScore(label, value, league = "") {
+  const key = statKey(label);
+  const val = String(value || "").trim();
+  if (!key || !val) return -999;
+
+  // Prefer team-level, game-shaping stats. These vary by sport, but this order keeps
+  // baseball from devolving into only hitter rows while also working for soccer, NBA, NFL, NHL.
+  const priorities = [
+    [/^(runs?|r)$/i, 120],
+    [/^(hits?|h)$/i, 115],
+    [/^(errors?|e)$/i, 110],
+    [/left on base|lob/i, 92],
+    [/earned runs?|era|whip|strikeouts?|walks?|pitch(es|ing)?|k\/?bb/i, 88],
+    [/field goal|fg|three|3pt|free throw|rebounds?|assists?|turnovers?|steals?|blocks?/i, 86],
+    [/shots? on goal|sog|shots?|saves?|corners?|fouls?|possession|yellow|red/i, 84],
+    [/yards?|first downs?|third down|red zone|sacks?|interceptions?|fumbles?|penalties/i, 82],
+    [/power play|faceoffs?|hits?|blocked shots?|giveaways?|takeaways?/i, 80],
+    [/score|total/i, 70]
+  ];
+
+  for (const [regex, score] of priorities) {
+    if (regex.test(key)) return score;
+  }
+  return 25;
+}
+
+function getTeamStatCandidates(summary, mappedEvent, rawEvent) {
+  const boxscoreTeams = summary?.boxscore?.teams || [];
+  const desiredCodes = [mappedEvent?.away?.code, mappedEvent?.home?.code].map(code => cleanCode(code, "")).filter(Boolean);
+  const blocksByCode = new Map();
+
+  for (const block of boxscoreTeams) {
+    const code = teamCodeFromBlock(block);
+    if (code) blocksByCode.set(code, block);
+  }
+
+  const orderedBlocks = desiredCodes.map(code => blocksByCode.get(code)).filter(Boolean);
+  for (const block of boxscoreTeams) {
+    if (!orderedBlocks.includes(block)) orderedBlocks.push(block);
+  }
+
+  const result = new Map();
+
+  for (const block of orderedBlocks.slice(0, 2)) {
+    const code = teamCodeFromBlock(block);
+    if (!code) continue;
+    const rows = [];
+    for (const stat of block?.statistics || []) {
+      const label = statLabel(stat);
+      const value = statValue(stat);
+      if (!label || !value) continue;
+      rows.push({
+        label: `${code} ${label}`,
+        value,
+        teamCode: code,
+        score: statMeaningScore(label, value, mappedEvent?.league)
+      });
+    }
+    result.set(code, rows.sort((a, b) => b.score - a.score));
+  }
+
+  const competition = rawEvent?.competitions?.[0] || {};
+  const away = getCompetitor(competition, "away") || competition.competitors?.[1] || {};
+  const home = getCompetitor(competition, "home") || competition.competitors?.[0] || {};
+  const fallbackPairs = [
+    [cleanCode(mappedEvent?.away?.code, ""), formatPeriodLine(mappedEvent?.away?.code, away)],
+    [cleanCode(mappedEvent?.home?.code, ""), formatPeriodLine(mappedEvent?.home?.code, home)]
+  ];
+
+  for (const [code, line] of fallbackPairs) {
+    if (!code || !line) continue;
+    const arr = result.get(code) || [];
+    arr.push({ label: `${code} scoring`, value: line.replace(/^.*?:\s*/, ""), teamCode: code, score: 75 });
+    result.set(code, arr);
+  }
+
+  return { result, teamCodes: desiredCodes.length >= 2 ? desiredCodes : Array.from(result.keys()).slice(0, 2) };
+}
+
+function getPlayerOrLeaderCandidates(summary, mappedEvent) {
+  const desiredCodes = [mappedEvent?.away?.code, mappedEvent?.home?.code].map(code => cleanCode(code, "")).filter(Boolean);
+  const result = new Map(desiredCodes.map(code => [code, []]));
   const playerTeams = summary?.boxscore?.players || [];
 
+  const wantedPlayerStats = ["IP", "H", "R", "ER", "BB", "SO", "K", "HR", "RBI", "AVG", "OPS", "PTS", "REB", "AST", "YDS", "TD", "SOG", "SV"];
+
   for (const teamBlock of playerTeams) {
-    const teamCode = teamBlock?.team?.abbreviation || teamBlock?.team?.shortDisplayName || teamBlock?.team?.displayName || "";
+    const code = cleanCode(teamBlock?.team?.abbreviation || teamBlock?.team?.shortDisplayName || teamBlock?.team?.displayName || "", "");
+    if (!code) continue;
+    const rows = result.get(code) || [];
+
     for (const category of teamBlock?.statistics || []) {
       const labels = category?.labels || category?.names || [];
       const athletes = category?.athletes || [];
       if (!Array.isArray(athletes) || !athletes.length) continue;
 
-      const scoringIndexes = ["PTS", "REB", "AST", "G", "A", "SOG", "H", "RBI", "HR", "YDS", "TD"].map(key => labels.findIndex(label => String(label).toUpperCase() === key)).filter(index => index >= 0);
+      const indexes = wantedPlayerStats
+        .map(key => labels.findIndex(label => String(label).toUpperCase() === key))
+        .filter(index => index >= 0);
 
-      for (const athleteRow of athletes.slice(0, 3)) {
+      const categoryName = String(category?.name || category?.displayName || "").toLowerCase();
+      const categoryBoost = /pitch/i.test(categoryName) ? 8 : 0;
+
+      for (const athleteRow of athletes.slice(0, 8)) {
         const athlete = athleteRow?.athlete?.displayName || athleteRow?.athlete?.shortName || athleteRow?.displayName || "";
         const stats = athleteRow?.stats || [];
         if (!athlete || !Array.isArray(stats) || !stats.length) continue;
-
-        const parts = scoringIndexes.slice(0, 3).map(index => `${stats[index]} ${labels[index]}`).filter(part => !/^undefined/i.test(part));
-        if (parts.length) addStatRow(rows, `${teamCode} ${athlete}`.trim(), parts.join(" · "));
-        if (rows.length >= 6) return;
+        const parts = indexes.slice(0, 4).map(index => `${stats[index]} ${labels[index]}`).filter(part => !/^undefined/i.test(part));
+        if (!parts.length) continue;
+        rows.push({
+          label: `${code} ${athlete}`,
+          value: parts.join(" · "),
+          teamCode: code,
+          score: 45 + categoryBoost
+        });
       }
     }
+
+    result.set(code, rows);
   }
+
+  return result;
 }
 
 function pickUsefulTeamStats(summary, mappedEvent, rawEvent) {
   const rows = [];
-  const boxscoreTeams = summary?.boxscore?.teams || [];
-  const preferred = /field goal|fg|3pt|three|free throw|rebounds?|assists?|turnovers?|steals?|blocks?|shots?|saves?|corners?|fouls?|hits?|errors?|yards?|first downs?|third down|power play|faceoffs?|possession|total/i;
+  const { result: teamStats, teamCodes } = getTeamStatCandidates(summary, mappedEvent, rawEvent);
+  const playerStats = getPlayerOrLeaderCandidates(summary, mappedEvent);
+  const maxRows = 9;
 
-  const addTeamRows = (teamBlock, limit = 3) => {
-    const teamCode = teamBlock?.team?.abbreviation || teamBlock?.team?.shortDisplayName || teamBlock?.team?.displayName || "";
-    const stats = teamBlock?.statistics || [];
-    let added = 0;
-
-    for (const stat of stats) {
-      const label = stat?.label || stat?.displayName || stat?.name || "";
-      const value = statValue(stat);
-      if (!preferred.test(label)) continue;
-      const before = rows.length;
-      addStatRow(rows, `${teamCode} ${label}`.trim(), value, 12);
-      if (rows.length > before) added += 1;
-      if (added >= limit) break;
+  // Show meaningful team-level stats first, paired by side. This prevents ESPN's first
+  // returned player/team block from filling the whole card.
+  for (let round = 0; round < 3 && rows.length < 6; round += 1) {
+    for (const code of teamCodes.slice(0, 2)) {
+      const candidate = (teamStats.get(code) || [])[round];
+      if (candidate) addStatRow(rows, candidate.label, candidate.value, maxRows, { teamCode: code });
     }
+  }
 
-    if (added < limit) {
-      for (const stat of stats) {
-        const label = stat?.label || stat?.displayName || stat?.name || "";
-        const before = rows.length;
-        addStatRow(rows, `${teamCode} ${label}`.trim(), statValue(stat), 12);
-        if (rows.length > before) added += 1;
-        if (added >= limit) break;
-      }
+  // If team-level data is thin, add the most useful player/leader rows, still balanced by side.
+  for (let round = 0; round < 3 && rows.length < maxRows; round += 1) {
+    for (const code of teamCodes.slice(0, 2)) {
+      const candidate = (playerStats.get(code) || [])[round];
+      if (candidate) addStatRow(rows, candidate.label, candidate.value, maxRows, { teamCode: code });
     }
-  };
-
-  // Balance team stats so the first team's boxscore cannot crowd out the second team's rows.
-  for (const teamBlock of boxscoreTeams.slice(0, 2)) addTeamRows(teamBlock, 3);
-
-  const competition = rawEvent?.competitions?.[0] || {};
-  const away = getCompetitor(competition, "away") || competition.competitors?.[1] || {};
-  const home = getCompetitor(competition, "home") || competition.competitors?.[0] || {};
-  addStatRow(rows, "Away scoring", formatPeriodLine(mappedEvent?.away?.code, away), 12);
-  addStatRow(rows, "Home scoring", formatPeriodLine(mappedEvent?.home?.code, home), 12);
-
-  pickPlayerRows(summary, rows);
+  }
 
   const leaders = summary?.leaders || [];
   for (const leaderGroup of leaders) {
-    const label = leaderGroup?.name || leaderGroup?.displayName || "";
+    if (rows.length >= maxRows) break;
+    const label = leaderGroup?.name || leaderGroup?.displayName || "Leader";
     const first = leaderGroup?.leaders?.[0];
     const athlete = first?.athlete?.displayName || first?.displayName || "";
     const value = first?.displayValue || first?.value || "";
-    addStatRow(rows, label, athlete ? `${athlete}${value ? ` · ${value}` : ""}` : value, 12);
+    addStatRow(rows, label, athlete ? `${athlete}${value ? ` · ${value}` : ""}` : value, maxRows);
   }
 
-  return rows.slice(0, 9);
+  return rows.slice(0, maxRows);
 }
 
 function summaryWeather(summary) {

@@ -970,7 +970,7 @@ function renderLiveStats(stats = [], fallback = [], event = null) {
   if (!rows.length) return "";
   return `
     <div class="mini-stat-grid">
-      ${rows.slice(0, 9).map(stat => `
+      ${rows.slice(0, 12).map(stat => `
         <span><strong>${escapeHtml(stat.label || "Stat")}</strong>${escapeHtml(String(stat.value ?? "Unavailable"))}</span>
       `).join("")}
     </div>
