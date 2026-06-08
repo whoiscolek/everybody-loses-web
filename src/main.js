@@ -332,6 +332,11 @@ function cleanOddsText(value) {
   return "";
 }
 
+function isPlaceholderOdds(value) {
+  const text = cleanOddsText(value);
+  return !text || /^(unavailable|api schedule import|odds unavailable|live odds unavailable|espn odds pending|odds pending)$/i.test(text);
+}
+
 function eventOddsText(event) {
   // ESPN/imported odds are the default for the board. The Odds API is only allowed
   // to display once this exact event has a matched bet tied to it.
@@ -359,7 +364,7 @@ function renderOddsDisplay(event) {
   if (event?.type !== EVENT_TYPES.TEAM) return "";
   const text = eventOddsText(event);
   const canShow = shouldShowOddsText(event);
-  const pending = event?.status !== "final" ? "ESPN odds pending" : "Odds unavailable";
+  const pending = event?.status !== "final" ? "Odds pending" : "Odds unavailable";
   return `
     <div class="odds-display ${canShow ? "" : "pending"}">
       <strong>Odds</strong>
@@ -378,7 +383,7 @@ function eventOddsMeta(event) {
 
 function renderAdminOddsButton(event) {
   if (!isAdmin() || event.type !== EVENT_TYPES.TEAM || event.status === "final") return "";
-  if (!eventCanUseOddsApi(event)) return `<span class="tiny muted">Odds API locked until this matchup has a matched bet.</span>`;
+  if (!eventCanUseOddsApi(event)) return "";
   return `<button class="ghost tiny-action" data-refresh-odds="${escapeHtml(event.firestoreId || event.id)}">Refresh odds</button>`;
 }
 
@@ -386,17 +391,26 @@ function safeRefreshFieldsForEvent(event, existing = null) {
   const existingId = existing?.firestoreId || existing?.id || "";
   const hasFinancials = existingId && eventHasFinancialRecords(existingId);
 
+  const incomingOdds = event.odds || "Unavailable";
+  const existingOdds = existing?.odds || "";
+  const preservedOdds = isPlaceholderOdds(incomingOdds) && !isPlaceholderOdds(existingOdds) ? existingOdds : incomingOdds;
+  const incomingWeatherText = event.weatherText || event.weather?.summary || "";
+  const preservedWeatherText = incomingWeatherText || existing?.weatherText || existing?.weather?.summary || "";
+  const incomingStats = Array.isArray(event.liveStats) ? event.liveStats : [];
+  const existingStats = Array.isArray(existing?.liveStats) ? existing.liveStats : [];
+  const preservedStats = incomingStats.length ? incomingStats : existingStats;
+
   const fields = {
     status: event.status,
     score: event.score || null,
-    odds: event.odds || "Unavailable",
+    odds: preservedOdds,
     leaderboard: event.leaderboard || [],
     leaderboardSource: event.leaderboardSource || "Imported event data",
     leaderboardVerified: !!event.leaderboardVerified,
-    liveStats: event.liveStats || [],
-    weather: event.weather || null,
-    weatherText: event.weatherText || event.weather?.summary || "",
-    venue: event.venue || "",
+    liveStats: preservedStats,
+    weather: event.weather || existing?.weather || null,
+    weatherText: preservedWeatherText,
+    venue: event.venue || existing?.venue || "",
     resultOrder: event.resultOrder || [],
     fightResults: event.fightResults || {},
     intel: event.intel || "",
@@ -957,7 +971,7 @@ function renderEventCard(event) {
         </div>
       </div>
       ${renderScoreLine(event)}
-      <div class="event-desc">${escapeHtml(event.intel || "No event intel configured yet.")}${event.oddsStatus ? `<br><span class="tiny muted">Odds: ${escapeHtml(event.oddsStatus)}</span>` : ""}</div>
+      <div class="event-desc">${escapeHtml(event.intel || "No event intel configured yet.")}</div>
       <div class="bet-box">
         <h4>Quick bet panel</h4>
         ${event.type === EVENT_TYPES.TEAM ? renderTeamBetForm(event, locked) : event.type === EVENT_TYPES.FIGHT_CARD ? renderFightCardBetForm(event, locked) : renderRankedBetForm(event, locked)}
@@ -2202,12 +2216,6 @@ async function refreshOddsForEvent(eventId, reason = "bet-matched", showFeedback
 
   if (!eventCanUseOddsApi(event, forceMatched)) {
     const reasonText = "Odds API locked until this exact matchup has a matched bet. Showing ESPN/imported odds only.";
-    await setDoc(doc(db, "events", eventId), {
-      oddsStatus: reasonText,
-      updatedAt: serverTimestamp()
-    }, { merge: true });
-    state.events[eventId] = { ...event, oddsStatus: reasonText };
-    renderApp();
     if (showFeedback) alert(`Odds not updated: ${reasonText}`);
     return;
   }
