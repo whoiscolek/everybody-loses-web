@@ -11,7 +11,7 @@ const LEAGUE_MAP = {
   "World Cup": { sport: "soccer", league: "World Cup", espnPath: "soccer/fifa.world", appSport: "soccer", eventType: "TEAM_HEAD_TO_HEAD" },
   F1: { sport: "racing", league: "F1", espnPath: "racing/f1", appSport: "racing", eventType: "RANKED_FINISH", leagueKey: "f1", useJolpicaF1: true },
   NASCAR: { sport: "racing", league: "NASCAR", espnPath: "racing/nascar-premier", appSport: "racing", eventType: "RANKED_FINISH", leagueKey: "nascar-premier", useOfficialLive: true },
-  IndyCar: { sport: "racing", league: "IndyCar", espnPath: "racing/irl", appSport: "racing", eventType: "RANKED_FINISH", leagueKey: "irl" },
+  IndyCar: { sport: "racing", league: "IndyCar", espnPath: "racing/irl", appSport: "racing", eventType: "RANKED_FINISH", leagueKey: "irl", useIndyCarOfficialLive: true },
   MotoGP: { sport: "racing", league: "MotoGP", espnPath: "", appSport: "racing", eventType: "RANKED_FINISH", leagueKey: "motogp", useMotoGpPulseLive: true },
   UFC: { sport: "mma", league: "UFC", espnPath: "mma/ufc", appSport: "combat", eventType: "FIGHT_CARD", useUfcFightCard: true }
 };
@@ -371,6 +371,25 @@ async function fetchEspnJson(url) {
 }
 
 
+
+async function fetchTextUrl(url, label = "request") {
+  const response = await fetch(url, {
+    headers: {
+      "accept": "text/html,application/json,text/plain,*/*",
+      "user-agent": "Everyone-Loses/1.0"
+    }
+  });
+
+  if (!response.ok) {
+    const error = new Error(`${label} failed with ${response.status}`);
+    error.status = response.status;
+    error.url = url;
+    throw error;
+  }
+
+  return response.text();
+}
+
 async function fetchJsonUrl(url, label = "request") {
   const response = await fetch(url, {
     headers: {
@@ -465,6 +484,154 @@ async function fetchNascarOfficialLeaderboard() {
   };
 }
 
+
+function indyCarNameFromRow(row) {
+  return row?.driver?.fullName
+    || row?.driver?.displayName
+    || row?.driver?.name
+    || row?.entrant?.driverName
+    || row?.competitor?.name
+    || row?.fullName
+    || row?.displayName
+    || row?.driverName
+    || row?.name
+    || [row?.firstName, row?.lastName].filter(Boolean).join(" ")
+    || "";
+}
+
+function indyCarPositionFromRow(row, fallback) {
+  const candidates = [
+    row?.runningPosition,
+    row?.running_position,
+    row?.position,
+    row?.rank,
+    row?.pos,
+    row?.order,
+    row?.place,
+    row?.p
+  ];
+  for (const value of candidates) {
+    const n = Number(String(value || "").replace(/[^0-9.-]/g, ""));
+    if (Number.isFinite(n) && n > 0) return n;
+  }
+  return fallback;
+}
+
+function indyCarDetailFromRow(row) {
+  const bits = [];
+  const car = row?.carNumber || row?.car_number || row?.number || row?.no || row?.car;
+  const lap = row?.lapsCompleted ?? row?.laps_completed ?? row?.lap ?? row?.currentLap ?? row?.laps;
+  const speed = row?.speed ?? row?.lastLapSpeed ?? row?.bestLapSpeed;
+  const gap = row?.gap ?? row?.interval ?? row?.behind ?? row?.delta ?? row?.timeBehindLeader;
+  const status = row?.status || row?.trackStatus || row?.runningStatus || row?.state;
+  if (car) bits.push(`#${car}`);
+  if (lap !== undefined && lap !== null && String(lap) !== "") bits.push(`Lap ${lap}`);
+  if (gap !== undefined && gap !== null && String(gap) !== "") bits.push(String(gap));
+  if (speed !== undefined && speed !== null && String(speed) !== "") bits.push(`${speed} mph`);
+  if (status && !/active|running/i.test(String(status))) bits.push(String(status));
+  return bits.join(" · ");
+}
+
+function looksLikeIndyCarRow(row) {
+  if (!row || typeof row !== "object") return false;
+  const name = indyCarNameFromRow(row);
+  if (!name || String(name).length < 3) return false;
+  return ["position", "rank", "pos", "runningPosition", "running_position", "carNumber", "car_number", "lap", "laps", "gap", "interval"].some(key => row[key] !== undefined)
+    || row.driver
+    || row.competitor
+    || row.entrant;
+}
+
+function collectIndyCarArrays(node, arrays = []) {
+  if (!node || typeof node !== "object") return arrays;
+  if (Array.isArray(node)) {
+    const rows = node.filter(looksLikeIndyCarRow);
+    if (rows.length >= 3) arrays.push(rows);
+    node.forEach(item => collectIndyCarArrays(item, arrays));
+    return arrays;
+  }
+  Object.values(node).forEach(value => collectIndyCarArrays(value, arrays));
+  return arrays;
+}
+
+function extractJsonScriptObjects(html) {
+  const objects = [];
+  const scriptMatches = String(html || "").matchAll(/<script[^>]*>([\s\S]*?)<\/script>/gi);
+  for (const match of scriptMatches) {
+    const body = match[1] || "";
+    const nextMatch = body.match(/self\.__next_f\.push\(\[[^,]+,"([\s\S]*?)"\]\)/);
+    const candidates = [];
+    const jsonOnly = body.trim();
+    if (jsonOnly.startsWith("{") || jsonOnly.startsWith("[")) candidates.push(jsonOnly);
+    const nextData = body.match(/<script[^>]*id=["']__NEXT_DATA__["'][^>]*>([\s\S]*?)<\/script>/i);
+    if (nextData?.[1]) candidates.push(nextData[1]);
+    const stateMatches = body.matchAll(/(?:__INITIAL_STATE__|__APOLLO_STATE__|__PRELOADED_STATE__)\s*=\s*({[\s\S]*?});/g);
+    for (const state of stateMatches) candidates.push(state[1]);
+    if (nextMatch?.[1]) candidates.push(nextMatch[1].replace(/\\"/g, '"').replace(/\\n/g, "\n"));
+
+    for (const candidate of candidates) {
+      try { objects.push(JSON.parse(candidate)); } catch { /* ignore */ }
+    }
+  }
+
+  const next = String(html || "").match(/<script[^>]*id=["']__NEXT_DATA__["'][^>]*>([\s\S]*?)<\/script>/i);
+  if (next?.[1]) {
+    try { objects.push(JSON.parse(next[1])); } catch { /* ignore */ }
+  }
+  return objects;
+}
+
+function rowsFromIndyCarHtml(html) {
+  const objects = extractJsonScriptObjects(html);
+  const arrays = [];
+  for (const object of objects) collectIndyCarArrays(object, arrays);
+  const best = arrays.sort((a, b) => b.length - a.length)[0] || [];
+  const seen = new Set();
+  return best
+    .map((row, index) => {
+      const name = indyCarNameFromRow(row).trim();
+      if (!name || seen.has(name.toLowerCase())) return null;
+      seen.add(name.toLowerCase());
+      return {
+        position: indyCarPositionFromRow(row, index + 1),
+        name,
+        detail: indyCarDetailFromRow(row)
+      };
+    })
+    .filter(Boolean)
+    .sort((a, b) => Number(a.position || 999) - Number(b.position || 999));
+}
+
+async function fetchIndyCarOfficialLeaderboard() {
+  const urls = [
+    "https://leaderboard.indycar.com/",
+    "https://www.indycar.com/leaderboard"
+  ];
+
+  for (const url of urls) {
+    try {
+      const html = await fetchTextUrl(url, "INDYCAR live leaderboard");
+      const rows = rowsFromIndyCarHtml(html);
+      if (rows.length >= 3) {
+        return {
+          source: "INDYCAR official live leaderboard",
+          sourceUrl: url,
+          rows,
+          stats: [
+            { label: "Source", value: "INDYCAR live timing" },
+            { label: "Cars", value: String(rows.length) },
+            { label: "Leader", value: rows[0]?.name || "Pending" }
+          ]
+        };
+      }
+    } catch {
+      // Try the next official leaderboard surface.
+    }
+  }
+
+  return null;
+}
+
 function motoGpDateFromHead(head) {
   const raw = String(head?.datet || head?.datst || "");
   if (/^\d{8}$/.test(raw)) return `${raw.slice(0,4)}-${raw.slice(4,6)}-${raw.slice(6,8)}T12:00:00Z`;
@@ -544,21 +711,24 @@ async function fetchMotoGpPulseLiveEvents(date) {
 
 function applyOfficialRacingFallback(events, config) {
   if (!Array.isArray(events)) return [];
-  if (config.league !== "NASCAR") return events;
+  if (!["NASCAR", "IndyCar"].includes(config.league)) return events;
 
-  // ESPN's NASCAR event object is useful for schedule/import, but its competitor ordering can be standings/start/grid-like.
-  // Do not show those rows as a live leaderboard unless NASCAR.com's official live feed replaces them.
+  const sourceName = config.league === "IndyCar" ? "INDYCAR live timing" : "NASCAR.com feed";
+  const sourceLabel = config.league === "IndyCar" ? "INDYCAR official leaderboard pending" : "NASCAR official live feed pending";
+
+  // ESPN racing event objects are useful for schedule/import, but their competitor ordering can be standings/start/grid-like.
+  // Do not show those rows as a live leaderboard unless a league-specific live source verifies positions.
   return events.map(event => ({
     ...event,
     leaderboard: [],
-    leaderboardSource: "NASCAR official live feed pending",
+    leaderboardSource: sourceLabel,
     leaderboardVerified: false,
     liveStats: [
-      { label: "Source", value: "NASCAR.com feed pending" },
+      { label: "Source", value: `${sourceName} pending` },
       { label: "Status", value: labelStatus(event.status) },
       { label: "Leaderboard", value: "Not verified yet" }
     ],
-    intel: "NASCAR schedule imported from ESPN. Live running order is only shown after the NASCAR.com live feed verifies positions."
+    intel: `${config.league} schedule imported from ESPN. Live running order is only shown after ${sourceName} verifies positions.`
   }));
 }
 
@@ -1053,10 +1223,12 @@ export default async function handler(req, res) {
       events = await mapEventsWithEnrichment(rawEvents, config, date);
     }
 
-    if (config.useOfficialLive) {
+    if (config.useOfficialLive || config.useIndyCarOfficialLive) {
       events = applyOfficialRacingFallback(events, config);
       try {
-        const official = await fetchNascarOfficialLeaderboard();
+        const official = config.useIndyCarOfficialLive
+          ? await fetchIndyCarOfficialLeaderboard()
+          : await fetchNascarOfficialLeaderboard();
         if (official?.rows?.length) {
           events = events.map(event => ({
             ...event,
@@ -1066,12 +1238,15 @@ export default async function handler(req, res) {
             leaderboardSource: official.source,
             leaderboardVerified: true,
             liveStats: official.stats,
-            externalIds: { ...event.externalIds, nascarLiveFeed: official.sourceUrl },
-            intel: "NASCAR event imported from ESPN schedule data with live running order from NASCAR.com's official live feed."
+            externalIds: {
+              ...event.externalIds,
+              [config.useIndyCarOfficialLive ? "indyCarLiveFeed" : "nascarLiveFeed"]: official.sourceUrl
+            },
+            intel: `${config.league} event imported from ESPN schedule data with live running order from ${official.source}.`
           }));
         }
       } catch (error) {
-        // Keep schedule imports, but do not present unverified ESPN driver ordering as a live leaderboard.
+        // Keep schedule imports, but do not present unverified racing driver ordering as a live leaderboard.
       }
     }
 
@@ -1081,7 +1256,7 @@ export default async function handler(req, res) {
       date,
       count: events.length,
       url,
-      note: config.sport === "racing" ? "Racing imports use verified league-specific result sources when available. F1 results use Jolpica/Ergast when available; NASCAR positions use NASCAR.com official live feed when available; ESPN is mainly schedule fallback." : config.league === "World Cup" ? "World Cup uses ESPN soccer league key fifa.world. This endpoint returns games only for dates ESPN has scheduled/scoreboard data available." : config.league === "UFC" ? "UFC uses ESPN MMA league key ufc and imports one fight-card event with main-card fights inside it when ESPN exposes fights for the selected date." : "",
+      note: config.sport === "racing" ? "Racing imports use verified league-specific result sources when available. F1 uses Jolpica/Ergast when available; NASCAR uses NASCAR.com when available; IndyCar attempts INDYCAR official live timing when available; ESPN is mainly schedule fallback." : config.league === "World Cup" ? "World Cup uses ESPN soccer league key fifa.world. This endpoint returns games only for dates ESPN has scheduled/scoreboard data available." : config.league === "UFC" ? "UFC uses ESPN MMA league key ufc and imports one fight-card event with main-card fights inside it when ESPN exposes fights for the selected date." : "",
       events
     });
   } catch (error) {
