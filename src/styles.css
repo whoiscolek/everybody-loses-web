@@ -2557,3 +2557,50 @@ button.danger {
     width: 100%;
   }
 }
+
+
+/* v10.24: align live Double Up controls cleanly */
+.record:has(.double-up-btn),
+.record:has(.double-up-status) {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  column-gap: 14px;
+  row-gap: 6px;
+}
+
+.record:has(.double-up-btn) strong,
+.record:has(.double-up-status) strong {
+  grid-column: 1;
+}
+
+.record:has(.double-up-btn) .muted,
+.record:has(.double-up-status) .muted {
+  grid-column: 1;
+}
+
+.double-up-btn,
+.double-up-status {
+  grid-column: 2;
+  grid-row: 1 / span 2;
+  justify-self: end;
+  align-self: center;
+  margin-top: 0;
+  white-space: nowrap;
+}
+
+@media (max-width: 720px) {
+  .record:has(.double-up-btn),
+  .record:has(.double-up-status) {
+    grid-template-columns: 1fr;
+  }
+
+  .double-up-btn,
+  .double-up-status {
+    grid-column: 1;
+    grid-row: auto;
+    justify-self: stretch;
+    width: 100%;
+    margin-top: 8px;
+  }
+}
