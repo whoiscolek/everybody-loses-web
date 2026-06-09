@@ -94,3 +94,10 @@ Do not publish real admin passwords, API keys, or private credentials in this RE
 - Recolors login/signup inputs and auth panel to match the darker glass UI.
 - Improves placeholder/readability for auth fields.
 - Replaces glitchy mobile tab bouncing with direct active-tab centering after render.
+
+
+## v10.45 mobile topbar compaction
+
+- Moves the mobile logout button into the title row on the right when logged in.
+- Keeps the profile pill below the title row without forcing logout onto its own full line.
+- Reduces mobile topbar height while keeping the same glass styling.
