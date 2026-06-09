@@ -40,6 +40,8 @@ const DISPLAY_TIME_ZONE = "America/New_York";
 const TIME_ZONE_LABEL = "ET";
 const BETTING_DAY_RESET_HOUR = 3;
 const AUTO_SYNC_INTERVAL_MS = 10 * 60 * 1000;
+const DISCOVERY_SYNC_INTERVAL_MS = 2 * 60 * 1000;
+const SPORT_SOURCE_SWEEP_INTERVAL_MS = 60 * 1000;
 const LIVE_SCORE_SYNC_INTERVAL_MS = 30 * 1000;
 const AUTO_ODDS_INTERVAL_MS = 15 * 60 * 1000;
 const ODDS_AUTO_PREGAME_COOLDOWN_MS = 60 * 60 * 1000;
@@ -157,6 +159,8 @@ let apiSyncRunning = false;
 let autoMaintenanceRunning = false;
 let autoMaintenanceTimer = null;
 let autoMaintenanceMessage = "";
+let mlbSyncDebug = "";
+let sourceSweepDebug = "";
 let authUser = null;
 let loading = true;
 let dataReady = false;
@@ -341,6 +345,36 @@ function snapToMap(snapshot) {
     };
   });
   return result;
+}
+
+function removeUndefinedDeep(value) {
+  if (Array.isArray(value)) {
+    return value
+      .map(item => removeUndefinedDeep(item))
+      .filter(item => item !== undefined);
+  }
+
+  if (value && typeof value === "object" && !(value instanceof Date)) {
+    const out = {};
+    for (const [key, inner] of Object.entries(value)) {
+      const cleaned = removeUndefinedDeep(inner);
+      if (cleaned !== undefined) out[key] = cleaned;
+    }
+    return out;
+  }
+
+  return value === undefined ? undefined : value;
+}
+
+function mergeExternalIds(existing = {}, incoming = {}) {
+  return removeUndefinedDeep({ ...existing, ...incoming });
+}
+
+function mlbDebugLine(prefix, data = {}) {
+  const parts = Object.entries(data)
+    .filter(([, value]) => value !== undefined && value !== null && value !== "")
+    .map(([key, value]) => `${key}=${value}`);
+  return `${prefix}${parts.length ? ` (${parts.join(", ")})` : ""}`;
 }
 
 function currentUser() {
@@ -594,7 +628,7 @@ function safeRefreshFieldsForEvent(event, existing = null) {
     resultOrder: event.resultOrder?.length ? event.resultOrder : existing?.resultOrder || [],
     fightResults: event.fightResults && Object.keys(event.fightResults).length ? event.fightResults : existing?.fightResults || {},
     intel: event.intel || existing?.intel || "",
-    externalIds: { ...(existing?.externalIds || {}), ...(event.externalIds || {}) },
+    externalIds: mergeExternalIds(existing?.externalIds || {}, event.externalIds || {}),
     updatedAt: serverTimestamp()
   };
 
@@ -2060,12 +2094,13 @@ function renderAdmin() {
         <p class="muted small">Pull real schedule/score data into Firestore. ESPN is the default free source; NASCAR live order uses NASCAR.com when available; MotoGP uses PulseLive timing when available. Manual events stay available as the fallback.</p>
         <div class="button-row">
           <button class="primary" data-action="sync-api-now-window" ${apiSyncRunning ? "disabled" : ""}>Sync full Now window</button>
+          <button class="ghost" data-action="force-mlb-sync">Force MLB live sync</button>
           <button class="ghost" data-action="sync-api-today" ${apiSyncRunning ? "disabled" : ""}>Sync today only</button>
           <button class="ghost" data-action="sync-api-tomorrow" ${apiSyncRunning ? "disabled" : ""}>Sync tomorrow only</button>
           <button class="ghost" data-action="delete-demo-events">Delete old demo events</button>
           <button class="ghost" data-action="cleanup-api-events">Clean duplicate API events</button>
         </div>
-        <p class="footer-note small">Automatic maintenance now runs in the background for admins: full Now-window schedule sync, duplicate cleanup, final-event settlement, and odds refresh only for events with bets/matches. ESPN/imported odds remain the default display until someone actually bets. Backup buttons stay here as manual controls.</p>
+        <p class="footer-note small">Automatic maintenance now runs in the background for admins: automatic source discovery sweeps, live score refresh, duplicate cleanup, final-event settlement, and odds refresh only for events with bets/matches. ESPN/imported odds remain the default display until someone actually bets. Backup buttons stay here as manual controls.</p>
         <label>Manual league/date fetch</label>
         <select id="apiLeague">
           ${API_IMPORT_LEAGUES.map(league => `<option value="${escapeHtml(league)}">${escapeHtml(league)}</option>`).join("")}
@@ -2077,6 +2112,8 @@ function renderAdmin() {
           <button class="ghost" data-action="import-all-api-events" ${apiImportResults.length ? "" : "disabled"}>Import fetched</button>
         </div>
         ${apiImportMessage ? `<p class="footer-note small">${escapeHtml(apiImportMessage)}</p>` : ""}
+        ${mlbSyncDebug ? `<p class="footer-note small debug-line">MLB debug: ${escapeHtml(mlbSyncDebug)}</p>` : ""}
+        ${sourceSweepDebug ? `<p class="footer-note small debug-line">Source sweep: ${escapeHtml(sourceSweepDebug)}</p>` : ""}
         ${autoMaintenanceMessage ? `<p class="footer-note small">Auto: ${escapeHtml(autoMaintenanceMessage)}</p>` : ""}
         <div class="api-results">
           ${renderApiImportResults()}
@@ -2201,6 +2238,7 @@ function wireUi() {
   document.querySelector("[data-action='admin-unlock']")?.addEventListener("click", adminUnlock);
   document.querySelector("[data-action='fetch-api-events']")?.addEventListener("click", fetchApiEvents);
   document.querySelector("[data-action='sync-api-now-window']")?.addEventListener("click", () => syncNowWindowSchedule());
+  document.querySelector("[data-action='force-mlb-sync']")?.addEventListener("click", () => forceSyncMlbNowWindow());
   document.querySelector("[data-action='sync-api-today']")?.addEventListener("click", () => syncApiSchedule(0));
   document.querySelector("[data-action='sync-api-tomorrow']")?.addEventListener("click", () => syncApiSchedule(1));
   document.querySelector("[data-action='delete-demo-events']")?.addEventListener("click", deleteDemoEvents);
@@ -2991,8 +3029,12 @@ function eventMatchesApiImport(saved, apiEvent) {
   const sameSport = String(saved.sport || "") === String(apiEvent.sport || "");
   if (!sameLeague || !sameSport) return false;
 
+  const savedMlbGamePk = saved.externalIds?.mlbGamePk || "";
+  const apiMlbGamePk = apiEvent.externalIds?.mlbGamePk || (apiEvent.externalIds?.source === "mlb-statsapi" ? apiEvent.apiEventId : "");
+  if (savedMlbGamePk && apiMlbGamePk && String(savedMlbGamePk) === String(apiMlbGamePk)) return true;
+
   const savedEspn = saved.externalIds?.espnEventId || saved.externalIds?.eventId || "";
-  const apiEspn = apiEvent.apiEventId || apiEvent.externalIds?.espnEventId || apiEvent.externalIds?.eventId || "";
+  const apiEspn = apiEvent.externalIds?.espnEventId || apiEvent.externalIds?.eventId || "";
   if (savedEspn && apiEspn && String(savedEspn) === String(apiEspn)) return true;
 
   const savedTitle = String(saved.title || "").trim().toLowerCase();
@@ -3297,7 +3339,7 @@ async function saveApiEventToBatch(batch, event, usedCodes) {
 
   if (existing) {
     const existingId = existing.firestoreId || existing.id || id;
-    const liveFields = safeRefreshFieldsForEvent(event, existing);
+    const liveFields = removeUndefinedDeep(safeRefreshFieldsForEvent(event, existing));
     batch.set(doc(db, "events", existingId), liveFields, { merge: true });
     return "updated";
   }
@@ -3313,7 +3355,7 @@ async function saveApiEventToBatch(batch, event, usedCodes) {
   delete savedEvent.apiSource;
   delete savedEvent.apiEventId;
 
-  batch.set(doc(db, "events", id), savedEvent, { merge: true });
+  batch.set(doc(db, "events", id), removeUndefinedDeep(savedEvent), { merge: true });
   return "added";
 }
 
@@ -3364,57 +3406,22 @@ async function syncNowWindowSchedule(options = {}) {
   }
 
   try {
-    const batch = writeBatch(db);
-    const usedCodes = new Set(Object.values(state.events || {}).map(event => event.shortCode).filter(Boolean));
-    const counts = [];
-    let added = 0;
-    let updated = 0;
-    let fetched = 0;
-    let skippedOutsideWindow = 0;
-
-    for (const dateISO of dates) {
-      for (const league of API_IMPORT_LEAGUES) {
-        try {
-          const events = await fetchApiEventsForLeagueDate(league, dateISO);
-          fetched += events.length;
-
-          let savedForLeagueDate = 0;
-          for (const event of events) {
-            const existing = findExistingApiEvent(event);
-            const shouldSave = existing || eventShouldBeAutoSavedForNowWindow(event);
-
-            if (!shouldSave) {
-              skippedOutsideWindow += 1;
-              continue;
-            }
-
-            const result = await saveApiEventToBatch(batch, event, usedCodes);
-            if (result === "added") {
-              added += 1;
-              savedForLeagueDate += 1;
-            }
-            if (result === "updated") {
-              updated += 1;
-              savedForLeagueDate += 1;
-            }
-          }
-
-          if (events.length || savedForLeagueDate) counts.push(`${league} ${dateISO}: ${savedForLeagueDate}/${events.length}`);
-        } catch (error) {
-          const cleanError = String(error.message || "error").replace(/^ESPN request failed with /, "");
-          counts.push(`${league} ${dateISO}: ${cleanError}`);
-        }
-      }
-    }
-
-    if (added || updated) await batch.commit();
+    const sweep = await syncSportSourceSweeps({ silent: true });
+    const totals = sweep.results.reduce((acc, item) => {
+      acc.added += item.added || 0;
+      acc.updated += item.updated || 0;
+      acc.fetched += item.fetched || 0;
+      acc.skipped += item.skipped || 0;
+      acc.errors += item.errors?.length || 0;
+      return acc;
+    }, { added: 0, updated: 0, fetched: 0, skipped: 0, errors: 0 });
 
     if (!silent) {
-      apiImportMessage = `Synced ${NOW_WINDOW_SYNC_LABEL}. Fetched ${fetched}; saved ${added + updated}; skipped ${skippedOutsideWindow} outside the 48-hour board. ${counts.join(" · ")}`;
+      apiImportMessage = `Synced ${NOW_WINDOW_SYNC_LABEL}. Fetched ${totals.fetched}; saved ${totals.added + totals.updated}; skipped ${totals.skipped}; source errors ${totals.errors}.`;
       renderApp();
     }
 
-    return { added, updated, fetched, skippedOutsideWindow };
+    return { ...totals, results: sweep.results };
   } catch (error) {
     if (!silent) {
       apiImportMessage = error.message || "Now window sync failed.";
@@ -3553,53 +3560,154 @@ async function syncLiveScoreEvents(options = {}) {
 }
 
 
-async function syncMlbLiveSweep(options = {}) {
-  if (!isAdmin()) return { added: 0, updated: 0, fetched: 0 };
+async function syncLeagueNowWindow(league, options = {}) {
+  if (!isAdmin()) return { added: 0, updated: 0, fetched: 0, skipped: 0, league };
 
-  const today = getBettingDayISO();
-  const dates = new Set([today]);
-
-  // Include nearby dates because MLB night games and doubleheaders can drift
-  // across UTC/app-date boundaries, and missing games cannot be discovered by
-  // candidate-only refresh.
-  const baseDate = new Date(`${today}T12:00:00Z`);
-  for (const offset of [-1, 1]) {
-    const d = new Date(baseDate);
-    d.setUTCDate(d.getUTCDate() + offset);
-    dates.add(d.toISOString().slice(0, 10));
+  if (league === "MLB") {
+    const mlb = await forceSyncMlbNowWindow({ silent: true, ...options });
+    return { ...mlb, league: "MLB" };
   }
 
-  const batch = writeBatch(db);
+  const dates = nowWindowDateISOs();
   const usedCodes = new Set(Object.values(state.events || {}).map(event => event.shortCode).filter(Boolean));
   let fetched = 0;
   let added = 0;
   let updated = 0;
+  let skipped = 0;
+  const errors = [];
+
+  for (const dateISO of dates) {
+    const batch = writeBatch(db);
+    let dateAdded = 0;
+    let dateUpdated = 0;
+
+    try {
+      const events = await fetchApiEventsForLeagueDate(league, dateISO);
+      fetched += events.length;
+
+      for (const event of events) {
+        const existing = findExistingApiEvent(event);
+        if (!existing && !eventShouldBeAutoSavedForNowWindow(event)) {
+          skipped += 1;
+          continue;
+        }
+
+        const result = await saveApiEventToBatch(batch, event, usedCodes);
+        if (result === "added") {
+          added += 1;
+          dateAdded += 1;
+        }
+        if (result === "updated") {
+          updated += 1;
+          dateUpdated += 1;
+        }
+      }
+
+      if (dateAdded || dateUpdated) await batch.commit();
+    } catch (error) {
+      errors.push(`${dateISO}: ${error?.message || String(error)}`);
+    }
+  }
+
+  return { league, added, updated, fetched, skipped, errors };
+}
+
+async function syncSportSourceSweeps(options = {}) {
+  if (!isAdmin()) return { results: [] };
+
+  const leagues = options.leagues || API_IMPORT_LEAGUES;
+  const results = [];
+  for (const league of leagues) {
+    try {
+      const result = await syncLeagueNowWindow(league, { silent: true });
+      results.push(result);
+    } catch (error) {
+      results.push({ league, added: 0, updated: 0, fetched: 0, skipped: 0, errors: [error?.message || String(error)] });
+    }
+  }
+
+  const important = results
+    .filter(item => (item.added || item.updated || item.errors?.length || item.league === "MLB"))
+    .map(item => `${item.league}: f${item.fetched || 0}/+${item.added || 0}/~${item.updated || 0}${item.errors?.length ? "/err" : ""}`);
+
+  sourceSweepDebug = important.join(" · ");
+  return { results };
+}
+
+async function forceSyncMlbNowWindow(options = {}) {
+  if (!isAdmin()) return { added: 0, updated: 0, fetched: 0, errors: [] };
+
+  const silent = !!options.silent;
+  const dates = nowWindowDateISOs();
+  const usedCodes = new Set(Object.values(state.events || {}).map(event => event.shortCode).filter(Boolean));
+  const debug = [];
+  const errors = [];
+  let fetched = 0;
+  let added = 0;
+  let updated = 0;
+  let skipped = 0;
+
+  if (!silent) {
+    apiImportMessage = `Force syncing MLB from MLB Stats API for ${dates.join(", ")}...`;
+    mlbSyncDebug = "";
+    renderApp();
+  }
 
   for (const dateISO of dates) {
     try {
       const events = await fetchApiEventsForLeagueDate("MLB", dateISO);
       fetched += events.length;
 
+      let dateAdded = 0;
+      let dateUpdated = 0;
+      let dateSkipped = 0;
+      const batch = writeBatch(db);
+
       for (const event of events) {
-        // Only auto-add games that belong on/near today's board. This catches
-        // live games that were never imported, without filling the app with old MLB cards.
-        const start = new Date(event.startTime || 0).getTime();
-        const now = Date.now();
-        const nearToday = Number.isFinite(start) && Math.abs(start - now) < 30 * 60 * 60 * 1000;
-        const activeOrNear = event.status === "live" || event.status === "pregame" || nearToday;
-        if (!activeOrNear) continue;
+        const existing = findExistingApiEvent(event);
+        const shouldSave = existing || eventShouldBeAutoSavedForNowWindow(event);
+
+        if (!shouldSave) {
+          skipped += 1;
+          dateSkipped += 1;
+          continue;
+        }
 
         const result = await saveApiEventToBatch(batch, event, usedCodes);
-        if (result === "added") added += 1;
-        if (result === "updated") updated += 1;
+        if (result === "added") {
+          added += 1;
+          dateAdded += 1;
+        }
+        if (result === "updated") {
+          updated += 1;
+          dateUpdated += 1;
+        }
       }
-    } catch {
-      // MLB sweep is best-effort and should never block the app.
+
+      if (dateAdded || dateUpdated) await batch.commit();
+      debug.push(mlbDebugLine(dateISO, { fetched: events.length, added: dateAdded, updated: dateUpdated, skipped: dateSkipped }));
+    } catch (error) {
+      const message = error?.message || String(error);
+      errors.push(`${dateISO}: ${message}`);
+      debug.push(mlbDebugLine(dateISO, { error: message }));
     }
   }
 
-  if (added || updated) await batch.commit();
-  return { added, updated, fetched };
+  mlbSyncDebug = [...debug, ...errors.map(error => `Error ${error}`)].join(" · ");
+
+  if (!silent) {
+    apiImportMessage = `MLB force sync complete. Fetched ${fetched}; added ${added}; updated ${updated}; skipped ${skipped}.`;
+    renderApp();
+  }
+
+  return { added, updated, fetched, skipped, errors };
+}
+
+async function syncMlbLiveSweep(options = {}) {
+  // Use the same dedicated MLB path for automatic refreshes and manual repair.
+  // This avoids the old candidate-only refresh problem where missing MLB games
+  // could not update because they were never on the board.
+  return forceSyncMlbNowWindow({ silent: true, ...options });
 }
 
 function autoKey(name) {
@@ -3719,14 +3827,20 @@ async function runAutoMaintenance(reason = "timer") {
       if (live.updated) notes.push(`live refreshed ${live.updated}`);
     }
 
-    if (shouldRunAutoTask("mlb-live-sweep", LIVE_SCORE_SYNC_INTERVAL_MS)) {
-      const mlb = await syncMlbLiveSweep({ silent: true });
-      if (mlb.added || mlb.updated) notes.push(`MLB live sweep +${mlb.added}/~${mlb.updated}`);
+    if (shouldRunAutoTask("source-sweeps", SPORT_SOURCE_SWEEP_INTERVAL_MS)) {
+      const sweep = await syncSportSourceSweeps({ silent: true });
+      const totals = sweep.results.reduce((acc, item) => {
+        acc.added += item.added || 0;
+        acc.updated += item.updated || 0;
+        acc.fetched += item.fetched || 0;
+        return acc;
+      }, { added: 0, updated: 0, fetched: 0 });
+      if (totals.added || totals.updated) notes.push(`source sweep ${totals.fetched} fetched, +${totals.added}/~${totals.updated}`);
     }
 
-    if (shouldRunAutoTask("sync-now-window", AUTO_SYNC_INTERVAL_MS)) {
+    if (shouldRunAutoTask("sync-now-window", DISCOVERY_SYNC_INTERVAL_MS)) {
       const nowWindow = await syncNowWindowSchedule({ silent: true });
-      notes.push(`Now window ${nowWindow.fetched || 0} fetched, ${((nowWindow.added || 0) + (nowWindow.updated || 0))} saved`);
+      notes.push(`Now discovery ${nowWindow.fetched || 0} fetched, ${((nowWindow.added || 0) + (nowWindow.updated || 0))} saved`);
     }
 
     if (shouldRunAutoTask("cleanup", AUTO_CLEANUP_INTERVAL_MS)) {
@@ -3756,8 +3870,15 @@ function maybeStartAutoMaintenance() {
   if (!isAdmin()) return;
 
   if (!autoMaintenanceTimer) {
+    // Start with discovery, not only score refresh, so missing games populate
+    // automatically when an admin opens the app.
     runAutoMaintenance("startup");
+    setTimeout(() => syncNowWindowSchedule({ silent: true }), 1000);
     autoMaintenanceTimer = setInterval(() => runAutoMaintenance("interval"), 30 * 1000);
+
+    window.addEventListener("focus", () => {
+      if (isAdmin()) runAutoMaintenance("focus");
+    });
   }
 }
 

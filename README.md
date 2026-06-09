@@ -300,3 +300,22 @@ History:
 - The app now syncs first, then filters display, instead of merely hiding far-future games after partial imports.
 - Manual Admin button added: Sync full Now window.
 - Auto-maintenance uses the full Now-window sync instead of disconnected today/tomorrow syncs.
+
+
+## v10.30 MLB sync stabilization
+
+- MLB now has a dedicated force-sync path instead of relying on the broad multi-league batch.
+- Full Now-window sync delegates MLB to that dedicated path.
+- Added Admin button: Force MLB live sync.
+- Added MLB debug output showing fetched/added/updated/skipped by date.
+- Firestore event writes are sanitized to remove undefined values.
+- MLB matching now directly keys on mlbGamePk so updates hit the same event reliably.
+
+
+## v10.31 Automatic source discovery sweeps
+
+- The Force MLB button remains as a backup diagnostic only.
+- Automatic maintenance now runs a source sweep for every supported league in the 48-hour Now window.
+- MLB's dedicated Stats API sync runs as part of the automatic sweep instead of requiring manual intervention.
+- Startup/focus triggers a Now-window discovery sync so missing games can populate without checking Google.
+- Admin now shows Source sweep debug in addition to MLB debug.

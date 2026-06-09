@@ -2624,3 +2624,10 @@ button.danger {
   font-size: .9rem;
   border-style: dashed;
 }
+
+
+/* v10.30 MLB diagnostics */
+.debug-line {
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
