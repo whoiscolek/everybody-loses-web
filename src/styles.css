@@ -2858,3 +2858,309 @@ button.ghost:hover {
     background: transparent;
   }
 }
+
+
+/* v10.35 refined Apple-style frosted liquid glass */
+:root {
+  --bg: #020305;
+  --bg-2: #070a0e;
+  --card: rgba(255, 255, 255, 0.135);
+  --card-solid: rgba(255, 255, 255, 0.2);
+  --glass: rgba(255, 255, 255, 0.13);
+  --glass-strong: rgba(255, 255, 255, 0.22);
+  --line: rgba(255, 255, 255, 0.24);
+  --line-strong: rgba(255, 255, 255, 0.38);
+  --text: #fbfcff;
+  --muted: rgba(238, 242, 248, 0.76);
+  --muted-2: rgba(238, 242, 248, 0.52);
+  --shadow: 0 28px 90px rgba(0,0,0,.52), inset 0 1px 0 rgba(255,255,255,.32);
+  --shadow-soft: 0 18px 56px rgba(0,0,0,.35), inset 0 1px 0 rgba(255,255,255,.24);
+  --glass-highlight:
+    radial-gradient(circle at 18% 0%, rgba(255,255,255,.42), transparent 38%),
+    linear-gradient(145deg, rgba(255,255,255,.30), rgba(255,255,255,.08) 42%, rgba(255,255,255,.045));
+}
+
+html, body {
+  background:
+    radial-gradient(circle at 15% 10%, rgba(255,255,255,.10), transparent 20%),
+    radial-gradient(circle at 78% 8%, rgba(142,197,255,.16), transparent 24%),
+    radial-gradient(circle at 52% 100%, rgba(255,59,53,.10), transparent 30%),
+    linear-gradient(180deg, #020305 0%, #05070b 45%, #0b1016 100%) !important;
+  background-attachment: fixed;
+}
+
+html::before {
+  opacity: .72;
+  background-image:
+    linear-gradient(rgba(255,255,255,.03) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(255,255,255,.03) 1px, transparent 1px);
+  background-size: 38px 38px;
+}
+
+.app-shell {
+  max-width: 1500px;
+}
+
+/* Top chrome should look like frosted glass, not gray metal */
+.topbar {
+  border-color: rgba(255,255,255,.30);
+  background:
+    radial-gradient(circle at 96% 0%, rgba(255,255,255,.28), transparent 30%),
+    linear-gradient(135deg, rgba(255,255,255,.31), rgba(255,255,255,.14) 42%, rgba(255,255,255,.10)),
+    rgba(255,255,255,.08) !important;
+  box-shadow:
+    0 18px 70px rgba(0,0,0,.36),
+    inset 0 1px 0 rgba(255,255,255,.48),
+    inset 0 -1px 0 rgba(255,255,255,.10);
+  backdrop-filter: blur(34px) saturate(165%);
+  -webkit-backdrop-filter: blur(34px) saturate(165%);
+}
+
+.topbar-main {
+  background:
+    linear-gradient(180deg, rgba(255,255,255,.18), rgba(255,255,255,.045));
+}
+
+.navbar {
+  background:
+    linear-gradient(180deg, rgba(255,255,255,.11), rgba(255,255,255,.045));
+  border-top: 1px solid rgba(255,255,255,.23);
+  padding: 7px;
+  gap: 5px;
+}
+
+.nav-btn {
+  border: 1px solid transparent;
+  color: rgba(245,248,252,.68);
+  background: transparent;
+}
+
+.nav-btn:hover {
+  background: rgba(255,255,255,.14);
+  color: #fff;
+  border-color: rgba(255,255,255,.16);
+}
+
+.nav-btn.active {
+  background:
+    radial-gradient(circle at 50% 0%, rgba(255,255,255,1), rgba(255,255,255,.82) 45%, rgba(255,255,255,.68));
+  color: #06080c;
+  border-color: rgba(255,255,255,.86);
+  box-shadow:
+    0 10px 34px rgba(255,255,255,.16),
+    0 8px 26px rgba(0,0,0,.25),
+    inset 0 1px 0 rgba(255,255,255,1),
+    inset 0 -1px 0 rgba(0,0,0,.10);
+}
+
+/* Big panes */
+.page-hero,
+.toolbar.panel,
+.event-card,
+.admin-card,
+.profile-block,
+.panel {
+  border-color: rgba(255,255,255,.25);
+  background:
+    radial-gradient(circle at 10% 0%, rgba(255,255,255,.24), transparent 36%),
+    linear-gradient(140deg, rgba(255,255,255,.18), rgba(255,255,255,.075) 48%, rgba(255,255,255,.055)) !important;
+  box-shadow:
+    0 24px 88px rgba(0,0,0,.34),
+    inset 0 1px 0 rgba(255,255,255,.34),
+    inset 0 -1px 0 rgba(255,255,255,.07);
+  backdrop-filter: blur(32px) saturate(158%);
+  -webkit-backdrop-filter: blur(32px) saturate(158%);
+}
+
+.page-hero {
+  min-height: 140px;
+  display: grid;
+  align-content: center;
+}
+
+.toolbar.panel {
+  padding: 20px;
+}
+
+/* Event cards: remove the heavy gray vertical split and make the panes read as glass */
+.event-card {
+  overflow: hidden;
+}
+
+.event-card::before {
+  height: 1px;
+  opacity: .78;
+  background: linear-gradient(90deg, transparent, rgba(255,255,255,.8), transparent);
+}
+
+.event-layout,
+.event-card.two-column-layout .event-layout {
+  border-color: rgba(255,255,255,.16);
+}
+
+.event-left,
+.event-right,
+.event-center,
+.event-side,
+.quick-bet-column,
+.event-card .event-panel {
+  background: transparent !important;
+}
+
+.event-left,
+.event-center,
+.event-right {
+  border-color: rgba(255,255,255,.14) !important;
+}
+
+/* Inner tiles need to be crisp white-glass panes, not cloudy gray slabs */
+.score-card,
+.odds-display,
+.bet-box,
+.record,
+.pending-user,
+.auth-pill,
+.profile-card,
+.stat-grid,
+.fight-row,
+.fight-bet-row,
+.history-event-card,
+.leaderboard-row,
+.ledger-row,
+.admin-window-note {
+  border-color: rgba(255,255,255,.26) !important;
+  background:
+    linear-gradient(145deg, rgba(255,255,255,.23), rgba(255,255,255,.10) 48%, rgba(255,255,255,.075)) !important;
+  box-shadow:
+    0 12px 36px rgba(0,0,0,.22),
+    inset 0 1px 0 rgba(255,255,255,.34),
+    inset 0 -1px 0 rgba(255,255,255,.05) !important;
+  backdrop-filter: blur(24px) saturate(150%);
+  -webkit-backdrop-filter: blur(24px) saturate(150%);
+}
+
+.score-card {
+  padding: 16px 16px;
+}
+
+.odds-display {
+  color: #fff;
+}
+
+.event-desc,
+.footer-note,
+.small,
+.muted {
+  color: var(--muted) !important;
+}
+
+/* Stronger text readability inside translucent areas */
+.kicker,
+.event-center-label,
+label,
+.score-sub,
+.profile-meta span {
+  color: rgba(238,242,248,.72) !important;
+}
+
+.event-title,
+.brand-title,
+.page-hero h2,
+.admin-card h3,
+.panel h3,
+.bet-box h4,
+.record strong {
+  color: #fff;
+  text-shadow: 0 1px 18px rgba(0,0,0,.16);
+}
+
+.score-big,
+.team-score,
+.score-number {
+  color: #fff;
+  text-shadow: 0 8px 36px rgba(0,0,0,.42);
+}
+
+/* Inputs/buttons should feel like inset liquid glass */
+input,
+select,
+textarea {
+  background:
+    linear-gradient(180deg, rgba(255,255,255,.20), rgba(255,255,255,.09)) !important;
+  border-color: rgba(255,255,255,.28) !important;
+  color: #fff !important;
+  box-shadow:
+    inset 0 1px 0 rgba(255,255,255,.20),
+    0 8px 24px rgba(0,0,0,.18);
+}
+
+button.primary {
+  background:
+    radial-gradient(circle at 50% 0%, #fff, rgba(255,255,255,.78) 52%, rgba(255,255,255,.62)) !important;
+  color: #05070b !important;
+  border: 1px solid rgba(255,255,255,.75) !important;
+}
+
+button.ghost {
+  background:
+    linear-gradient(180deg, rgba(255,255,255,.17), rgba(255,255,255,.08)) !important;
+  color: #fff !important;
+  border: 1px solid rgba(255,255,255,.24) !important;
+}
+
+button.ghost:hover {
+  background: rgba(255,255,255,.22) !important;
+}
+
+/* Status pills */
+.status-badge.live {
+  background: rgba(71,255,178,.18) !important;
+  color: #d6ffe9 !important;
+  border-color: rgba(71,255,178,.42) !important;
+}
+
+.status-badge.pregame {
+  background: rgba(255,255,255,.16) !important;
+  color: rgba(255,255,255,.86) !important;
+  border-color: rgba(255,255,255,.30) !important;
+}
+
+.status-badge.final {
+  background: rgba(255,255,255,.22) !important;
+  color: #fff !important;
+  border-color: rgba(255,255,255,.36) !important;
+}
+
+/* Make the matched/double-up internal ledger card less muddy */
+.double-up-status {
+  background: rgba(255,209,102,.16) !important;
+  color: #ffe6a3 !important;
+  border: 1px solid rgba(255,209,102,.34) !important;
+}
+
+.double-up-btn {
+  background:
+    linear-gradient(135deg, #ff443d, #c9150f) !important;
+  color: #fff !important;
+  box-shadow: 0 14px 32px rgba(217,45,32,.35), inset 0 1px 0 rgba(255,255,255,.28);
+}
+
+@media (max-width: 720px) {
+  .topbar {
+    top: 0;
+    border-radius: 22px;
+  }
+
+  .page-hero {
+    min-height: auto;
+  }
+
+  .page-hero,
+  .toolbar.panel,
+  .event-card,
+  .admin-card,
+  .panel {
+    backdrop-filter: blur(24px) saturate(150%);
+    -webkit-backdrop-filter: blur(24px) saturate(150%);
+  }
+}

@@ -340,3 +340,11 @@ History:
 
 - Moves the far-future imported event note from the Now board into Admin.
 - Applies a darker liquid-glass visual system: dark background, translucent white glass panes, softer borders, glow, and frosted controls.
+
+
+## v10.35 refined liquid glass
+
+- Refines the v10.34 glass style to reduce gray/muddy shading.
+- Makes top navigation a frosty white/gray pane instead of flat gray.
+- Adds darker background contrast and brighter glass edge highlights.
+- Improves inner cards/score/leaderboard panes with cleaner translucent white-glass treatment.
