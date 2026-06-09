@@ -4189,3 +4189,39 @@ label {
     padding: 0 14px !important;
   }
 }
+
+
+/* v10.46 double-up challenge window */
+.double-up-challenge {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.double-up-status.expired {
+  background: rgba(255,255,255,.10) !important;
+  color: rgba(238,242,248,.72) !important;
+  border-color: rgba(255,255,255,.18) !important;
+}
+
+.double-up-btn.accept {
+  animation: doubleUpPulse 1.8s ease-in-out infinite;
+}
+
+@keyframes doubleUpPulse {
+  0%, 100% { box-shadow: 0 14px 32px rgba(217,45,32,.28), inset 0 1px 0 rgba(255,255,255,.28); }
+  50% { box-shadow: 0 18px 44px rgba(217,45,32,.48), inset 0 1px 0 rgba(255,255,255,.34); }
+}
+
+@media (max-width: 720px) {
+  .double-up-challenge {
+    justify-content: stretch;
+  }
+
+  .double-up-challenge .double-up-status,
+  .double-up-challenge .double-up-btn {
+    width: 100%;
+  }
+}

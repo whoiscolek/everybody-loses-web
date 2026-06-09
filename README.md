@@ -101,3 +101,12 @@ Do not publish real admin passwords, API keys, or private credentials in this RE
 - Moves the mobile logout button into the title row on the right when logged in.
 - Keeps the profile pill below the title row without forcing logout onto its own full line.
 - Reduces mobile topbar height while keeping the same glass styling.
+
+
+## v10.46 double-up challenge window
+
+- Double-up is now a 5-minute challenge instead of an indefinite request.
+- Only the opponent can accept a pending double-up request.
+- Everyone can see the pending challenge and countdown on the event activity card.
+- If the timer expires, either involved bettor can initiate a new double-up challenge.
+- Adds an opponent email notification endpoint for double-up requests.

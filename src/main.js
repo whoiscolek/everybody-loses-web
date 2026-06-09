@@ -43,6 +43,7 @@ const AUTO_SYNC_INTERVAL_MS = 10 * 60 * 1000;
 const DISCOVERY_SYNC_INTERVAL_MS = 2 * 60 * 1000;
 const SPORT_SOURCE_SWEEP_INTERVAL_MS = 60 * 1000;
 const LIVE_SCORE_SYNC_INTERVAL_MS = 30 * 1000;
+const DOUBLE_UP_ACCEPT_WINDOW_MS = 5 * 60 * 1000;
 const AUTO_ODDS_INTERVAL_MS = 15 * 60 * 1000;
 const ODDS_AUTO_PREGAME_COOLDOWN_MS = 60 * 60 * 1000;
 const ODDS_AUTO_LIVE_COOLDOWN_MS = 20 * 60 * 1000;
@@ -161,6 +162,7 @@ let autoMaintenanceTimer = null;
 let autoMaintenanceMessage = "";
 let mlbSyncDebug = "";
 let sourceSweepDebug = "";
+let doubleUpCountdownTimer = null;
 let authUser = null;
 let loading = true;
 let dataReady = false;
@@ -910,30 +912,131 @@ function eventHasBegun(event) {
   return !Number.isNaN(start.getTime()) && Date.now() >= start.getTime();
 }
 
-function matchUserRequestedDouble(match, userId) {
+function doubleUpRequestedBy(match) {
   const requested = match?.doubleUp?.requestedBy || [];
-  return Array.isArray(requested) && requested.includes(userId);
+  return Array.isArray(requested) ? requested.filter(Boolean) : [];
+}
+
+function matchUserRequestedDouble(match, userId) {
+  return doubleUpRequestedBy(match).includes(userId);
 }
 
 function matchIsDoubled(match) {
   return Boolean(match?.doubleUp?.applied || match?.doubledUp);
 }
 
+function doubleUpRequestStartedMs(match) {
+  return toDateValue(match?.doubleUp?.requestedAt);
+}
+
+function doubleUpExpiresAtMs(match) {
+  const started = doubleUpRequestStartedMs(match);
+  return started ? started + DOUBLE_UP_ACCEPT_WINDOW_MS : 0;
+}
+
+function doubleUpTimeLeftMs(match) {
+  const expiresAt = doubleUpExpiresAtMs(match);
+  if (!expiresAt) return 0;
+  return Math.max(0, expiresAt - Date.now());
+}
+
+function doubleUpIsPending(match) {
+  if (!match || matchIsDoubled(match)) return false;
+  const requested = doubleUpRequestedBy(match);
+  return requested.length === 1 && doubleUpTimeLeftMs(match) > 0;
+}
+
+function doubleUpIsExpired(match) {
+  if (!match || matchIsDoubled(match)) return false;
+  const requested = doubleUpRequestedBy(match);
+  return requested.length === 1 && doubleUpRequestStartedMs(match) > 0 && doubleUpTimeLeftMs(match) <= 0;
+}
+
+function doubleUpRequesterId(match) {
+  return doubleUpRequestedBy(match)[0] || "";
+}
+
+function doubleUpOpponentId(match, userId) {
+  if (match?.userA === userId) return match.userB;
+  if (match?.userB === userId) return match.userA;
+  return "";
+}
+
+function formatCountdown(ms) {
+  const totalSeconds = Math.max(0, Math.ceil(Number(ms || 0) / 1000));
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = totalSeconds % 60;
+  return `${minutes}:${String(seconds).padStart(2, "0")}`;
+}
+
+function hasActiveDoubleUpCountdowns() {
+  return Object.values(state.matches || {}).some(match => doubleUpIsPending(match));
+}
+
+function ensureDoubleUpCountdownTimer() {
+  const hasCountdown = hasActiveDoubleUpCountdowns();
+  if (hasCountdown && !doubleUpCountdownTimer) {
+    doubleUpCountdownTimer = setInterval(() => {
+      if (!hasActiveDoubleUpCountdowns()) {
+        clearInterval(doubleUpCountdownTimer);
+        doubleUpCountdownTimer = null;
+        renderApp();
+        return;
+      }
+      renderApp();
+    }, 1000);
+  }
+
+  if (!hasCountdown && doubleUpCountdownTimer) {
+    clearInterval(doubleUpCountdownTimer);
+    doubleUpCountdownTimer = null;
+  }
+}
+
 function renderDoubleUpControl(event, match) {
   const user = currentUser();
   const matchId = match.firestoreId || match.id;
-  if (!user?.approved || !matchId) return "";
+  if (!matchId) return "";
   if (!eventHasBegun(event)) return "";
   if (event.status === "final" || match.status !== "matched") return "";
-  if (match.userA !== user.id && match.userB !== user.id) return "";
+
+  const involved = user?.approved && (match.userA === user.id || match.userB === user.id);
+  const requesterId = doubleUpRequesterId(match);
+  const accepterId = requesterId ? doubleUpOpponentId(match, requesterId) : "";
+  const requesterName = requesterId ? userName(requesterId) : "";
+  const accepterName = accepterId ? userName(accepterId) : "";
 
   if (matchIsDoubled(match)) {
     return `<span class="double-up-status doubled">Doubled up · ${money(Number(match.amount || 0))}</span>`;
   }
 
-  if (matchUserRequestedDouble(match, user.id)) {
-    return `<span class="double-up-status waiting">Double up requested — waiting for ${escapeHtml(userName(match.userA === user.id ? match.userB : match.userA))}</span>`;
+  if (doubleUpIsPending(match)) {
+    const countdown = formatCountdown(doubleUpTimeLeftMs(match));
+
+    if (involved && user.id === accepterId) {
+      return `
+        <div class="double-up-challenge">
+          <span class="double-up-status waiting">${escapeHtml(requesterName)} requested double up · ${countdown}</span>
+          <button class="danger double-up-btn accept" data-double-up="${escapeHtml(matchId)}">Accept double up</button>
+        </div>
+      `;
+    }
+
+    if (involved && user.id === requesterId) {
+      return `<span class="double-up-status waiting">Double up requested — waiting for ${escapeHtml(accepterName)} · ${countdown}</span>`;
+    }
+
+    return `<span class="double-up-status waiting">${escapeHtml(requesterName)} challenged ${escapeHtml(accepterName)} to double up · ${countdown}</span>`;
   }
+
+  if (doubleUpIsExpired(match)) {
+    if (involved) {
+      return `<button class="danger double-up-btn" data-double-up="${escapeHtml(matchId)}">Double up again</button>`;
+    }
+    return `<span class="double-up-status expired">Double up request expired</span>`;
+  }
+
+  if (!involved) return "";
 
   return `<button class="danger double-up-btn" data-double-up="${escapeHtml(matchId)}">Double up</button>`;
 }
@@ -962,6 +1065,7 @@ function renderApp() {
   wireUi();
   keepActiveNavVisible();
   maybeStartAutoMaintenance();
+  ensureDoubleUpCountdownTimer();
 }
 
 function keepActiveNavVisible() {
@@ -1578,9 +1682,11 @@ function renderMatchRecord(match) {
   const event = state.events[match.eventId];
   const doubleText = matchIsDoubled(match)
     ? " · Doubled up"
-    : Array.isArray(match.doubleUp?.requestedBy) && match.doubleUp.requestedBy.length
-      ? " · Double up pending"
-      : "";
+    : doubleUpIsPending(match)
+      ? ` · Double up pending ${formatCountdown(doubleUpTimeLeftMs(match))}`
+      : doubleUpIsExpired(match)
+        ? " · Double up expired"
+        : "";
   return `<div class="record"><strong>${escapeHtml(event?.title || match.eventId)}</strong><br><span class="muted small">${escapeHtml(userName(match.userA))} vs ${escapeHtml(userName(match.userB))} · ${escapeHtml(label(match.status))} · ${money(match.amount || match.exposure || 0)}${escapeHtml(doubleText)}</span><br><span class="tiny muted">${escapeHtml(event?.shortCode || match.eventId)}</span></div>`;
 }
 
@@ -2559,37 +2665,65 @@ async function requestDoubleUp(matchId) {
   if (matchIsDoubled(match)) return alert("This matched bet is already doubled.");
 
   const otherUserId = match.userA === user.id ? match.userB : match.userA;
-  const requestedBy = Array.isArray(match.doubleUp?.requestedBy) ? [...match.doubleUp.requestedBy] : [];
-  const nextRequestedBy = Array.from(new Set([...requestedBy, user.id]));
-  const bothConfirmed = nextRequestedBy.includes(match.userA) && nextRequestedBy.includes(match.userB);
   const originalAmount = Number(match.doubleUp?.originalAmount || match.amount || match.exposure || 0);
-
   if (!Number.isFinite(originalAmount) || originalAmount <= 0) return alert("Cannot double this match because the amount is invalid.");
 
-  const patch = {
+  const nowIso = new Date().toISOString();
+  const pending = doubleUpIsPending(match);
+  const expired = doubleUpIsExpired(match);
+  const requesterId = doubleUpRequesterId(match);
+
+  if (pending && requesterId === user.id) {
+    return alert(`Double up is already pending. Waiting for ${userName(otherUserId)} to accept.`);
+  }
+
+  if (pending && requesterId !== user.id) {
+    const patch = {
+      doubleUp: {
+        requestedBy: [requesterId, user.id],
+        requestedAt: match.doubleUp?.requestedAt || nowIso,
+        expiresAt: match.doubleUp?.expiresAt || new Date(doubleUpExpiresAtMs(match)).toISOString(),
+        originalAmount,
+        applied: true,
+        appliedAt: nowIso,
+        acceptedBy: user.id
+      },
+      amount: originalAmount * 2,
+      doubleUpAmount: originalAmount * 2,
+      doubledUp: true,
+      updatedAt: serverTimestamp()
+    };
+
+    await updateDoc(doc(db, "matches", matchId), patch);
+    alert(`Double up confirmed. This matched bet is now ${money(originalAmount * 2)}.`);
+    return;
+  }
+
+  // No pending request, or old request expired: start a fresh 5-minute challenge.
+  const expiresAt = new Date(Date.now() + DOUBLE_UP_ACCEPT_WINDOW_MS).toISOString();
+  await updateDoc(doc(db, "matches", matchId), {
     doubleUp: {
-      requestedBy: nextRequestedBy,
-      requestedAt: match.doubleUp?.requestedAt || new Date().toISOString(),
+      requestedBy: [user.id],
+      requestedAt: nowIso,
+      expiresAt,
       originalAmount,
-      applied: bothConfirmed,
-      appliedAt: bothConfirmed ? new Date().toISOString() : match.doubleUp?.appliedAt || ""
+      applied: false,
+      appliedAt: "",
+      acceptedBy: ""
     },
     updatedAt: serverTimestamp()
-  };
+  });
 
-  if (bothConfirmed) {
-    patch.amount = originalAmount * 2;
-    patch.doubleUpAmount = originalAmount * 2;
-    patch.doubledUp = true;
-  }
+  await notifyDoubleUpRequested(event, match, {
+    matchId,
+    requesterId: user.id,
+    recipientId: otherUserId,
+    originalAmount,
+    doubleAmount: originalAmount * 2,
+    expiresAt
+  });
 
-  await updateDoc(doc(db, "matches", matchId), patch);
-
-  if (bothConfirmed) {
-    alert(`Double up confirmed. This matched bet is now ${money(originalAmount * 2)}.`);
-  } else {
-    alert(`Double up requested. Waiting for ${userName(otherUserId)} to confirm.`);
-  }
+  alert(`Double up requested. ${userName(otherUserId)} has 5 minutes to accept.`);
 }
 
 
@@ -2645,6 +2779,49 @@ async function notifyBetPlaced(event, bet = {}) {
     });
   } catch {
     // Do not block betting if email delivery fails or is not configured.
+  }
+}
+
+
+async function notifyDoubleUpRequested(event, match, challenge = {}) {
+  const requester = currentUser();
+  const recipient = state.users?.[challenge.recipientId];
+
+  if (!requester?.approved || !event || !recipient?.approved || !recipient?.emailBetNotifications || !recipient?.email) return;
+
+  const payload = {
+    recipient: {
+      id: recipient.id,
+      email: recipient.email,
+      displayName: recipient.displayName || "User"
+    },
+    requester: {
+      id: requester.id,
+      displayName: requester.displayName || requester.email || "Someone"
+    },
+    event: {
+      id: event.firestoreId || event.id,
+      shortCode: event.shortCode || "",
+      title: event.title || event.id,
+      league: event.league || "",
+      startTime: event.startTime || ""
+    },
+    match: {
+      id: challenge.matchId || match?.firestoreId || match?.id || "",
+      originalAmount: Number(challenge.originalAmount || match?.amount || 0),
+      doubleAmount: Number(challenge.doubleAmount || 0),
+      expiresAt: challenge.expiresAt || ""
+    }
+  };
+
+  try {
+    await fetch("/api/double-up-email-notification", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload)
+    });
+  } catch {
+    // Do not block double-up requests if email delivery fails or is not configured.
   }
 }
 
