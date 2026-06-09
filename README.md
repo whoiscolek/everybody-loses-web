@@ -348,3 +348,11 @@ History:
 - Makes top navigation a frosty white/gray pane instead of flat gray.
 - Adds darker background contrast and brighter glass edge highlights.
 - Improves inner cards/score/leaderboard panes with cleaner translucent white-glass treatment.
+
+
+## v10.36 color and internal shadow cleanup
+
+- Darkens the background and reduces cold-gray wash.
+- Fixes live badge/team label colors and score contrast.
+- Removes heavy internal structural shadows so the matchup area feels integrated into the full event pane.
+- Keeps the liquid glass tile style from v10.35.

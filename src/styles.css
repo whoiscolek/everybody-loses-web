@@ -3164,3 +3164,287 @@ button.ghost:hover {
     -webkit-backdrop-filter: blur(24px) saturate(150%);
   }
 }
+
+
+/* v10.36 color + internal shadow cleanup */
+:root {
+  --bg: #010204;
+  --bg-2: #040609;
+  --card: rgba(255, 255, 255, 0.115);
+  --card-solid: rgba(255, 255, 255, 0.18);
+  --glass: rgba(255, 255, 255, 0.105);
+  --glass-strong: rgba(255, 255, 255, 0.18);
+  --line: rgba(255, 255, 255, 0.22);
+  --line-strong: rgba(255, 255, 255, 0.34);
+  --text: #f7f8fb;
+  --muted: rgba(232, 237, 244, 0.74);
+  --muted-2: rgba(232, 237, 244, 0.50);
+  --red: #ff4d45;
+  --red-soft: rgba(255, 77, 69, 0.16);
+  --green: #68f0b0;
+  --green-soft: rgba(104, 240, 176, 0.13);
+  --blue: #b9d8ff;
+  --blue-soft: rgba(185, 216, 255, 0.14);
+  --shadow: 0 26px 86px rgba(0,0,0,.48), inset 0 1px 0 rgba(255,255,255,.30);
+  --shadow-soft: 0 14px 46px rgba(0,0,0,.30), inset 0 1px 0 rgba(255,255,255,.20);
+}
+
+html, body {
+  background:
+    radial-gradient(circle at 17% 7%, rgba(255,255,255,.075), transparent 18%),
+    radial-gradient(circle at 78% 3%, rgba(120,160,210,.105), transparent 23%),
+    radial-gradient(circle at 50% 105%, rgba(255,255,255,.055), transparent 30%),
+    linear-gradient(180deg, #010204 0%, #030507 50%, #070b10 100%) !important;
+}
+
+/* Less cold-gray, more clear/frosted glass */
+.topbar {
+  background:
+    radial-gradient(circle at 92% -15%, rgba(255,255,255,.30), transparent 32%),
+    linear-gradient(135deg, rgba(255,255,255,.24), rgba(255,255,255,.105) 48%, rgba(255,255,255,.075)),
+    rgba(255,255,255,.055) !important;
+  border-color: rgba(255,255,255,.26);
+  box-shadow:
+    0 20px 64px rgba(0,0,0,.38),
+    inset 0 1px 0 rgba(255,255,255,.42),
+    inset 0 -1px 0 rgba(255,255,255,.08);
+}
+
+.topbar-main {
+  background: linear-gradient(180deg, rgba(255,255,255,.10), rgba(255,255,255,.02)) !important;
+}
+
+.navbar {
+  background: linear-gradient(180deg, rgba(255,255,255,.07), rgba(255,255,255,.025)) !important;
+  border-top-color: rgba(255,255,255,.16);
+}
+
+.nav-btn {
+  color: rgba(246,248,252,.70);
+}
+
+.nav-btn.active {
+  background:
+    linear-gradient(135deg, rgba(255,255,255,.94), rgba(255,255,255,.72)) !important;
+  color: #05070b !important;
+  box-shadow:
+    0 8px 28px rgba(255,255,255,.10),
+    0 10px 24px rgba(0,0,0,.22),
+    inset 0 1px 0 rgba(255,255,255,.95);
+}
+
+/* Outer panes: keep the good shape, reduce gray wash */
+.page-hero,
+.toolbar.panel,
+.event-card,
+.admin-card,
+.profile-block,
+.panel {
+  background:
+    radial-gradient(circle at 10% 0%, rgba(255,255,255,.18), transparent 32%),
+    linear-gradient(140deg, rgba(255,255,255,.145), rgba(255,255,255,.060) 50%, rgba(255,255,255,.042)) !important;
+  border-color: rgba(255,255,255,.22);
+  box-shadow:
+    0 22px 78px rgba(0,0,0,.34),
+    inset 0 1px 0 rgba(255,255,255,.30),
+    inset 0 -1px 0 rgba(255,255,255,.055);
+}
+
+/* This is the big unnatural part: remove internal pane shadowing from the structural columns */
+.event-card.two-column-layout,
+.event-card {
+  background:
+    radial-gradient(circle at 12% 0%, rgba(255,255,255,.17), transparent 30%),
+    linear-gradient(135deg, rgba(255,255,255,.13), rgba(255,255,255,.052) 50%, rgba(255,255,255,.040)) !important;
+}
+
+.event-layout,
+.event-card.two-column-layout .event-layout {
+  background: transparent !important;
+  border: 0 !important;
+  box-shadow: none !important;
+}
+
+.event-left,
+.event-center,
+.event-right,
+.event-side,
+.quick-bet-column,
+.event-card .event-panel {
+  background: transparent !important;
+  box-shadow: none !important;
+  border-color: rgba(255,255,255,.10) !important;
+}
+
+.event-left {
+  box-shadow: none !important;
+  filter: none !important;
+}
+
+.event-left::before,
+.event-left::after,
+.event-center::before,
+.event-center::after,
+.event-right::before,
+.event-right::after {
+  display: none !important;
+}
+
+/* Keep only a faint divider so sections feel like one continuous pane */
+.event-center,
+.event-right {
+  border-left: 1px solid rgba(255,255,255,.10) !important;
+}
+
+.event-left,
+.event-center,
+.event-right {
+  backdrop-filter: none !important;
+  -webkit-backdrop-filter: none !important;
+}
+
+/* Inner cards: lighter shadow, clearer text */
+.score-card,
+.odds-display,
+.bet-box,
+.record,
+.pending-user,
+.auth-pill,
+.profile-card,
+.stat-grid,
+.fight-row,
+.fight-bet-row,
+.history-event-card,
+.leaderboard-row,
+.ledger-row,
+.admin-window-note,
+.mini-stat-grid,
+.race-leaderboard-row {
+  background:
+    linear-gradient(145deg, rgba(255,255,255,.18), rgba(255,255,255,.075) 52%, rgba(255,255,255,.055)) !important;
+  border-color: rgba(255,255,255,.22) !important;
+  box-shadow:
+    0 8px 28px rgba(0,0,0,.16),
+    inset 0 1px 0 rgba(255,255,255,.27),
+    inset 0 -1px 0 rgba(255,255,255,.04) !important;
+}
+
+/* Fix the awful-looking team labels and score colors */
+.team-code,
+.team-pill,
+.score-divider {
+  color: rgba(244,247,252,.72) !important;
+}
+
+.team-score-cell strong,
+.score-big,
+.team-score,
+.score-number {
+  color: rgba(255,255,255,.94) !important;
+  text-shadow: 0 6px 28px rgba(0,0,0,.32) !important;
+}
+
+.event-center-label,
+.kicker,
+label {
+  color: rgba(246,248,252,.78) !important;
+}
+
+.kicker {
+  background: transparent !important;
+  border: 0 !important;
+}
+
+/* Live badge should be clean, not neon mint/washed out */
+.status-badge.live {
+  background: rgba(104,240,176,.14) !important;
+  color: #d7ffe9 !important;
+  border-color: rgba(104,240,176,.34) !important;
+  box-shadow: inset 0 1px 0 rgba(255,255,255,.18);
+}
+
+.status-badge.pregame {
+  background: rgba(255,255,255,.13) !important;
+  color: rgba(255,255,255,.86) !important;
+  border-color: rgba(255,255,255,.24) !important;
+}
+
+.status-badge.final {
+  background: rgba(255,255,255,.18) !important;
+  color: #fff !important;
+  border-color: rgba(255,255,255,.30) !important;
+}
+
+.team-pill {
+  background: rgba(255,255,255,.10) !important;
+  border-color: rgba(255,255,255,.20) !important;
+}
+
+/* Stats text was too dark inside white pane */
+.mini-stat-grid span,
+.stat-grid span,
+.score-card span {
+  color: rgba(238,242,248,.74) !important;
+}
+
+.mini-stat-grid strong,
+.stat-grid strong,
+.score-card strong,
+.odds-display strong {
+  color: rgba(255,255,255,.95) !important;
+}
+
+.odds-display span,
+.event-desc,
+.footer-note {
+  color: rgba(238,242,248,.76) !important;
+}
+
+.odds-display:not(.pending) span {
+  color: #fff !important;
+}
+
+/* Disabled bet buttons looked like dead gray blobs */
+button:disabled {
+  opacity: .56;
+  filter: saturate(.75);
+}
+
+button.ghost:disabled,
+button.primary:disabled {
+  background: rgba(255,255,255,.13) !important;
+  color: rgba(255,255,255,.62) !important;
+  border-color: rgba(255,255,255,.17) !important;
+}
+
+/* Inputs stay glassy but less gray */
+input,
+select,
+textarea {
+  background: linear-gradient(180deg, rgba(255,255,255,.16), rgba(255,255,255,.075)) !important;
+  border-color: rgba(255,255,255,.24) !important;
+  color: #fff !important;
+}
+
+input:focus,
+select:focus,
+textarea:focus {
+  border-color: rgba(255,255,255,.48) !important;
+  box-shadow: 0 0 0 4px rgba(255,255,255,.075), inset 0 1px 0 rgba(255,255,255,.18) !important;
+}
+
+/* Activity / double-up pill color tune */
+.double-up-status {
+  background: rgba(255,216,88,.12) !important;
+  color: #fff0b7 !important;
+  border-color: rgba(255,216,88,.28) !important;
+  box-shadow: inset 0 1px 0 rgba(255,255,255,.18), 0 8px 24px rgba(0,0,0,.16) !important;
+}
+
+@media (max-width: 720px) {
+  .event-center,
+  .event-right {
+    border-left: 0 !important;
+    border-top: 1px solid rgba(255,255,255,.10) !important;
+  }
+}
