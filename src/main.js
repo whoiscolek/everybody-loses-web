@@ -1057,8 +1057,9 @@ function renderAuthArea() {
 }
 
 function renderHero() {
+  if (activeTab === "today") return "";
+
   const text = {
-    today: ["Now board", ""],
     mybets: ["My Bets", "Open bets, matched battles, and active entries."],
     ledger: ["Ledger", "What you owe, what others owe you, and settled balances."],
     leaderboard: ["Leaderboard", "Approved users ranked by net profit."],

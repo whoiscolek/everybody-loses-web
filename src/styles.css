@@ -3980,3 +3980,50 @@ label {
     radial-gradient(circle at 12% 0%, rgba(255,255,255,.18), transparent 32%),
     rgba(7, 9, 13, .28) !important;
 }
+
+
+/* v10.40: remove Now hero, widen desktop topbar, and make sticky glass extremely frosted */
+.topbar {
+  background:
+    radial-gradient(circle at 18% 0%, rgba(255,255,255,.34), transparent 34%),
+    linear-gradient(135deg, rgba(255,255,255,.34), rgba(255,255,255,.13) 54%, rgba(255,255,255,.085)),
+    rgba(6, 8, 12, .78) !important;
+  backdrop-filter: blur(260px) saturate(210%) contrast(1.18) brightness(1.06) !important;
+  -webkit-backdrop-filter: blur(260px) saturate(210%) contrast(1.18) brightness(1.06) !important;
+}
+
+.topbar::after {
+  background:
+    radial-gradient(circle at 14% 0%, rgba(255,255,255,.24), transparent 36%),
+    linear-gradient(180deg, rgba(255,255,255,.12), rgba(255,255,255,.035)),
+    rgba(6, 8, 12, .52) !important;
+  backdrop-filter: blur(120px) saturate(180%) !important;
+  -webkit-backdrop-filter: blur(120px) saturate(180%) !important;
+}
+
+.topbar::before {
+  backdrop-filter: blur(120px) saturate(160%) !important;
+  -webkit-backdrop-filter: blur(120px) saturate(160%) !important;
+}
+
+/* No Now-board hero; let filters/events move up cleanly */
+.section.active > .toolbar.panel:first-child {
+  margin-top: 0;
+}
+
+/* Desktop: let the main glass bar overhang the card column. Mobile remains edge-safe. */
+@media (min-width: 921px) {
+  .topbar {
+    width: min(calc(100vw - 32px), calc(100% + 72px));
+    margin-left: max(-36px, calc((100% - (100vw - 32px)) / 2));
+    margin-right: max(-36px, calc((100% - (100vw - 32px)) / 2));
+  }
+}
+
+@media (max-width: 920px) {
+  .topbar {
+    width: auto;
+    margin-left: 0;
+    margin-right: 0;
+  }
+}

@@ -380,3 +380,10 @@ History:
 
 - Doubles the sticky topbar liquid-glass blur intensity.
 - Slightly increases the frosted overlay so content behind the bar is softer and less visually busy.
+
+
+## v10.40 Now hero removal + huge topbar blur
+
+- Removes the Now-board hero tile entirely.
+- Makes the sticky topbar overhang the main cards on desktop.
+- Applies a very heavy frosted blur/overlay to the sticky topbar so content behind it is no longer readable.
