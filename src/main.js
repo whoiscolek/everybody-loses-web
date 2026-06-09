@@ -388,6 +388,75 @@ function renderAdminOddsButton(event) {
   return `<button class="ghost tiny-action" data-refresh-odds="${escapeHtml(event.firestoreId || event.id)}">Refresh odds</button>`;
 }
 
+
+function scoreHasValue(score) {
+  if (!score || typeof score !== "object") return false;
+  const away = Number(score.away);
+  const home = Number(score.home);
+  return Number.isFinite(away) && Number.isFinite(home);
+}
+
+function incomingWouldDowngradeLiveState(incoming, existing) {
+  if (!existing) return false;
+  const existingHasScore = scoreHasValue(existing.score);
+  const incomingHasScore = scoreHasValue(incoming.score);
+  const existingStatus = String(existing.status || "");
+  const incomingStatus = String(incoming.status || "");
+
+  if ((existingStatus === "live" || existingStatus === "final") && incomingStatus === "pregame") return true;
+  if (existingHasScore && !incomingHasScore && (existingStatus === "live" || existingStatus === "final")) return true;
+  return false;
+}
+
+function chooseProtectedStatus(incoming, existing) {
+  if (!existing) return incoming.status;
+  const existingStatus = String(existing.status || "");
+  const incomingStatus = String(incoming.status || "");
+
+  if ((existingStatus === "live" || existingStatus === "final") && incomingStatus === "pregame") return existing.status;
+  if (existingStatus === "final" && incomingStatus !== "final") return existing.status;
+  return incoming.status || existing.status || "pregame";
+}
+
+function chooseProtectedScore(incoming, existing) {
+  if (scoreHasValue(incoming.score)) return incoming.score;
+  if (scoreHasValue(existing?.score) && (existing?.status === "live" || existing?.status === "final")) return existing.score;
+  return incoming.score || existing?.score || null;
+}
+
+function chooseProtectedStats(incomingStats, existingStats, incoming, existing) {
+  const incomingRows = Array.isArray(incomingStats) ? incomingStats : [];
+  const existingRows = Array.isArray(existingStats) ? existingStats : [];
+
+  if (!incomingRows.length) return existingRows;
+  if (incomingWouldDowngradeLiveState(incoming, existing) && existingRows.length) return existingRows;
+  return incomingRows;
+}
+
+function liveContextFromStats(event) {
+  const statusRow = (event.liveStats || []).find(row => /^status$/i.test(String(row.label || "")));
+  const value = String(statusRow?.value || "").trim();
+  if (!value || /^(pregame|scheduled|final|live)$/i.test(value)) return "";
+  return value;
+}
+
+function liveContextText(event) {
+  if (!event) return "";
+  if (event.liveContext) return String(event.liveContext);
+  if (event.gameContext) return String(event.gameContext);
+
+  const fromStats = liveContextFromStats(event);
+  if (fromStats) return fromStats;
+
+  if (event.type === EVENT_TYPES.RANKED) {
+    const firstDetail = (event.leaderboard || []).map(row => row?.detail).find(Boolean);
+    if (firstDetail && event.status !== "pregame") return String(firstDetail);
+    return event.status === "pregame" ? "Starts soon" : label(event.status);
+  }
+
+  return "";
+}
+
 function safeRefreshFieldsForEvent(event, existing = null) {
   const existingId = existing?.firestoreId || existing?.id || "";
   const hasFinancials = existingId && eventHasFinancialRecords(existingId);
@@ -399,23 +468,27 @@ function safeRefreshFieldsForEvent(event, existing = null) {
   const preservedWeatherText = incomingWeatherText || existing?.weatherText || existing?.weather?.summary || "";
   const incomingStats = Array.isArray(event.liveStats) ? event.liveStats : [];
   const existingStats = Array.isArray(existing?.liveStats) ? existing.liveStats : [];
-  const preservedStats = incomingStats.length ? incomingStats : existingStats;
+  const protectedStatus = chooseProtectedStatus(event, existing);
+  const protectedScore = chooseProtectedScore(event, existing);
+  const preservedStats = chooseProtectedStats(incomingStats, existingStats, event, existing);
+  const protectedLiveContext = event.liveContext || event.gameContext || existing?.liveContext || existing?.gameContext || liveContextFromStats({ liveStats: preservedStats });
 
   const fields = {
-    status: event.status,
-    score: event.score || null,
+    status: protectedStatus,
+    score: protectedScore,
+    liveContext: protectedLiveContext || "",
     odds: preservedOdds,
-    leaderboard: event.leaderboard || [],
-    leaderboardSource: event.leaderboardSource || "Imported event data",
-    leaderboardVerified: !!event.leaderboardVerified,
+    leaderboard: event.leaderboard?.length ? event.leaderboard : existing?.leaderboard || [],
+    leaderboardSource: event.leaderboardSource || existing?.leaderboardSource || "Imported event data",
+    leaderboardVerified: event.leaderboardVerified !== undefined ? !!event.leaderboardVerified : !!existing?.leaderboardVerified,
     liveStats: preservedStats,
     weather: event.weather || existing?.weather || null,
     weatherText: preservedWeatherText,
     venue: event.venue || existing?.venue || "",
-    resultOrder: event.resultOrder || [],
-    fightResults: event.fightResults || {},
-    intel: event.intel || "",
-    externalIds: event.externalIds || {},
+    resultOrder: event.resultOrder?.length ? event.resultOrder : existing?.resultOrder || [],
+    fightResults: event.fightResults && Object.keys(event.fightResults).length ? event.fightResults : existing?.fightResults || {},
+    intel: event.intel || existing?.intel || "",
+    externalIds: { ...(existing?.externalIds || {}), ...(event.externalIds || {}) },
     updatedAt: serverTimestamp()
   };
 
@@ -1146,6 +1219,7 @@ function renderScoreLine(event) {
     return `
       <div class="score-card event-center team-center">
         <div class="event-center-label">${event.status === "final" ? "Final scoreboard" : event.status === "live" ? "Live scoreboard" : "Scoreboard"}</div>
+        ${liveContextText(event) ? `<div class="score-sub live-context">${escapeHtml(liveContextText(event))}</div>` : ""}
         <div class="team-score-row">
           <div class="team-score-cell">
             <span class="team-code">${escapeHtml(event.away.code)}</span>
@@ -1205,6 +1279,7 @@ function renderScoreLine(event) {
       <div class="event-center-head">
         <div>
           <div class="event-center-label">${escapeHtml(heading)}</div>
+          ${liveContextText(event) ? `<div class="score-sub live-context">${escapeHtml(liveContextText(event))}</div>` : ""}
           <div class="score-sub">${escapeHtml(sub)}</div>
         </div>
         <span class="soft-badge">${escapeHtml(event.league)}</span>

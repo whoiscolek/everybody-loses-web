@@ -2604,3 +2604,13 @@ button.danger {
     margin-top: 8px;
   }
 }
+
+
+/* v10.25: compact live game context under scoreboard title */
+.live-context {
+  margin-top: 3px;
+  margin-bottom: 8px;
+  font-weight: 850;
+  color: var(--muted);
+  letter-spacing: .02em;
+}

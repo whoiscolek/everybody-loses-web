@@ -146,6 +146,7 @@ function mapMlbStatsApiGame(game, espnRaw = null) {
   const espnMapped = espnRaw ? mapTeamEvent(espnRaw, LEAGUE_MAP.MLB) : null;
   const odds = espnMapped?.odds && !/^api schedule import$/i.test(String(espnMapped.odds)) ? espnMapped.odds : "API schedule import";
   const statusText = mlbStatusLine(game) || labelStatus(status);
+  const liveContext = status === "live" ? statusText : status === "final" ? "Final" : "";
   const pitcherLine = mlbProbablePitcherLine(game, awayCode, homeCode);
 
   return {
@@ -166,6 +167,7 @@ function mapMlbStatsApiGame(game, espnRaw = null) {
     startTime: game.gameDate || new Date().toISOString(),
     status,
     score,
+    liveContext,
     liveStats: [
       { label: "Status", value: statusText },
       ...(pitcherLine ? [{ label: "Probable pitchers", value: pitcherLine }] : [])
@@ -344,8 +346,13 @@ function mapTeamEvent(event, config) {
   const period = event?.status?.period || competition?.status?.period || "";
   const venue = competition?.venue?.fullName || event?.venue?.fullName || "";
   const weather = competition?.weather?.displayValue || competition?.weather?.conditionId || "";
+  const liveContext = status === "live" && period
+    ? `Period ${period}${clock ? ` · ${clock}` : ""}`
+    : status === "final"
+      ? "Final"
+      : "";
   const liveStats = [
-    { label: "Status", value: status === "live" && period ? `Period ${period}${clock ? ` · ${clock}` : ""}` : labelStatus(status) },
+    { label: "Status", value: liveContext || labelStatus(status) },
     { label: "Odds", value: typeof odds === "number" ? `O/U ${odds}` : String(odds || "Unavailable") },
     { label: "Weather", value: weather || "Weather unavailable" },
     { label: "Stats", value: status === "pregame" ? "Pregame" : "Scoreboard active" }
@@ -369,6 +376,7 @@ function mapTeamEvent(event, config) {
     startTime,
     status,
     score,
+    liveContext,
     liveStats,
     weather: weather ? { summary: String(weather) } : null,
     odds: typeof odds === "number" ? `O/U ${odds}` : String(odds),
