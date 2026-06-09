@@ -925,6 +925,36 @@ function matchIsDoubled(match) {
   return Boolean(match?.doubleUp?.applied || match?.doubledUp);
 }
 
+function matchEffectiveAmount(match) {
+  const doubledAmount = Number(match?.doubleUpAmount);
+  if (matchIsDoubled(match) && Number.isFinite(doubledAmount) && doubledAmount > 0) return doubledAmount;
+
+  const currentAmount = Number(match?.amount);
+  if (Number.isFinite(currentAmount) && currentAmount > 0) return currentAmount;
+
+  const originalAmount = Number(match?.doubleUp?.originalAmount || match?.exposure);
+  if (matchIsDoubled(match) && Number.isFinite(originalAmount) && originalAmount > 0) return originalAmount * 2;
+  if (Number.isFinite(originalAmount) && originalAmount > 0) return originalAmount;
+
+  return 0;
+}
+
+function matchLedgerId(eventId, matchId) {
+  return `LEDGER-${String(eventId || "EVENT").replace(/[^a-z0-9-]/gi, "-")}-${String(matchId || "MATCH").replace(/[^a-z0-9-]/gi, "-")}`.toUpperCase();
+}
+
+function findLedgerForMatch(eventId, matchId, fromUser, toUser) {
+  return Object.values(state.ledgerEntries || {}).find(entry =>
+    (entry.matchId && entry.matchId === matchId) ||
+    (
+      entry.eventId === eventId &&
+      entry.fromUser === fromUser &&
+      entry.toUser === toUser &&
+      !entry.settled
+    )
+  ) || null;
+}
+
 function doubleUpRequestStartedMs(match) {
   return toDateValue(match?.doubleUp?.requestedAt);
 }
@@ -1639,7 +1669,7 @@ function renderEventQueues(event) {
         ${matched.map(match => `
           <div class="record">
             <strong>Matched</strong><br />
-            <span class="muted small">${escapeHtml(userName(match.userA))} vs ${escapeHtml(userName(match.userB))} · ${money(match.amount || match.exposure || 0)} · ${escapeHtml(label(match.status))}</span>
+            <span class="muted small">${escapeHtml(userName(match.userA))} vs ${escapeHtml(userName(match.userB))} · ${money(matchEffectiveAmount(match))} · ${escapeHtml(label(match.status))}</span>
             ${renderDoubleUpControl(event, match)}
           </div>
         `).join("")}
@@ -1687,7 +1717,7 @@ function renderMatchRecord(match) {
       : doubleUpIsExpired(match)
         ? " · Double up expired"
         : "";
-  return `<div class="record"><strong>${escapeHtml(event?.title || match.eventId)}</strong><br><span class="muted small">${escapeHtml(userName(match.userA))} vs ${escapeHtml(userName(match.userB))} · ${escapeHtml(label(match.status))} · ${money(match.amount || match.exposure || 0)}${escapeHtml(doubleText)}</span><br><span class="tiny muted">${escapeHtml(event?.shortCode || match.eventId)}</span></div>`;
+  return `<div class="record"><strong>${escapeHtml(event?.title || match.eventId)}</strong><br><span class="muted small">${escapeHtml(userName(match.userA))} vs ${escapeHtml(userName(match.userB))} · ${escapeHtml(label(match.status))} · ${money(matchEffectiveAmount(match))}${escapeHtml(doubleText)}</span><br><span class="tiny muted">${escapeHtml(event?.shortCode || match.eventId)}</span></div>`;
 }
 
 function renderLedger() {
@@ -1818,7 +1848,12 @@ function historyBetSummary(event) {
   const ledger = Object.values(state.ledgerEntries || {}).filter(entry => entry.eventId === eventId || entry.eventId === event.id);
 
   if (ledger.length) {
-    return ledger.map(entry => `${userName(entry.fromUser)} owes ${userName(entry.toUser)} ${money(entry.amount)}`).join(" · ");
+    return ledger.map(entry => `${userName(entry.fromUser)} owes ${userName(entry.toUser)} ${money(entry.amount)}${entry.doubledUp ? " · doubled up" : ""}`).join(" · ");
+  }
+
+  const settledMatches = matches.filter(match => match.status === "settled" && match.winner && match.loser);
+  if (settledMatches.length) {
+    return settledMatches.map(match => `${userName(match.loser)} owes ${userName(match.winner)} ${money(match.settledAmount || matchEffectiveAmount(match))}${matchIsDoubled(match) ? " · doubled up" : ""}`).join(" · ");
   }
 
   if (matches.length) {
@@ -3046,6 +3081,7 @@ async function settleEvent(eventId, options = {}) {
 async function settleTeamEvent(event, options = {}) {
   if (!event.score) { if (!options.silent) alert("Team/custom event needs a final score first."); return; }
 
+  const eventId = event.firestoreId || event.id;
   const winningSide = Number(event.score.home) > Number(event.score.away)
     ? "home"
     : Number(event.score.away) > Number(event.score.home)
@@ -3054,34 +3090,63 @@ async function settleTeamEvent(event, options = {}) {
 
   if (!winningSide) { if (!options.silent) alert("Tie settlement is not implemented yet."); return; }
 
+  const matches = Object.values(state.matches)
+    .filter(match => match.eventId === eventId && match.type === EVENT_TYPES.TEAM);
+
   const batch = writeBatch(db);
+  let changed = 0;
 
-  Object.values(state.matches)
-    .filter(match => match.eventId === event.id && match.type === EVENT_TYPES.TEAM && match.status !== "settled")
-    .forEach(match => {
-      const winner = match.sideA === winningSide ? match.userA : match.userB;
-      const loser = winner === match.userA ? match.userB : match.userA;
-      const ledgerRef = doc(collection(db, "ledgerEntries"));
+  for (const match of matches) {
+    const matchId = match.firestoreId || match.id;
+    const winner = match.sideA === winningSide ? match.userA : match.userB;
+    const loser = winner === match.userA ? match.userB : match.userA;
+    const amount = matchEffectiveAmount(match);
 
+    if (!winner || !loser || !Number.isFinite(amount) || amount <= 0) continue;
+
+    const existingLedger = findLedgerForMatch(eventId, matchId, loser, winner);
+    const ledgerRef = existingLedger
+      ? doc(db, "ledgerEntries", existingLedger.firestoreId || existingLedger.id)
+      : doc(db, "ledgerEntries", matchLedgerId(eventId, matchId));
+
+    const ledgerPayload = {
+      id: existingLedger?.id || ledgerRef.id,
+      eventId,
+      matchId,
+      fromUser: loser,
+      toUser: winner,
+      amount,
+      originalAmount: Number(match.doubleUp?.originalAmount || match.exposure || amount),
+      doubledUp: matchIsDoubled(match),
+      note: `Auto-settled: ${event.title}${matchIsDoubled(match) ? " · doubled up" : ""}`,
+      settled: Boolean(existingLedger?.settled || false),
+      updatedAt: serverTimestamp()
+    };
+
+    if (existingLedger) {
+      batch.set(ledgerRef, ledgerPayload, { merge: true });
+    } else {
       batch.set(ledgerRef, {
-        id: ledgerRef.id,
-        eventId: event.id,
-        fromUser: loser,
-        toUser: winner,
-        amount: Number(match.amount),
-        note: `Auto-settled: ${event.title}`,
-        settled: false,
-        createdAt: serverTimestamp(),
-        updatedAt: serverTimestamp()
-      });
+        ...ledgerPayload,
+        createdAt: serverTimestamp()
+      }, { merge: true });
+    }
 
-      batch.update(doc(db, "matches", match.firestoreId || match.id), {
+    if (match.status !== "settled" || Number(match.settledAmount || 0) !== amount) {
+      batch.set(doc(db, "matches", matchId), {
         status: "settled",
+        settledAmount: amount,
+        winner,
+        loser,
         updatedAt: serverTimestamp()
-      });
-    });
+      }, { merge: true });
+    }
 
-  await batch.commit();
+    changed += 1;
+  }
+
+  if (changed) await batch.commit();
+  if (!options.silent) alert(`Settled/repaired ${changed} matched bet${changed === 1 ? "" : "s"} for ${event.title}.`);
 }
 
 async function settleRankedEvent(event, options = {}) {
@@ -3160,8 +3225,11 @@ async function settleFightCardEvent(event, options = {}) {
         eventId: event.id,
         fromUser: loser,
         toUser: winner,
-        amount: Number(match.amount),
-        note: `UFC settled: ${event.title} · ${fight.label}`,
+        amount: matchEffectiveAmount(match),
+        matchId: match.firestoreId || match.id,
+        originalAmount: Number(match.doubleUp?.originalAmount || match.amount || 0),
+        doubledUp: matchIsDoubled(match),
+        note: `UFC settled: ${event.title} · ${fight.label}${matchIsDoubled(match) ? " · doubled up" : ""}`,
         settled: false,
         createdAt: serverTimestamp(),
         updatedAt: serverTimestamp()
@@ -4020,7 +4088,15 @@ function finalEventsNeedingSettlement() {
   return Object.values(state.events || {}).filter(event => {
     if (event.status !== "final") return false;
     const eventId = event.firestoreId || event.id;
-    return Object.values(state.matches || {}).some(match => match.eventId === eventId && match.status !== "settled");
+    return Object.values(state.matches || {}).some(match => {
+      if (match.eventId !== eventId) return false;
+      if (match.status !== "settled") return true;
+
+      const amount = matchEffectiveAmount(match);
+      const matchId = match.firestoreId || match.id;
+      const maybeLedger = Object.values(state.ledgerEntries || {}).find(entry => entry.eventId === eventId && (entry.matchId === matchId || (!entry.matchId && Number(entry.amount) === amount)));
+      return !maybeLedger || Number(maybeLedger.amount || 0) !== amount;
+    });
   });
 }
 

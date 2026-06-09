@@ -110,3 +110,12 @@ Do not publish real admin passwords, API keys, or private credentials in this RE
 - Everyone can see the pending challenge and countdown on the event activity card.
 - If the timer expires, either involved bettor can initiate a new double-up challenge.
 - Adds an opponent email notification endpoint for double-up requests.
+
+
+## v10.47 double-up settlement repair
+
+- Final settlement now uses the effective match amount, including accepted double-ups.
+- Team settlement is now idempotent/repairable: it creates or updates one ledger row per match.
+- Existing final events with settled matches but missing/wrong ledger rows are included in automatic settlement repair.
+- History can display winner/loser from settled matches even if a ledger row has not loaded yet.
+- Ledger rows now store matchId, settledAmount context, and doubledUp metadata.
