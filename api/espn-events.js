@@ -74,6 +74,124 @@ const MLB_TEAM_IDS = {
   WSN: 120
 };
 
+
+const MLB_ID_TO_CODE = Object.fromEntries(Object.entries(MLB_TEAM_IDS).map(([code, id]) => [String(id), code]));
+const MLB_PRIMARY_CODES_BY_ID = {
+  108: "LAA", 109: "ARI", 110: "BAL", 111: "BOS", 112: "CHC", 113: "CIN", 114: "CLE", 115: "COL", 116: "DET", 117: "HOU",
+  118: "KC", 119: "LAD", 120: "WSH", 121: "NYM", 133: "ATH", 134: "PIT", 135: "SD", 136: "SEA", 137: "SF", 138: "STL",
+  139: "TB", 140: "TEX", 141: "TOR", 142: "MIN", 143: "PHI", 144: "ATL", 145: "CWS", 146: "MIA", 147: "NYY", 158: "MIL"
+};
+
+function mlbCodeFromTeam(team = {}) {
+  const id = String(team.id || "");
+  return MLB_PRIMARY_CODES_BY_ID[id] || MLB_ID_TO_CODE[id] || cleanCode(team.abbreviation || team.teamCode || team.fileCode || team.shortName || team.name, "MLB");
+}
+
+function mlbStatusFromGame(game = {}) {
+  const abstract = String(game.status?.abstractGameState || "").toLowerCase();
+  const coded = String(game.status?.codedGameState || "").toUpperCase();
+  if (abstract === "final" || ["F", "O"].includes(coded)) return "final";
+  if (abstract === "live" || ["I", "M", "N"].includes(coded)) return "live";
+  return "pregame";
+}
+
+function mlbStatusLine(game = {}) {
+  const detailed = game.status?.detailedState || "";
+  const inning = game.linescore?.currentInningOrdinal || "";
+  const half = game.linescore?.inningHalf || "";
+  if (inning || half) return [half, inning].filter(Boolean).join(" ");
+  return detailed;
+}
+
+function mlbScore(game = {}, status = "pregame") {
+  if (status === "pregame") return null;
+  return {
+    away: Number(game.teams?.away?.score ?? 0),
+    home: Number(game.teams?.home?.score ?? 0)
+  };
+}
+
+function mlbProbablePitcherLine(game = {}, awayCode = "AWAY", homeCode = "HOME") {
+  const awayPitcher = game.teams?.away?.probablePitcher?.fullName || "";
+  const homePitcher = game.teams?.home?.probablePitcher?.fullName || "";
+  const parts = [];
+  if (awayPitcher) parts.push(`${awayCode}: ${awayPitcher}`);
+  if (homePitcher) parts.push(`${homeCode}: ${homePitcher}`);
+  return parts.join(" · ");
+}
+
+function matchEspnEventForMlbGame(game, espnEvents = []) {
+  const awayId = String(game.teams?.away?.team?.id || "");
+  const homeId = String(game.teams?.home?.team?.id || "");
+  const awayCode = MLB_PRIMARY_CODES_BY_ID[awayId] || "";
+  const homeCode = MLB_PRIMARY_CODES_BY_ID[homeId] || "";
+  const start = new Date(game.gameDate || 0).getTime();
+
+  return espnEvents.find(raw => {
+    const mapped = mapTeamEvent(raw, LEAGUE_MAP.MLB);
+    const sameTeams = mapped?.away?.code === awayCode && mapped?.home?.code === homeCode;
+    const mappedStart = new Date(mapped?.startTime || 0).getTime();
+    const closeStart = Number.isFinite(start) && Number.isFinite(mappedStart) && Math.abs(start - mappedStart) < 4 * 60 * 60 * 1000;
+    return sameTeams && closeStart;
+  }) || null;
+}
+
+function mapMlbStatsApiGame(game, espnRaw = null) {
+  const awayTeam = game.teams?.away?.team || {};
+  const homeTeam = game.teams?.home?.team || {};
+  const awayCode = mlbCodeFromTeam(awayTeam);
+  const homeCode = mlbCodeFromTeam(homeTeam);
+  const status = mlbStatusFromGame(game);
+  const score = mlbScore(game, status);
+  const espnMapped = espnRaw ? mapTeamEvent(espnRaw, LEAGUE_MAP.MLB) : null;
+  const odds = espnMapped?.odds && !/^api schedule import$/i.test(String(espnMapped.odds)) ? espnMapped.odds : "API schedule import";
+  const statusText = mlbStatusLine(game) || labelStatus(status);
+  const pitcherLine = mlbProbablePitcherLine(game, awayCode, homeCode);
+
+  return {
+    apiSource: "mlb-statsapi",
+    apiEventId: String(game.gamePk),
+    sport: "baseball",
+    league: "MLB",
+    type: "TEAM_HEAD_TO_HEAD",
+    title: `${awayCode} @ ${homeCode}`,
+    away: {
+      code: awayCode,
+      name: awayTeam.name || awayTeam.teamName || awayCode
+    },
+    home: {
+      code: homeCode,
+      name: homeTeam.name || homeTeam.teamName || homeCode
+    },
+    startTime: game.gameDate || new Date().toISOString(),
+    status,
+    score,
+    liveStats: [
+      { label: "Status", value: statusText },
+      ...(pitcherLine ? [{ label: "Probable pitchers", value: pitcherLine }] : [])
+    ],
+    weather: espnMapped?.weather || null,
+    weatherText: espnMapped?.weather?.summary || "",
+    odds,
+    externalIds: {
+      source: "mlb-statsapi",
+      mlbGamePk: String(game.gamePk),
+      espnEventId: espnRaw?.id ? String(espnRaw.id) : "",
+      espnUid: espnRaw?.uid || "",
+      espnGuid: espnRaw?.guid || ""
+    },
+    intel: "MLB event imported from MLB Stats API for live score/status with ESPN used for schedule odds when available."
+  };
+}
+
+async function fetchMlbStatsApiEvents(dateYYYYMMDD, espnRawEvents = []) {
+  const iso = `${dateYYYYMMDD.slice(0, 4)}-${dateYYYYMMDD.slice(4, 6)}-${dateYYYYMMDD.slice(6, 8)}`;
+  const url = `https://statsapi.mlb.com/api/v1/schedule?sportId=1&date=${encodeURIComponent(iso)}&hydrate=team,probablePitcher,linescore`;
+  const data = await fetchJsonUrl(url, "MLB schedule");
+  const games = (data?.dates || []).flatMap(day => day.games || []);
+  return games.map(game => mapMlbStatsApiGame(game, matchEspnEventForMlbGame(game, espnRawEvents)));
+}
+
 const DEFAULT_RACING_PARTICIPANTS = {
   F1: ["Verstappen", "Norris", "Piastri", "Leclerc", "Hamilton", "Russell", "Antonelli", "Sainz", "Alonso", "Tsunoda"],
   NASCAR: ["Kyle Larson", "Denny Hamlin", "William Byron", "Chase Elliott", "Ryan Blaney", "Christopher Bell", "Tyler Reddick", "Joey Logano", "Ross Chastain", "Bubba Wallace", "Brad Keselowski", "Ty Gibbs"],
@@ -1458,8 +1576,10 @@ async function enrichTeamEvent(mappedEvent, rawEvent, config) {
   let summary = null;
 
   try {
-    const summaryUrl = `https://site.api.espn.com/apis/site/v2/sports/${config.espnPath}/summary?event=${encodeURIComponent(String(rawEvent.id))}`;
-    summary = await fetchEspnJson(summaryUrl);
+    if (rawEvent?.apiSource !== "mlb-statsapi") {
+      const summaryUrl = `https://site.api.espn.com/apis/site/v2/sports/${config.espnPath}/summary?event=${encodeURIComponent(String(rawEvent.id))}`;
+      summary = await fetchEspnJson(summaryUrl);
+    }
   } catch {
     summary = null;
   }
@@ -1495,7 +1615,12 @@ async function enrichTeamEvent(mappedEvent, rawEvent, config) {
 
 async function mapEventsWithEnrichment(rawEvents, config, date = "") {
   if (config.eventType === "FIGHT_CARD") return mapUfcFightCards(rawEvents, config, date);
-  const mapped = Array.isArray(rawEvents) ? rawEvents.map(event => mapEvent(event, config)).filter(Boolean) : [];
+  const alreadyMapped = config.league === "MLB" && Array.isArray(rawEvents) && rawEvents.every(event => event?.apiSource === "mlb-statsapi");
+  const mapped = Array.isArray(rawEvents)
+    ? alreadyMapped
+      ? rawEvents
+      : rawEvents.map(event => mapEvent(event, config)).filter(Boolean)
+    : [];
   if (config.eventType !== "TEAM_HEAD_TO_HEAD") return mapped;
 
   const enriched = [];
@@ -1547,6 +1672,31 @@ export default async function handler(req, res) {
 
     if (!config) {
       return res.status(400).json({ error: "Unsupported league", supportedLeagues: Object.keys(LEAGUE_MAP) });
+    }
+
+    if (config.league === "MLB") {
+      let espnRawEvents = [];
+      let espnUrl = "";
+      try {
+        const params = new URLSearchParams({ dates: date, limit: "200" });
+        const fetched = await fetchLeagueData(config, date, params);
+        espnRawEvents = fetched.events || [];
+        espnUrl = fetched.url || "";
+      } catch {
+        espnRawEvents = [];
+      }
+
+      const events = await mapEventsWithEnrichment(await fetchMlbStatsApiEvents(date, espnRawEvents), config, date);
+      return res.status(200).json({
+        source: "mlb-statsapi",
+        league: config.league,
+        date,
+        count: events.length,
+        url: "https://statsapi.mlb.com/api/v1/schedule",
+        espnUrl,
+        note: "MLB uses MLB Stats API as source of truth for live score/status. ESPN is used only to attach available schedule odds/weather.",
+        events
+      });
     }
 
     if (config.useMotoGpPulseLive) {

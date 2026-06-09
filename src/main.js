@@ -2825,6 +2825,7 @@ function eventSourceConfidence(event) {
   if (event?.leaderboardVerified) return 100;
   if (source.includes("jolpica") || source.includes("ergast")) return 95;
   if (source.includes("nascar")) return 95;
+  if (source.includes("mlb-statsapi")) return 95;
   if (source.includes("motogp")) return 90;
   if (source.includes("espn")) return 45;
   return 10;
