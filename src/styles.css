@@ -2614,3 +2614,13 @@ button.danger {
   color: var(--muted);
   letter-spacing: .02em;
 }
+
+
+/* v10.27 Now-board window note */
+.future-hidden-note {
+  padding: 10px 14px;
+  margin-bottom: 12px;
+  color: var(--muted);
+  font-size: .9rem;
+  border-style: dashed;
+}

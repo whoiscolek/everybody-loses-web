@@ -285,3 +285,18 @@ History:
 - Adds an MLB-specific automatic live sweep that queries MLB Stats API directly for today plus neighboring date edges.
 - This can add active MLB games that were missed by the regular import, instead of only refreshing games already present on the board.
 - Keeps v10.25 live-state protection so blank/stale updates do not erase good scores.
+
+
+## v10.27 Now board window
+
+- Renames the Today tab label to Now.
+- Now only displays live/active/non-final events within a 48-hour lookahead window.
+- Existing far-future imports stay in Firestore but are hidden from the main board so random June 11+ games do not crowd out the actual slate.
+
+
+## v10.28 Now window completeness sync
+
+- Adds a real Now-window sync that fetches every supported league/date needed to cover the next 48 hours.
+- The app now syncs first, then filters display, instead of merely hiding far-future games after partial imports.
+- Manual Admin button added: Sync full Now window.
+- Auto-maintenance uses the full Now-window sync instead of disconnected today/tomorrow syncs.
