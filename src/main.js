@@ -417,6 +417,13 @@ function eventIsFutureOverflow(event) {
   return Number.isFinite(start) && start > Date.now() + NOW_BOARD_LOOKAHEAD_MS;
 }
 
+function hiddenFutureImportedEventCount() {
+  return Object.values(state.events || {})
+    .filter(event => !eventIsComplete(event))
+    .filter(eventIsFutureOverflow)
+    .length;
+}
+
 function eventShouldBeAutoSavedForNowWindow(event) {
   if (!event) return false;
   if (event.status === "live") return true;
@@ -1140,11 +1147,6 @@ function renderToday() {
     .filter(event => !eventIsComplete(event))
     .filter(eventIsWithinNowWindow);
 
-  const hiddenFutureCount = Object.values(state.events)
-    .filter(event => !eventIsComplete(event))
-    .filter(eventIsFutureOverflow)
-    .length;
-
   const events = allVisibleEvents
     .filter(event => filters.sport === "all" || event.sport === filters.sport)
     .filter(event => filters.league === "all" || event.league === filters.league)
@@ -1169,7 +1171,6 @@ function renderToday() {
         </select>
       </div>
     </div>
-    ${hiddenFutureCount ? `<div class="panel future-hidden-note">Hiding ${hiddenFutureCount} far-future imported event${hiddenFutureCount === 1 ? "" : "s"}. Now only shows live/active events through the next 48 hours.</div>` : ""}
     <div class="grid">
       ${events.length ? events.map(renderEventCard).join("") : `<div class="panel empty-state">No active/upcoming events match these filters within the Now window. Final events move to History.</div>`}
     </div>
@@ -2110,6 +2111,7 @@ function renderAdmin() {
           <button class="ghost" data-action="cleanup-api-events">Clean duplicate API events</button>
         </div>
         <p class="footer-note small">Automatic maintenance now runs in the background for admins: automatic source discovery sweeps, live score refresh, duplicate cleanup, final-event settlement, and odds refresh only for events with bets/matches. ESPN/imported odds remain the default display until someone actually bets. Backup buttons stay here as manual controls.</p>
+        ${hiddenFutureImportedEventCount() ? `<div class="record admin-window-note"><strong>Now window</strong><span>Hiding ${hiddenFutureImportedEventCount()} far-future imported event${hiddenFutureImportedEventCount() === 1 ? "" : "s"}. The public Now board only shows live/active events through the next 48 hours.</span></div>` : ""}
         <label>Manual league/date fetch</label>
         <select id="apiLeague">
           ${API_IMPORT_LEAGUES.map(league => `<option value="${escapeHtml(league)}">${escapeHtml(league)}</option>`).join("")}

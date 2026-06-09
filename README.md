@@ -334,3 +334,9 @@ History:
 - Team event identity now uses stable source ids like mlbGamePk/espnEventId or date + away + home.
 - Racing/title-based duplicate matching is now limited to ranked/racing events only.
 - Prevents source sweeps from mutating or hiding the wrong MLB/NBA/etc. game when teams play multiple times.
+
+
+## v10.34 Glass UI + Admin-only window note
+
+- Moves the far-future imported event note from the Now board into Admin.
+- Applies a darker liquid-glass visual system: dark background, translucent white glass panes, softer borders, glow, and frosted controls.

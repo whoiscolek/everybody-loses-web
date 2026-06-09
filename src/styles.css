@@ -1,28 +1,32 @@
 :root {
-  --bg: #f5f6f8;
-  --card: rgba(255, 255, 255, 0.78);
-  --card-solid: #ffffff;
-  --line: rgba(18, 24, 38, 0.09);
-  --line-strong: rgba(18, 24, 38, 0.16);
-  --text: #111827;
-  --muted: #667085;
-  --muted-2: #98a2b3;
-  --red: #d92d20;
-  --red-2: #ff4e42;
-  --red-soft: rgba(217, 45, 32, 0.09);
-  --green: #12805c;
-  --green-soft: rgba(18, 128, 92, 0.1);
-  --amber: #b54708;
-  --amber-soft: rgba(181, 71, 8, 0.12);
-  --blue: #175cd3;
-  --blue-soft: rgba(23, 92, 211, 0.1);
-  --shadow: 0 14px 34px rgba(16, 24, 40, 0.08);
-  --shadow-soft: 0 8px 22px rgba(16, 24, 40, 0.06);
+  --bg: #030507;
+  --bg-2: #0b0f14;
+  --card: rgba(255, 255, 255, 0.105);
+  --card-solid: rgba(255, 255, 255, 0.16);
+  --glass: rgba(255, 255, 255, 0.11);
+  --glass-strong: rgba(255, 255, 255, 0.18);
+  --line: rgba(255, 255, 255, 0.18);
+  --line-strong: rgba(255, 255, 255, 0.31);
+  --text: #f7f9fb;
+  --muted: rgba(232, 238, 246, 0.72);
+  --muted-2: rgba(232, 238, 246, 0.48);
+  --red: #ff3b35;
+  --red-2: #ff7a6d;
+  --red-soft: rgba(255, 59, 53, 0.16);
+  --green: #39d98a;
+  --green-soft: rgba(57, 217, 138, 0.14);
+  --amber: #ffd166;
+  --amber-soft: rgba(255, 209, 102, 0.14);
+  --blue: #8ec5ff;
+  --blue-soft: rgba(142, 197, 255, 0.16);
+  --shadow: 0 28px 85px rgba(0, 0, 0, 0.54), inset 0 1px 0 rgba(255,255,255,.16);
+  --shadow-soft: 0 18px 56px rgba(0, 0, 0, 0.36), inset 0 1px 0 rgba(255,255,255,.14);
+  --glass-highlight: linear-gradient(135deg, rgba(255,255,255,.36), rgba(255,255,255,.08) 45%, rgba(255,255,255,.03));
   --radius-xl: 30px;
   --radius-lg: 22px;
   --radius-md: 16px;
   --radius-sm: 12px;
-  color-scheme: light;
+  color-scheme: dark;
   font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
 }
 
@@ -33,9 +37,35 @@ html, body {
   min-height: 100%;
   color: var(--text);
   background:
-    radial-gradient(circle at 10% 0%, rgba(217, 45, 32, 0.13), transparent 30%),
-    radial-gradient(circle at 88% 8%, rgba(255, 158, 128, 0.12), transparent 30%),
-    linear-gradient(180deg, #fbfcfe 0%, #f4f6f9 54%, #eef1f5 100%);
+    radial-gradient(circle at 12% 8%, rgba(255, 255, 255, 0.11), transparent 22%),
+    radial-gradient(circle at 86% 10%, rgba(142, 197, 255, 0.13), transparent 26%),
+    radial-gradient(circle at 44% 96%, rgba(255, 59, 53, 0.11), transparent 30%),
+    linear-gradient(180deg, #030507 0%, #070a0f 44%, #10151b 100%);
+  background-attachment: fixed;
+}
+
+html::before {
+  content: "";
+  position: fixed;
+  inset: 0;
+  z-index: -2;
+  pointer-events: none;
+  background-image:
+    linear-gradient(rgba(255,255,255,.035) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(255,255,255,.035) 1px, transparent 1px);
+  background-size: 34px 34px;
+  mask-image: radial-gradient(circle at 50% 20%, black 0%, transparent 72%);
+}
+
+html::after {
+  content: "";
+  position: fixed;
+  inset: 0;
+  z-index: -1;
+  pointer-events: none;
+  background:
+    linear-gradient(120deg, rgba(255,255,255,.045), transparent 26%, rgba(255,255,255,.03) 55%, transparent),
+    radial-gradient(circle at 50% 0%, rgba(255,255,255,.09), transparent 40%);
 }
 
 body { min-height: 100vh; }
@@ -2630,4 +2660,201 @@ button.danger {
 .debug-line {
   overflow-wrap: anywhere;
   word-break: break-word;
+}
+
+
+/* v10.34 liquid glass refresh */
+.topbar,
+.page-hero,
+.panel,
+.event-card,
+.admin-card,
+.record,
+.profile-block,
+.score-card,
+.bet-box,
+.auth-pill,
+.pending-user,
+.odds-display,
+.stat-grid,
+.fight-row,
+.fight-bet-row,
+.history-event-card,
+.admin-window-note {
+  background:
+    var(--glass-highlight),
+    linear-gradient(180deg, rgba(255,255,255,.145), rgba(255,255,255,.07));
+  border: 1px solid rgba(255,255,255,.20);
+  box-shadow:
+    0 20px 70px rgba(0,0,0,.38),
+    inset 0 1px 0 rgba(255,255,255,.22),
+    inset 0 -1px 0 rgba(255,255,255,.05);
+  backdrop-filter: blur(26px) saturate(145%);
+  -webkit-backdrop-filter: blur(26px) saturate(145%);
+}
+
+.topbar {
+  background:
+    linear-gradient(135deg, rgba(255,255,255,.17), rgba(255,255,255,.075)),
+    rgba(8, 11, 15, .54);
+}
+
+.page-hero {
+  background:
+    radial-gradient(circle at 94% 16%, rgba(255,255,255,.16), transparent 26%),
+    linear-gradient(135deg, rgba(255,255,255,.18), rgba(255,255,255,.07));
+}
+
+.event-card {
+  background:
+    radial-gradient(circle at 12% 8%, rgba(255,255,255,.16), transparent 25%),
+    linear-gradient(135deg, rgba(255,255,255,.14), rgba(255,255,255,.055));
+}
+
+.event-card::before {
+  height: 1px;
+  background: linear-gradient(90deg, transparent, rgba(255,255,255,.65), transparent);
+}
+
+.navbar {
+  border-top-color: rgba(255,255,255,.14);
+  background: rgba(255,255,255,.035);
+}
+
+.nav-btn {
+  color: var(--muted);
+}
+
+.nav-btn:hover {
+  background: rgba(255,255,255,.12);
+  color: var(--text);
+}
+
+.nav-btn.active {
+  background:
+    linear-gradient(135deg, rgba(255,255,255,.92), rgba(255,255,255,.64));
+  color: #07090d;
+  border-color: rgba(255,255,255,.7);
+  box-shadow: 0 10px 30px rgba(255,255,255,.12), inset 0 1px 0 rgba(255,255,255,.9);
+}
+
+input, select, textarea {
+  background: rgba(255,255,255,.11);
+  border-color: rgba(255,255,255,.22);
+  color: var(--text);
+  box-shadow: inset 0 1px 0 rgba(255,255,255,.12);
+}
+
+input::placeholder, textarea::placeholder {
+  color: rgba(232,238,246,.48);
+}
+
+input:focus, select:focus, textarea:focus {
+  border-color: rgba(255,255,255,.5);
+  box-shadow: 0 0 0 4px rgba(255,255,255,.09), inset 0 1px 0 rgba(255,255,255,.18);
+}
+
+select option {
+  color: #111827;
+  background: #f7f9fb;
+}
+
+button.primary, button.ghost, button.danger, .btn {
+  box-shadow: 0 10px 28px rgba(0,0,0,.28), inset 0 1px 0 rgba(255,255,255,.24);
+}
+
+button.primary {
+  background:
+    linear-gradient(135deg, rgba(255,255,255,.94), rgba(255,255,255,.64));
+  color: #07090d;
+}
+
+button.ghost {
+  background: rgba(255,255,255,.09);
+  color: var(--text);
+  border: 1px solid rgba(255,255,255,.18);
+}
+
+button.ghost:hover {
+  background: rgba(255,255,255,.16);
+}
+
+.status-badge,
+.soft-badge,
+.team-pill,
+.kicker {
+  border-color: rgba(255,255,255,.18);
+  background: rgba(255,255,255,.095);
+  color: var(--muted);
+}
+
+.status-badge.live {
+  background: rgba(57,217,138,.16);
+  color: #bdf7d9;
+  border-color: rgba(57,217,138,.28);
+}
+
+.status-badge.final {
+  background: rgba(255,255,255,.16);
+  color: #fff;
+}
+
+.status-badge.pregame {
+  background: rgba(142,197,255,.14);
+  color: #d4eaff;
+  border-color: rgba(142,197,255,.28);
+}
+
+.score-card,
+.odds-display,
+.bet-box {
+  background:
+    linear-gradient(135deg, rgba(255,255,255,.14), rgba(255,255,255,.06));
+}
+
+.admin-window-note {
+  display: grid;
+  gap: 4px;
+  margin: 12px 0 14px;
+  padding: 13px 14px;
+}
+
+.admin-window-note span {
+  color: var(--muted);
+}
+
+.future-hidden-note {
+  display: none;
+}
+
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+::-webkit-scrollbar-track {
+  background: rgba(255,255,255,.04);
+}
+
+::-webkit-scrollbar-thumb {
+  background: rgba(255,255,255,.22);
+  border-radius: 999px;
+  border: 2px solid rgba(0,0,0,.25);
+}
+
+@media (max-width: 720px) {
+  .topbar,
+  .page-hero,
+  .panel,
+  .event-card,
+  .admin-card,
+  .record,
+  .profile-block {
+    backdrop-filter: blur(20px) saturate(135%);
+    -webkit-backdrop-filter: blur(20px) saturate(135%);
+  }
+
+  .app-shell {
+    background: transparent;
+  }
 }
