@@ -278,3 +278,10 @@ History:
 - Keeps IndyCar automatic only; no manual racing override UI was added.
 - Strengthens the INDYCAR live leaderboard fetcher to try official JSON-style endpoints first, then parse the official leaderboard pages with cache-busting and browser-like headers.
 - If the official live leaderboard exposes positions during an active session, the IndyCar card updates from that source.
+
+
+## v10.26 MLB live sweep
+
+- Adds an MLB-specific automatic live sweep that queries MLB Stats API directly for today plus neighboring date edges.
+- This can add active MLB games that were missed by the regular import, instead of only refreshing games already present on the board.
+- Keeps v10.25 live-state protection so blank/stale updates do not erase good scores.

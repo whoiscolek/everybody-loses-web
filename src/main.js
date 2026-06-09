@@ -3356,6 +3356,56 @@ async function syncLiveScoreEvents(options = {}) {
   return { updated, fetched };
 }
 
+
+async function syncMlbLiveSweep(options = {}) {
+  if (!isAdmin()) return { added: 0, updated: 0, fetched: 0 };
+
+  const today = getBettingDayISO();
+  const dates = new Set([today]);
+
+  // Include nearby dates because MLB night games and doubleheaders can drift
+  // across UTC/app-date boundaries, and missing games cannot be discovered by
+  // candidate-only refresh.
+  const baseDate = new Date(`${today}T12:00:00Z`);
+  for (const offset of [-1, 1]) {
+    const d = new Date(baseDate);
+    d.setUTCDate(d.getUTCDate() + offset);
+    dates.add(d.toISOString().slice(0, 10));
+  }
+
+  const batch = writeBatch(db);
+  const usedCodes = new Set(Object.values(state.events || {}).map(event => event.shortCode).filter(Boolean));
+  let fetched = 0;
+  let added = 0;
+  let updated = 0;
+
+  for (const dateISO of dates) {
+    try {
+      const events = await fetchApiEventsForLeagueDate("MLB", dateISO);
+      fetched += events.length;
+
+      for (const event of events) {
+        // Only auto-add games that belong on/near today's board. This catches
+        // live games that were never imported, without filling the app with old MLB cards.
+        const start = new Date(event.startTime || 0).getTime();
+        const now = Date.now();
+        const nearToday = Number.isFinite(start) && Math.abs(start - now) < 30 * 60 * 60 * 1000;
+        const activeOrNear = event.status === "live" || event.status === "pregame" || nearToday;
+        if (!activeOrNear) continue;
+
+        const result = await saveApiEventToBatch(batch, event, usedCodes);
+        if (result === "added") added += 1;
+        if (result === "updated") updated += 1;
+      }
+    } catch {
+      // MLB sweep is best-effort and should never block the app.
+    }
+  }
+
+  if (added || updated) await batch.commit();
+  return { added, updated, fetched };
+}
+
 function autoKey(name) {
   return `everyoneLoses:auto:${name}`;
 }
@@ -3471,6 +3521,11 @@ async function runAutoMaintenance(reason = "timer") {
     if (shouldRunAutoTask("live-score", LIVE_SCORE_SYNC_INTERVAL_MS)) {
       const live = await syncLiveScoreEvents({ silent: true });
       if (live.updated) notes.push(`live refreshed ${live.updated}`);
+    }
+
+    if (shouldRunAutoTask("mlb-live-sweep", LIVE_SCORE_SYNC_INTERVAL_MS)) {
+      const mlb = await syncMlbLiveSweep({ silent: true });
+      if (mlb.added || mlb.updated) notes.push(`MLB live sweep +${mlb.added}/~${mlb.updated}`);
     }
 
     if (shouldRunAutoTask("sync-today", AUTO_SYNC_INTERVAL_MS)) {
