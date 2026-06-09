@@ -387,3 +387,10 @@ History:
 - Removes the Now-board hero tile entirely.
 - Makes the sticky topbar overhang the main cards on desktop.
 - Applies a very heavy frosted blur/overlay to the sticky topbar so content behind it is no longer readable.
+
+
+## v10.41 topbar glass compositing
+
+- Replaces the extreme blur/overlay approach with cleaner real backdrop-filter compositing.
+- Uses a darker, more solid glass tint with blur(64px) so the bar reads as frosted glass instead of gray opacity.
+- Removes extra pseudo-element blur overlays that made the effect look faded rather than actually blurred.

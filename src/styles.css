@@ -4027,3 +4027,61 @@ label {
     margin-right: 0;
   }
 }
+
+
+/* v10.41 real-glass topbar compositing tune
+   Goal: make the bar read like it is blurring content behind it,
+   not like a gray opacity sheet. */
+.topbar {
+  background:
+    linear-gradient(135deg, rgba(255,255,255,.18), rgba(255,255,255,.065) 52%, rgba(255,255,255,.035)),
+    rgba(14, 16, 22, .72) !important;
+  backdrop-filter: blur(64px) saturate(190%) contrast(1.08) !important;
+  -webkit-backdrop-filter: blur(64px) saturate(190%) contrast(1.08) !important;
+  box-shadow:
+    0 22px 72px rgba(0,0,0,.42),
+    inset 0 1px 0 rgba(255,255,255,.34),
+    inset 0 -1px 0 rgba(255,255,255,.08) !important;
+}
+
+/* Remove the extra heavy pseudo-element blur overlays from v10.40.
+   They were making the bar look like tinted opacity instead of glass. */
+.topbar::before {
+  background:
+    radial-gradient(circle at 14% 0%, rgba(255,255,255,.20), transparent 32%),
+    linear-gradient(180deg, rgba(255,255,255,.08), rgba(255,255,255,0)) !important;
+  backdrop-filter: none !important;
+  -webkit-backdrop-filter: none !important;
+}
+
+.topbar::after {
+  background:
+    linear-gradient(180deg, rgba(255,255,255,.045), rgba(0,0,0,.045)),
+    rgba(14, 16, 22, .18) !important;
+  backdrop-filter: none !important;
+  -webkit-backdrop-filter: none !important;
+}
+
+/* The nav area gets its own subtle glass layer, but no fake blur overlay. */
+.navbar {
+  background:
+    linear-gradient(180deg, rgba(255,255,255,.075), rgba(255,255,255,.025)),
+    rgba(255,255,255,.018) !important;
+}
+
+.topbar-main {
+  background:
+    linear-gradient(180deg, rgba(255,255,255,.065), rgba(255,255,255,.01)) !important;
+}
+
+/* Make text on the topbar crisp against the darker glass. */
+.brand-title,
+.auth-mini strong,
+.nav-btn {
+  text-shadow: 0 1px 14px rgba(0,0,0,.28);
+}
+
+.brand-subtitle {
+  color: rgba(248,250,253,.80) !important;
+  text-shadow: 0 1px 14px rgba(0,0,0,.30);
+}
