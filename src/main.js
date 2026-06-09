@@ -3078,6 +3078,20 @@ async function importApiEvent(apiEventId) {
   renderApp();
 }
 
+function dateISOInDisplayTimeZone(value = new Date()) {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return getBettingDayISO();
+
+  const parts = new Intl.DateTimeFormat("en-CA", {
+    timeZone: DISPLAY_TIME_ZONE,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit"
+  }).formatToParts(date);
+  const lookup = Object.fromEntries(parts.map(part => [part.type, part.value]));
+  return `${lookup.year}-${lookup.month}-${lookup.day}`;
+}
+
 function dateISOOffset(daysFromToday = 0) {
   const date = new Date(`${getBettingDayISO()}T12:00:00Z`);
   date.setUTCDate(date.getUTCDate() + daysFromToday);
@@ -3220,9 +3234,26 @@ async function syncLiveScoreEvents(options = {}) {
   for (const event of candidates) {
     const league = event.league;
     if (!API_IMPORT_LEAGUES.includes(league)) continue;
-    const date = new Date(event.startTime || Date.now()).toISOString().slice(0, 10);
-    const key = `${league}|${date}`;
-    leaguesByDate.set(key, { league, date });
+    // ESPN scoreboard date queries are based on the sports day, not the UTC date.
+    // Night games in ET often start after midnight UTC; using toISOString() made
+    // MLB live refresh ask ESPN for tomorrow and miss the current game entirely.
+    const displayDate = dateISOInDisplayTimeZone(event.startTime || Date.now());
+    const datesToTry = new Set([displayDate]);
+
+    // Tiny cushion for edge cases around midnight / international events. This still
+    // stays narrow and avoids a full all-league sync every 30 seconds.
+    if (event.status === "live") {
+      const d = new Date(`${displayDate}T12:00:00Z`);
+      d.setUTCDate(d.getUTCDate() - 1);
+      datesToTry.add(d.toISOString().slice(0, 10));
+      d.setUTCDate(d.getUTCDate() + 2);
+      datesToTry.add(d.toISOString().slice(0, 10));
+    }
+
+    for (const date of datesToTry) {
+      const key = `${league}|${date}`;
+      leaguesByDate.set(key, { league, date });
+    }
   }
 
   if (!leaguesByDate.size) return { updated: 0, fetched: 0 };
