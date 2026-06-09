@@ -3964,3 +3964,19 @@ label {
     grid-template-columns: 1fr !important;
   }
 }
+
+
+/* v10.39 stronger sticky liquid-glass blur */
+.topbar {
+  background:
+    linear-gradient(135deg, rgba(255,255,255,.27), rgba(255,255,255,.085) 58%, rgba(255,255,255,.055)),
+    rgba(7, 9, 13, .60) !important;
+  backdrop-filter: blur(108px) saturate(190%) contrast(1.12) brightness(1.03) !important;
+  -webkit-backdrop-filter: blur(108px) saturate(190%) contrast(1.12) brightness(1.03) !important;
+}
+
+.topbar::after {
+  background:
+    radial-gradient(circle at 12% 0%, rgba(255,255,255,.18), transparent 32%),
+    rgba(7, 9, 13, .28) !important;
+}

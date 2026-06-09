@@ -374,3 +374,9 @@ History:
 - Makes nav active state fill the bar segment instead of appearing as a floating square.
 - Reworks History into compact glass tiles with result, bet summary, code, internal game ID, and external refs.
 - Improves topbar glass blur/readability.
+
+
+## v10.39 stronger topbar blur
+
+- Doubles the sticky topbar liquid-glass blur intensity.
+- Slightly increases the frosted overlay so content behind the bar is softer and less visually busy.
