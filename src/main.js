@@ -39,6 +39,7 @@ const DISPLAY_TIME_ZONE = "America/New_York";
 const TIME_ZONE_LABEL = "ET";
 const BETTING_DAY_RESET_HOUR = 3;
 const AUTO_SYNC_INTERVAL_MS = 10 * 60 * 1000;
+const LIVE_SCORE_SYNC_INTERVAL_MS = 30 * 1000;
 const AUTO_ODDS_INTERVAL_MS = 15 * 60 * 1000;
 const ODDS_AUTO_PREGAME_COOLDOWN_MS = 60 * 60 * 1000;
 const ODDS_AUTO_LIVE_COOLDOWN_MS = 20 * 60 * 1000;
@@ -971,13 +972,11 @@ function renderEventCard(event) {
         </div>
       </div>
       ${renderScoreLine(event)}
-      <div class="event-desc">${escapeHtml(event.intel || "No event intel configured yet.")}</div>
-      <div class="bet-box">
-        <h4>Quick bet panel</h4>
+      <div class="bet-box compact-bet-box">
+        <h4>Quick bet</h4>
         ${event.type === EVENT_TYPES.TEAM ? renderTeamBetForm(event, locked) : event.type === EVENT_TYPES.FIGHT_CARD ? renderFightCardBetForm(event, locked) : renderRankedBetForm(event, locked)}
       </div>
       ${renderEventQueues(event)}
-      ${renderAdminOddsButton(event) ? `<div class="event-admin-actions">${renderAdminOddsButton(event)}</div>` : ""}
     </article>
   `;
 }
@@ -1165,6 +1164,7 @@ function renderScoreLine(event) {
         ], event)}
         ${renderOddsDisplay(event)}
         ${eventOddsMeta(event) ? `<div class="score-sub odds-line">${escapeHtml(eventOddsMeta(event))}</div>` : ""}
+        ${renderAdminOddsButton(event) ? `<div class="score-actions">${renderAdminOddsButton(event)}</div>` : ""}
       </div>
     `;
   }
@@ -1600,8 +1600,16 @@ function renderProfile() {
           </span>
         </label>
 
+        <label class="settings-toggle">
+          <input id="profileEmailBetNotifications" type="checkbox" ${user.emailBetNotifications ? "checked" : ""} />
+          <span>
+            <strong>Email me when someone places a bet</strong>
+            <small>Useful when someone posts an open bet you might want to match. You will not get emailed for your own bets.</small>
+          </span>
+        </label>
+
         <button class="primary" data-action="save-profile">Save profile</button>
-        <p class="footer-note small">Uploads now go to Firebase Storage and save to your account.</p>
+        <p class="footer-note small">Uploads now go to Firebase Storage and save to your account. Email notifications require the app owner to set a mail provider key in Vercel.</p>
       </div>
 
       <div class="profile-block">
@@ -2084,6 +2092,7 @@ async function saveProfile() {
     const displayName = document.querySelector("#profileDisplayName")?.value.trim();
     const avatar = document.querySelector("#profileAvatar")?.value || user.avatar;
     const profileImageUrlInput = document.querySelector("#profileImageUrl")?.value.trim() || "";
+    const emailBetNotifications = !!document.querySelector("#profileEmailBetNotifications")?.checked;
     const upload = document.querySelector("#profileImageUpload")?.files?.[0];
 
     if (!displayName) return alert("Display name cannot be blank.");
@@ -2105,6 +2114,7 @@ async function saveProfile() {
       displayName,
       avatar,
       profileImageUrl,
+      emailBetNotifications,
       updatedAt: serverTimestamp()
     }, { merge: true });
   } catch (error) {
@@ -2323,6 +2333,62 @@ async function requestDoubleUp(matchId) {
   }
 }
 
+
+function betNotificationRecipients(bettorId) {
+  return Object.values(state.users || {})
+    .filter(user => user?.approved && user?.emailBetNotifications && user?.email && user.id !== bettorId)
+    .map(user => ({ id: user.id, email: user.email, displayName: user.displayName || "User" }));
+}
+
+function formatBetPickForNotification(event, bet = {}) {
+  if (!event) return "Unknown pick";
+  if (event.type === EVENT_TYPES.TEAM) return bet.side === "home" ? event.home?.code || "Home" : event.away?.code || "Away";
+  if (event.type === EVENT_TYPES.FIGHT_CARD) {
+    const fight = fightById(event, bet.fightId);
+    return `${fight?.label || bet.fightLabel || "Fight"} · ${fightPickName(fight, bet.side)}`;
+  }
+  if (event.type === EVENT_TYPES.RANKED) return bet.participant || "Ranked pick";
+  return "Unknown pick";
+}
+
+async function notifyBetPlaced(event, bet = {}) {
+  const bettor = currentUser();
+  if (!bettor?.approved || !event) return;
+
+  const recipients = betNotificationRecipients(bettor.id);
+  if (!recipients.length) return;
+
+  const payload = {
+    recipients,
+    bettor: {
+      id: bettor.id,
+      displayName: bettor.displayName || bettor.email || "Someone"
+    },
+    event: {
+      id: event.id,
+      shortCode: event.shortCode || "",
+      title: event.title || event.id,
+      league: event.league || "",
+      startTime: event.startTime || ""
+    },
+    bet: {
+      id: bet.firestoreId || bet.id || "",
+      amount: Number(bet.amount || 0),
+      pick: formatBetPickForNotification(event, bet)
+    }
+  };
+
+  try {
+    await fetch("/api/bet-email-notification", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload)
+    });
+  } catch {
+    // Do not block betting if email delivery fails or is not configured.
+  }
+}
+
 async function placeTeamBet(eventId, side) {
   const user = currentUser();
   const event = state.events[eventId];
@@ -2347,6 +2413,7 @@ async function placeTeamBet(eventId, side) {
     updatedAt: serverTimestamp()
   });
 
+  await notifyBetPlaced(event, { firestoreId: betRef.id, eventId, userId: user.id, side, amount });
   await tryMatchTeamBet({ firestoreId: betRef.id, eventId, userId: user.id, side, amount });
 }
 
@@ -2428,6 +2495,7 @@ async function placeFightCardBet(eventId, fightId, side) {
     updatedAt: serverTimestamp()
   });
 
+  await notifyBetPlaced(event, { firestoreId: betRef.id, eventId, userId: user.id, fightId, fightLabel: fight.label, side, amount });
   await tryMatchFightCardBet({ firestoreId: betRef.id, eventId, userId: user.id, fightId, side, amount });
 }
 
@@ -2516,7 +2584,7 @@ async function placeRankedBet(eventId) {
     await removeUserEventBets(eventId, user.id);
   }
 
-  await addDoc(collection(db, "bets"), {
+  const betRef = await addDoc(collection(db, "bets"), {
     eventId,
     userId: user.id,
     participant,
@@ -2525,6 +2593,8 @@ async function placeRankedBet(eventId) {
     createdAt: serverTimestamp(),
     updatedAt: serverTimestamp()
   });
+
+  await notifyBetPlaced(event, { firestoreId: betRef.id, eventId, userId: user.id, participant, amount });
 }
 
 async function settleEvent(eventId, options = {}) {
@@ -3126,6 +3196,59 @@ async function syncApiSchedule(daysFromToday = 0, options = {}) {
   }
 }
 
+function liveRefreshCandidateEvents() {
+  const now = Date.now();
+  const soonMs = 20 * 60 * 1000;
+  const recentMs = 7 * 60 * 60 * 1000;
+
+  return Object.values(state.events || {}).filter(event => {
+    if (!event || event.status === "final") return false;
+    if (![EVENT_TYPES.TEAM, EVENT_TYPES.RANKED, EVENT_TYPES.FIGHT_CARD].includes(event.type)) return false;
+    const start = new Date(event.startTime || 0).getTime();
+    if (!Number.isFinite(start)) return event.status === "live";
+    return event.status === "live" || (start <= now + soonMs && start >= now - recentMs);
+  });
+}
+
+async function syncLiveScoreEvents(options = {}) {
+  if (!isAdmin()) return { updated: 0, fetched: 0 };
+
+  const candidates = liveRefreshCandidateEvents();
+  if (!candidates.length) return { updated: 0, fetched: 0 };
+
+  const leaguesByDate = new Map();
+  for (const event of candidates) {
+    const league = event.league;
+    if (!API_IMPORT_LEAGUES.includes(league)) continue;
+    const date = new Date(event.startTime || Date.now()).toISOString().slice(0, 10);
+    const key = `${league}|${date}`;
+    leaguesByDate.set(key, { league, date });
+  }
+
+  if (!leaguesByDate.size) return { updated: 0, fetched: 0 };
+
+  const batch = writeBatch(db);
+  const usedCodes = new Set(Object.values(state.events || {}).map(event => event.shortCode).filter(Boolean));
+  let fetched = 0;
+  let updated = 0;
+
+  for (const { league, date } of leaguesByDate.values()) {
+    try {
+      const events = await fetchApiEventsForLeagueDate(league, date);
+      fetched += events.length;
+      for (const event of events) {
+        const result = await saveApiEventToBatch(batch, event, usedCodes);
+        if (result === "updated") updated += 1;
+      }
+    } catch {
+      // Keep live refresh non-blocking.
+    }
+  }
+
+  if (updated) await batch.commit();
+  return { updated, fetched };
+}
+
 function autoKey(name) {
   return `everyoneLoses:auto:${name}`;
 }
@@ -3238,6 +3361,11 @@ async function runAutoMaintenance(reason = "timer") {
 
   const notes = [];
   try {
+    if (shouldRunAutoTask("live-score", LIVE_SCORE_SYNC_INTERVAL_MS)) {
+      const live = await syncLiveScoreEvents({ silent: true });
+      if (live.updated) notes.push(`live refreshed ${live.updated}`);
+    }
+
     if (shouldRunAutoTask("sync-today", AUTO_SYNC_INTERVAL_MS)) {
       const today = await syncApiSchedule(0, { silent: true });
       notes.push(`today ${today.fetched || 0} fetched`);
@@ -3276,7 +3404,7 @@ function maybeStartAutoMaintenance() {
 
   if (!autoMaintenanceTimer) {
     runAutoMaintenance("startup");
-    autoMaintenanceTimer = setInterval(() => runAutoMaintenance("interval"), 5 * 60 * 1000);
+    autoMaintenanceTimer = setInterval(() => runAutoMaintenance("interval"), 30 * 1000);
   }
 }
 
