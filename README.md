@@ -87,3 +87,10 @@ Do not publish real admin passwords, API keys, or private credentials in this RE
 - v10.40 removed the Now-board hero tile and widened/strengthened the desktop topbar.
 - v10.42 rolled back to the better v10.40 topbar styling after the v10.41 experiment.
 - v10.43 cleans up this README so GitHub no longer says v7.1.
+
+
+## v10.44 auth palette + mobile nav polish
+
+- Recolors login/signup inputs and auth panel to match the darker glass UI.
+- Improves placeholder/readability for auth fields.
+- Replaces glitchy mobile tab bouncing with direct active-tab centering after render.

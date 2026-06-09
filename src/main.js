@@ -2230,8 +2230,24 @@ function renderAdmin() {
   `;
 }
 
+function centerActiveNavTab() {
+  const nav = document.querySelector(".navbar");
+  const active = nav?.querySelector(".nav-btn.active");
+  if (!nav || !active) return;
+
+  const target = active.offsetLeft - (nav.clientWidth - active.offsetWidth) / 2;
+  const max = nav.scrollWidth - nav.clientWidth;
+  nav.scrollLeft = Math.max(0, Math.min(target, max));
+}
+
 function wireUi() {
-  document.querySelectorAll("[data-tab]").forEach(button => button.addEventListener("click", () => { activeTab = button.dataset.tab; renderApp(); }));
+  centerActiveNavTab();
+
+  document.querySelectorAll("[data-tab]").forEach(button => button.addEventListener("click", () => {
+    activeTab = button.dataset.tab;
+    renderApp();
+    requestAnimationFrame(centerActiveNavTab);
+  }));
   document.querySelector("[data-action='toggle-auth']")?.addEventListener("click", () => { authMode = authMode === "login" ? "signup" : "login"; renderApp(); });
   document.querySelector("[data-action='login']")?.addEventListener("click", login);
   document.querySelector("[data-action='signup']")?.addEventListener("click", signup);

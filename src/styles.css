@@ -4027,3 +4027,102 @@ label {
     margin-right: 0;
   }
 }
+
+
+/* v10.44 auth color/readability + no-bounce mobile nav */
+.auth-mini form {
+  padding: 12px;
+  border: 1px solid rgba(255,255,255,.18);
+  border-radius: 18px;
+  background:
+    radial-gradient(circle at 14% 0%, rgba(255,255,255,.16), transparent 34%),
+    linear-gradient(145deg, rgba(255,255,255,.12), rgba(255,255,255,.045) 58%),
+    rgba(8,10,14,.36) !important;
+  box-shadow:
+    0 16px 48px rgba(0,0,0,.24),
+    inset 0 1px 0 rgba(255,255,255,.20) !important;
+  backdrop-filter: blur(26px) saturate(150%) !important;
+  -webkit-backdrop-filter: blur(26px) saturate(150%) !important;
+}
+
+.auth-mini form input,
+.auth-mini form select {
+  background:
+    linear-gradient(180deg, rgba(12,14,20,.62), rgba(12,14,20,.38)) !important;
+  border: 1px solid rgba(255,255,255,.22) !important;
+  color: #fff !important;
+  box-shadow:
+    inset 0 1px 0 rgba(255,255,255,.16),
+    0 8px 24px rgba(0,0,0,.18) !important;
+}
+
+.auth-mini form input::placeholder {
+  color: rgba(248,250,253,.64) !important;
+}
+
+.auth-mini form input:focus,
+.auth-mini form select:focus {
+  background:
+    linear-gradient(180deg, rgba(18,21,29,.72), rgba(18,21,29,.44)) !important;
+  border-color: rgba(255,255,255,.42) !important;
+  box-shadow:
+    0 0 0 4px rgba(255,255,255,.07),
+    inset 0 1px 0 rgba(255,255,255,.20) !important;
+}
+
+.auth-mini form .primary,
+.auth-mini form .ghost {
+  min-height: 42px;
+  border-radius: 12px !important;
+}
+
+.auth-mini form .primary {
+  background:
+    linear-gradient(135deg, rgba(255,255,255,.96), rgba(255,255,255,.76)) !important;
+  color: #06080c !important;
+  border-color: rgba(255,255,255,.70) !important;
+}
+
+.auth-mini form .ghost {
+  background:
+    linear-gradient(180deg, rgba(255,255,255,.15), rgba(255,255,255,.07)) !important;
+  color: #fff !important;
+  border-color: rgba(255,255,255,.22) !important;
+}
+
+.navbar {
+  scroll-behavior: auto !important;
+  overscroll-behavior-x: contain;
+}
+
+.nav-btn {
+  scroll-margin-inline: 0 !important;
+}
+
+/* Signup form gets tall on desktop; make the brand/auth layout breathe instead of washing out */
+@media (min-width: 760px) {
+  .auth-mini form {
+    min-width: min(520px, 44vw);
+  }
+
+  .auth-mini form input,
+  .auth-mini form select {
+    min-width: 0;
+  }
+}
+
+@media (max-width: 720px) {
+  .auth-mini {
+    width: 100%;
+    justify-content: stretch;
+  }
+
+  .auth-mini form {
+    width: 100%;
+  }
+
+  .auth-mini form input,
+  .auth-mini form select {
+    width: 100%;
+  }
+}
