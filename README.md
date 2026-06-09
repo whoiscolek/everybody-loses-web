@@ -356,3 +356,13 @@ History:
 - Fixes live badge/team label colors and score contrast.
 - Removes heavy internal structural shadows so the matchup area feels integrated into the full event pane.
 - Keeps the liquid glass tile style from v10.35.
+
+
+## v10.37 layout/readability cleanup
+
+- Makes tab hero panels thinner and removes the unnecessary Now-board second line.
+- Removes the extra History explanation block.
+- Strengthens sticky topbar blur so scrolled content looks frosted behind it.
+- Removes structural internal card shadows that made the matchup side look like a separate rectangle.
+- Reworks Profile layout: profile + lifetime summary share top-left, edit stays right, rivals spans bottom.
+- Improves readability for upload/notification tiles, admin stat tiles, history cards, and planned stats spacing.

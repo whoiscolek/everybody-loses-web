@@ -1059,15 +1059,15 @@ function renderAuthArea() {
 function renderHero() {
   const user = currentUser();
   const text = {
-    today: ["Now board", "Live, active, and near-upcoming events only. The app syncs the full Now window, including late games from the lookback window, then hides anything beyond it."],
-    mybets: ["My Bets", "Your open bets, matched battles, and active entries."],
-    ledger: ["Ledger", "A personal view of what you owe, what others owe you, and settled balances."],
-    leaderboard: ["Leaderboard", "Approved users ranked by net profit, with gross wins and losses for context."],
-    history: ["History", "A full trail of events, bets, matches, and ledger items for recovery and review."],
-    profile: ["Profile", "Update your display name, profile picture, and account look."],
-    stats: ["Stats", "Personal betting statistics: who you beat, who beats you, and how your results break down."],
-    about: ["About", "How team events, custom bets, ranked-finish events, matching, ledger entries, and settlements work."],
-    admin: ["Admin", "Approve users, create events, update results, settle events, and repair the ledger."]
+    today: ["Now board", ""],
+    mybets: ["My Bets", "Open bets, matched battles, and active entries."],
+    ledger: ["Ledger", "What you owe, what others owe you, and settled balances."],
+    leaderboard: ["Leaderboard", "Approved users ranked by net profit."],
+    history: ["History", "Final events, game IDs, results, and betting outcomes."],
+    profile: ["Profile", "Account, picture, and notification settings."],
+    stats: ["Stats", "Personal betting performance and opponent breakdowns."],
+    about: ["About", "How bets, matching, ledger entries, and settlements work."],
+    admin: ["Admin", "Approve users, sync events, settle results, and repair the ledger."]
   }[activeTab] || ["Everyone Loses", "Head-to-head sports betting battles."];
 
   const signInNote = user
@@ -1075,9 +1075,11 @@ function renderHero() {
     : "Not signed in. Create a normal email/password account, then use Admin Unlock if you are the owner.";
 
   return `
-    <section class="page-hero">
-      <h2>${escapeHtml(text[0])}</h2>
-      <p>${escapeHtml(text[1])}</p>
+    <section class="page-hero compact-hero">
+      <div>
+        <h2>${escapeHtml(text[0])}</h2>
+        ${text[1] ? `<p>${escapeHtml(text[1])}</p>` : ""}
+      </div>
       <p class="footer-note">${signInNote}</p>
     </section>
   `;
@@ -1704,10 +1706,6 @@ function renderHistory() {
     .sort((a, b) => new Date(b.startTime) - new Date(a.startTime));
 
   return `
-    <div class="panel">
-      <h3>History</h3>
-      <p class="muted">Final events move here automatically. This view is condensed for review: result, leaderboard, game ID, and betting outcome.</p>
-    </div>
     <div class="history-list compact-history-list">
       ${events.length ? events.map(renderHistoryEventCard).join("") : `<div class="panel empty-state">No final event history yet.</div>`}
     </div>
@@ -1802,8 +1800,8 @@ function renderProfile() {
   const stats = getUserStats(user.id);
 
   return `
-    <div class="profile-grid">
-      <div class="profile-block">
+    <div class="profile-grid profile-grid-v2">
+      <div class="profile-block profile-overview-block">
         <div class="profile-header">
           ${renderAvatar(user, "large")}
           <div>
@@ -1813,9 +1811,19 @@ function renderProfile() {
             ${!user.approved ? `<p class="warning">Pending admin approval</p>` : ""}
           </div>
         </div>
+
+        <div class="profile-summary-inline">
+          <h3>Lifetime summary</h3>
+          <div class="stat-list">
+            <div class="stat-line"><span>Gross won</span><strong>${money(stats.grossWon)}</strong></div>
+            <div class="stat-line"><span>Gross lost</span><strong>${money(stats.grossLost)}</strong></div>
+            <div class="stat-line"><span>Ledger win rate</span><strong>${stats.winRate}%</strong></div>
+            <div class="stat-line"><span>Ledger decisions</span><strong>${stats.total}</strong></div>
+          </div>
+        </div>
       </div>
 
-      <div class="profile-block">
+      <div class="profile-block profile-edit-block">
         <h3>Edit profile</h3>
         <label>Display name</label>
         <input id="profileDisplayName" value="${escapeHtml(user.displayName)}" />
@@ -1843,22 +1851,12 @@ function renderProfile() {
         </label>
 
         <button class="primary" data-action="save-profile">Save profile</button>
-        <p class="footer-note small">Uploads now go to Firebase Storage and save to your account. Email notifications require the app owner to set a mail provider key in Vercel.</p>
+        <p class="footer-note small">Uploads go to Firebase Storage. Email notifications require the app owner to set a mail provider key in Vercel.</p>
       </div>
 
-      <div class="profile-block">
-        <h3>Lifetime summary</h3>
-        <div class="stat-list">
-          <div class="stat-line"><span>Gross won</span><strong>${money(stats.grossWon)}</strong></div>
-          <div class="stat-line"><span>Gross lost</span><strong>${money(stats.grossLost)}</strong></div>
-          <div class="stat-line"><span>Ledger win rate</span><strong>${stats.winRate}%</strong></div>
-          <div class="stat-line"><span>Ledger decisions</span><strong>${stats.total}</strong></div>
-        </div>
-      </div>
-
-      <div class="profile-block">
+      <div class="profile-block profile-rivals-block">
         <h3>Rivals</h3>
-        <div class="stat-list">
+        <div class="stat-list rival-grid">
           <div class="stat-line"><span>Best matchup</span><strong>${stats.bestAgainst ? `${escapeHtml(userName(stats.bestAgainst.id))} (${money(stats.bestAgainst.net)})` : "N/A"}</strong></div>
           <div class="stat-line"><span>Toughest matchup</span><strong>${stats.worstAgainst ? `${escapeHtml(userName(stats.worstAgainst.id))} (${money(stats.worstAgainst.net)})` : "N/A"}</strong></div>
         </div>
@@ -1915,14 +1913,14 @@ function renderStats() {
       </div>
 
       <div class="panel">
-        <h3>Coming stats</h3>
+        <h3>Planned stats</h3>
         <div class="record">
           <strong>Odds-based performance</strong><br>
-          <span class="muted small">Once API odds are attached to each bet, this can show record as favorite/underdog and performance by implied win percentage.</span>
+          <span class="muted small">This will populate after more settled bets have reliable odds attached.</span>
         </div>
         <div class="record">
           <strong>Sport and pick splits</strong><br>
-          <span class="muted small">Once more event data accumulates, this can show sport, league, team, player, and ranked-event performance.</span>
+          <span class="muted small">This will populate after more settled events accumulate across sports/leagues.</span>
         </div>
       </div>
     </div>
