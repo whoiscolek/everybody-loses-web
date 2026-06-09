@@ -319,3 +319,18 @@ History:
 - MLB's dedicated Stats API sync runs as part of the automatic sweep instead of requiring manual intervention.
 - Startup/focus triggers a Now-window discovery sync so missing games can populate without checking Google.
 - Admin now shows Source sweep debug in addition to MLB debug.
+
+
+## v10.32 Now-window lookback sync fix
+
+- Fixes mismatch where Now display allowed a 12-hour lookback but discovery only fetched from the current date forward.
+- Late MLB games after midnight ET, especially West Coast games that belong to the prior schedule date, are now included in automatic source sweeps.
+- Example fixed case: HOU @ LAA live after midnight ET when the MLB schedule date is still the previous day.
+
+
+## v10.33 Team-event identity fix
+
+- Fixes repeated team matchups being treated as the same event across different dates.
+- Team event identity now uses stable source ids like mlbGamePk/espnEventId or date + away + home.
+- Racing/title-based duplicate matching is now limited to ranked/racing events only.
+- Prevents source sweeps from mutating or hiding the wrong MLB/NBA/etc. game when teams play multiple times.

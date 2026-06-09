@@ -430,14 +430,23 @@ function eventShouldBeAutoSavedForNowWindow(event) {
 
 function nowWindowDateISOs() {
   const dates = new Set();
-  const start = new Date();
-  const end = new Date(Date.now() + NOW_BOARD_LOOKAHEAD_MS);
 
-  dates.add(dateISOInDisplayTimeZone(start));
-  dates.add(dateISOInDisplayTimeZone(end));
+  // The Now board shows events from a lookback window through a lookahead window.
+  // Discovery must fetch that exact same date span. The old version started at
+  // "right now", which missed late West Coast games after midnight ET because
+  // those games belonged to yesterday's MLB schedule date.
+  const windowStart = new Date(Date.now() - NOW_BOARD_LOOKBACK_MS);
+  const windowEnd = new Date(Date.now() + NOW_BOARD_LOOKAHEAD_MS);
 
-  const cursor = new Date(`${dateISOInDisplayTimeZone(start)}T12:00:00Z`);
-  const endDate = new Date(`${dateISOInDisplayTimeZone(end)}T12:00:00Z`);
+  const startISO = dateISOInDisplayTimeZone(windowStart);
+  const endISO = dateISOInDisplayTimeZone(windowEnd);
+
+  dates.add(startISO);
+  dates.add(dateISOInDisplayTimeZone(new Date()));
+  dates.add(endISO);
+
+  const cursor = new Date(`${startISO}T12:00:00Z`);
+  const endDate = new Date(`${endISO}T12:00:00Z`);
 
   while (cursor <= endDate) {
     dates.add(cursor.toISOString().slice(0, 10));
@@ -1043,7 +1052,7 @@ function renderAuthArea() {
 function renderHero() {
   const user = currentUser();
   const text = {
-    today: ["Now board", "Live, active, and near-upcoming events only. The app syncs the full 48-hour Now window, then hides anything beyond it."],
+    today: ["Now board", "Live, active, and near-upcoming events only. The app syncs the full Now window, including late games from the lookback window, then hides anything beyond it."],
     mybets: ["My Bets", "Your open bets, matched battles, and active entries."],
     ledger: ["Ledger", "A personal view of what you owe, what others owe you, and settled balances."],
     leaderboard: ["Leaderboard", "Approved users ranked by net profit, with gross wins and losses for context."],
@@ -3068,16 +3077,43 @@ function eventSourceConfidence(event) {
 function canonicalApiKey(event) {
   const league = String(event?.league || "").trim().toLowerCase();
   const sport = String(event?.sport || "").trim().toLowerCase();
+  const type = String(event?.type || "").trim();
+  const ids = event?.externalIds || {};
+
+  // Team games must include a stable source id or the schedule date + teams.
+  // The old title-only key made repeated series games like HOU @ LAA collide
+  // across multiple dates, which caused refreshes to mutate/hide the wrong game.
+  if (type === EVENT_TYPES.TEAM) {
+    const sourceId = ids.mlbGamePk || ids.espnEventId || ids.eventId || "";
+    if (sourceId) return `${sport}|${league}|team|${sourceId}`;
+
+    const date = dateISOInDisplayTimeZone(event?.startTime || Date.now());
+    const away = String(event?.away?.code || "away").toLowerCase();
+    const home = String(event?.home?.code || "home").toLowerCase();
+    return `${sport}|${league}|team|${date}|${away}|${home}`;
+  }
+
+  if (type === EVENT_TYPES.FIGHT_CARD) {
+    const sourceId = ids.espnEventId || ids.eventId || event?.id || "";
+    const date = dateISOInDisplayTimeZone(event?.startTime || Date.now());
+    return `${sport}|${league}|fight|${sourceId || `${date}|${normalizeEventTitle(event?.title || "")}`}`;
+  }
+
   const title = normalizeEventTitle(event?.title || "");
   const f1Round = event?.externalIds?.f1Round ? `round-${event.externalIds.f1Round}` : "";
   const sourceRound = f1Round || title;
-  return `${sport}|${league}|${sourceRound}`;
+  return `${sport}|${league}|ranked|${sourceRound}`;
 }
 
 function eventLooksSameRace(saved, apiEvent) {
   if (!saved || !apiEvent) return false;
   if (String(saved.sport || "") !== String(apiEvent.sport || "")) return false;
   if (String(saved.league || "") !== String(apiEvent.league || "")) return false;
+
+  // This fallback is only safe for ranked/racing-style events where the event
+  // title is the event identity. It is unsafe for team sports because the same
+  // matchup can repeat on consecutive dates.
+  if (saved.type !== EVENT_TYPES.RANKED || apiEvent.type !== EVENT_TYPES.RANKED) return false;
 
   const savedKey = canonicalApiKey(saved);
   const apiKey = canonicalApiKey(apiEvent);
@@ -3174,6 +3210,11 @@ async function cleanupDuplicateApiEvents(options = {}) {
       const hasBets = Object.values(state.bets || {}).some(bet => bet.eventId === duplicateId);
       const hasMatches = Object.values(state.matches || {}).some(match => match.eventId === duplicateId);
       if (hasBets || hasMatches) continue;
+
+      // Extra safety: team games are only removable as duplicates when their
+      // canonical key includes an actual source identifier/date+teams. This
+      // prevents repeated series matchups from being treated as stale clones.
+      if (duplicate.type === EVENT_TYPES.TEAM && canonicalApiKey(duplicate) !== canonicalApiKey(keep)) continue;
 
       batch.delete(doc(db, "events", duplicateId));
       delete state.events[duplicateId];
