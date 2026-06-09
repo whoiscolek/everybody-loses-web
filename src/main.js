@@ -18,6 +18,7 @@ import {
   onSnapshot,
   orderBy,
   query,
+  where,
   serverTimestamp,
   setDoc,
   updateDoc,
@@ -243,6 +244,68 @@ async function ensureUserProfile(user) {
   }, { merge: true });
 }
 
+function subscribeToUserScopedCollection(collectionName, stateKey) {
+  const uid = authUser?.uid;
+  if (!uid) return [];
+
+  const fromMap = {};
+  const toMap = {};
+
+  function mergeAndRender() {
+    state[stateKey] = { ...fromMap, ...toMap };
+    renderApp();
+  }
+
+  const fromUnsub = onSnapshot(
+    query(collection(db, collectionName), where("fromUser", "==", uid)),
+    snapshot => {
+      Object.keys(fromMap).forEach(key => delete fromMap[key]);
+      Object.assign(fromMap, snapToMap(snapshot));
+      mergeAndRender();
+    },
+    () => {
+      // Keep the app usable if one side of a scoped listener fails.
+    }
+  );
+
+  const toUnsub = onSnapshot(
+    query(collection(db, collectionName), where("toUser", "==", uid)),
+    snapshot => {
+      Object.keys(toMap).forEach(key => delete toMap[key]);
+      Object.assign(toMap, snapToMap(snapshot));
+      mergeAndRender();
+    },
+    () => {
+      // Keep the app usable if one side of a scoped listener fails.
+    }
+  );
+
+  return [fromUnsub, toUnsub];
+}
+
+function subscribeLedgerLikeCollection(collectionName, stateKey) {
+  let fellBack = false;
+
+  const allUnsub = onSnapshot(
+    collection(db, collectionName),
+    snapshot => {
+      if (fellBack) return;
+      state[stateKey] = snapToMap(snapshot);
+      renderApp();
+    },
+    () => {
+      // Non-admin users are not allowed to list every ledger/settlement doc.
+      // Fall back to two security-rule-compatible queries: docs they owe and docs owed to them.
+      fellBack = true;
+      state[stateKey] = {};
+      const scoped = subscribeToUserScopedCollection(collectionName, stateKey);
+      unsubscribeAll.push(...scoped);
+    }
+  );
+
+  return allUnsub;
+}
+
 function subscribeToData() {
   const subscriptions = [
     onSnapshot(collection(db, "users"), snapshot => {
@@ -262,14 +325,8 @@ function subscribeToData() {
       state.matches = snapToMap(snapshot);
       renderApp();
     }),
-    onSnapshot(collection(db, "ledgerEntries"), snapshot => {
-      state.ledgerEntries = snapToMap(snapshot);
-      renderApp();
-    }),
-    onSnapshot(collection(db, "settlements"), snapshot => {
-      state.settlements = snapToMap(snapshot);
-      renderApp();
-    })
+    subscribeLedgerLikeCollection("ledgerEntries", "ledgerEntries"),
+    subscribeLedgerLikeCollection("settlements", "settlements")
   ];
 
   unsubscribeAll = subscriptions;
