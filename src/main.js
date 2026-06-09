@@ -1057,7 +1057,6 @@ function renderAuthArea() {
 }
 
 function renderHero() {
-  const user = currentUser();
   const text = {
     today: ["Now board", ""],
     mybets: ["My Bets", "Open bets, matched battles, and active entries."],
@@ -1070,17 +1069,10 @@ function renderHero() {
     admin: ["Admin", "Approve users, sync events, settle results, and repair the ledger."]
   }[activeTab] || ["Everyone Loses", "Head-to-head sports betting battles."];
 
-  const signInNote = user
-    ? `Signed in as <strong>${escapeHtml(user.displayName)}</strong>.`
-    : "Not signed in. Create a normal email/password account, then use Admin Unlock if you are the owner.";
-
   return `
-    <section class="page-hero compact-hero">
-      <div>
-        <h2>${escapeHtml(text[0])}</h2>
-        ${text[1] ? `<p>${escapeHtml(text[1])}</p>` : ""}
-      </div>
-      <p class="footer-note">${signInNote}</p>
+    <section class="page-hero compact-hero no-signin-hero">
+      <h2>${escapeHtml(text[0])}</h2>
+      ${text[1] ? `<p>${escapeHtml(text[1])}</p>` : ""}
     </section>
   `;
 }
@@ -1769,25 +1761,36 @@ function renderHistoryEventCard(event) {
   const matchup = event.type === EVENT_TYPES.TEAM
     ? `${event.away?.code || "Away"} vs ${event.home?.code || "Home"}`
     : `${(event.participants || []).length} entries`;
+  const displayCode = event.shortCode || nextEventDisplayCode(event.league, event.startTime);
+  const betSummary = historyBetSummary(event);
+  const resultLine = renderHistoryResultLine(event);
 
   return `
-    <article class="compact-history-card">
+    <article class="compact-history-card history-tile">
       <div class="compact-history-head">
         <div class="sport-icon">${renderLeagueLogo(event.sport, event.league)}</div>
         <div>
           <div class="kicker">${escapeHtml(event.league)} · ${escapeHtml(formatTime(event.startTime))} ET</div>
           <h3>${escapeHtml(event.title)}</h3>
-          <p class="muted small">${escapeHtml(matchup)} · ${escapeHtml(renderHistoryResultLine(event))}</p>
+          <p class="muted small">${escapeHtml(matchup)}</p>
         </div>
       </div>
-      ${renderCompactLeaderboard(event)}
-      <div class="compact-history-foot">
-        <span>${escapeHtml(historyBetSummary(event))}</span>
+
+      <div class="history-result-line">
+        <strong>Result</strong>
+        <span>${escapeHtml(resultLine)}</span>
       </div>
-      <div class="event-code history-event-code">
-        <div><span class="code-label">Code:</span> <strong>${escapeHtml(event.shortCode || nextEventDisplayCode(event.league, event.startTime))}</strong></div>
-        <div><span class="code-label">Internal ID:</span> <span class="code-value">${escapeHtml(eventId)}</span></div>
-        ${externalRefs ? `<div><span class="code-label">External refs:</span> <span class="code-value">${escapeHtml(externalRefs)}</span></div>` : ""}
+
+      ${renderCompactLeaderboard(event)}
+
+      <div class="compact-history-foot">
+        <span>${escapeHtml(betSummary)}</span>
+      </div>
+
+      <div class="history-id-grid">
+        <div><span class="code-label">Code</span><strong>${escapeHtml(displayCode)}</strong></div>
+        <div><span class="code-label">Game ID</span><span class="code-value">${escapeHtml(eventId)}</span></div>
+        ${externalRefs ? `<div class="wide"><span class="code-label">External refs</span><span class="code-value">${escapeHtml(externalRefs)}</span></div>` : ""}
       </div>
     </article>
   `;

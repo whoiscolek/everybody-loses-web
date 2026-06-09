@@ -366,3 +366,11 @@ History:
 - Removes structural internal card shadows that made the matchup side look like a separate rectangle.
 - Reworks Profile layout: profile + lifetime summary share top-left, edit stays right, rivals spans bottom.
 - Improves readability for upload/notification tiles, admin stat tiles, history cards, and planned stats spacing.
+
+
+## v10.38 nav/history/header fixes
+
+- Removes duplicate sign-in text from tab hero panels.
+- Makes nav active state fill the bar segment instead of appearing as a floating square.
+- Reworks History into compact glass tiles with result, bet summary, code, internal game ID, and external refs.
+- Improves topbar glass blur/readability.
