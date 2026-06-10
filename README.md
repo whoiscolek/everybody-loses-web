@@ -119,3 +119,19 @@ Do not publish real admin passwords, API keys, or private credentials in this RE
 - Existing final events with settled matches but missing/wrong ledger rows are included in automatic settlement repair.
 - History can display winner/loser from settled matches even if a ledger row has not loaded yet.
 - Ledger rows now store matchId, settledAmount context, and doubledUp metadata.
+
+
+## v10.48 My Bets active-only cleanup
+
+- Renames “My bet entries” to “Current Bet Entries.”
+- Filters Current Bet Entries to active non-settled bets only.
+- Filters My Matched Battles to current active matched battles only.
+- Settled/final-event history remains in Ledger and History instead of duplicating on My Bets.
+
+## v10.49 notification diagnostics + scoped matchup emails
+
+- Adds Admin notification diagnostics with a manual test email button.
+- New bet notifications still go to all opted-in approved users except the bettor.
+- Matchup accepted notifications now go only to the user whose open bet was matched.
+- Double-up notifications remain scoped only to the opponent involved.
+- Notification requests now show last sent/skipped/failed details in Admin so Resend/profile-toggle problems are visible.

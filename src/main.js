@@ -162,6 +162,7 @@ let autoMaintenanceTimer = null;
 let autoMaintenanceMessage = "";
 let mlbSyncDebug = "";
 let sourceSweepDebug = "";
+let notificationDebug = localStorage.getItem("notificationDebug") || "";
 let doubleUpCountdownTimer = null;
 let authUser = null;
 let loading = true;
@@ -1687,18 +1688,39 @@ function displayPick(event, bet) {
   return bet.participant || "Unknown";
 }
 
+function betIsCurrent(bet) {
+  const event = state.events[bet?.eventId];
+  if (!bet || bet.status === "settled" || bet.status === "cancelled") return false;
+  if (event?.status === "final") return false;
+  return true;
+}
+
+function matchIsCurrent(match) {
+  const event = state.events[match?.eventId];
+  if (!match || match.status !== "matched") return false;
+  if (event?.status === "final") return false;
+  return true;
+}
+
 function renderMyBets() {
   const user = currentUser();
   if (!user) return `<div class="panel empty-state">Log in to see your bets.</div>`;
   if (!user.approved) return `<div class="panel empty-state">Your account is pending admin approval.</div>`;
 
-  const bets = Object.values(state.bets).filter(bet => bet.userId === user.id).sort(sortNewest);
-  const matches = Object.values(state.matches).filter(match => match.userA === user.id || match.userB === user.id).sort(sortNewest);
+  const bets = Object.values(state.bets)
+    .filter(bet => bet.userId === user.id)
+    .filter(betIsCurrent)
+    .sort(sortNewest);
+
+  const matches = Object.values(state.matches)
+    .filter(match => match.userA === user.id || match.userB === user.id)
+    .filter(matchIsCurrent)
+    .sort(sortNewest);
 
   return `
     <div class="two-col">
-      <div class="panel"><h3>My bet entries</h3><div class="history-list">${bets.length ? bets.map(renderBetRecord).join("") : `<div class="record">No bets yet.</div>`}</div></div>
-      <div class="panel"><h3>My matched battles</h3><div class="history-list">${matches.length ? matches.map(renderMatchRecord).join("") : `<div class="record">No matched battles yet.</div>`}</div></div>
+      <div class="panel"><h3>Current Bet Entries</h3><div class="history-list">${bets.length ? bets.map(renderBetRecord).join("") : `<div class="record">No current bet entries.</div>`}</div></div>
+      <div class="panel"><h3>My matched battles</h3><div class="history-list">${matches.length ? matches.map(renderMatchRecord).join("") : `<div class="record">No current matched battles.</div>`}</div></div>
     </div>
   `;
 }
@@ -2242,6 +2264,17 @@ function renderAdmin() {
         </div>
       </div>
 
+      <div class="admin-card">
+        <h3>Notification diagnostics</h3>
+        <p class="muted small">New bet emails go to all opted-in approved users except the bettor. Matchup-accepted and double-up emails only go to the opponent involved.</p>
+        <label>Send test notification to</label>
+        <select id="notificationTestUser">
+          ${approvedUsers.map(user => `<option value="${escapeHtml(user.id)}">${escapeHtml(user.displayName)} · ${escapeHtml(user.email || "no email")}${user.emailBetNotifications ? " · opted in" : " · opt-in off"}</option>`).join("")}
+        </select>
+        <button class="ghost" data-action="test-notification">Send test email</button>
+        ${notificationDebug ? `<p class="footer-note small debug-line">Last notification: ${escapeHtml(notificationDebug)}</p>` : `<p class="footer-note small">No notification attempt logged in this browser yet.</p>`}
+      </div>
+
       <div class="admin-card api-import-card">
         <h3>API schedule sync</h3>
         <p class="muted small">Pull real schedule/score data into Firestore. ESPN is the default free source; NASCAR live order uses NASCAR.com when available; MotoGP uses PulseLive timing when available. Manual events stay available as the fallback.</p>
@@ -2403,6 +2436,7 @@ function wireUi() {
   document.querySelectorAll("[data-settle]").forEach(button => button.addEventListener("click", () => settleBalance(button.dataset.settle, Number(button.dataset.amount))));
   document.querySelectorAll("[data-approve]").forEach(button => button.addEventListener("click", () => approveUser(button.dataset.approve)));
   document.querySelectorAll("[data-delete-user]").forEach(button => button.addEventListener("click", () => deleteUserProfile(button.dataset.deleteUser)));
+  document.querySelector("[data-action='test-notification']")?.addEventListener("click", sendTestNotification);
   document.querySelector("[data-action='save-profile']")?.addEventListener("click", saveProfile);
   document.querySelector("#profileImageUpload")?.addEventListener("change", updateProfileUploadTile);
   document.querySelector("[data-action='admin-unlock']")?.addEventListener("click", adminUnlock);
@@ -2762,6 +2796,38 @@ async function requestDoubleUp(matchId) {
 }
 
 
+
+function setNotificationDebug(label, result = {}) {
+  const stamp = new Date().toLocaleTimeString([], { hour: "numeric", minute: "2-digit", second: "2-digit" });
+  const detail = typeof result === "string"
+    ? result
+    : [
+        result.sent !== undefined ? `sent=${result.sent}` : "",
+        result.failed !== undefined ? `failed=${result.failed}` : "",
+        result.skipped ? "skipped" : "",
+        result.reason || result.error || "",
+        Array.isArray(result.results) ? result.results.map(item => `${item.email || "email"}:${item.ok ? "ok" : item.error || "failed"}`).join(", ") : ""
+      ].filter(Boolean).join(" · ");
+  notificationDebug = `${stamp} ${label}: ${detail || "done"}`;
+  try { localStorage.setItem("notificationDebug", notificationDebug); } catch {}
+}
+
+async function postNotification(path, payload, label) {
+  try {
+    const response = await fetch(path, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload)
+    });
+    const result = await response.json().catch(() => ({ error: `HTTP ${response.status}` }));
+    setNotificationDebug(label, result);
+    return result;
+  } catch (error) {
+    setNotificationDebug(label, error.message || "request failed");
+    return { sent: 0, failed: 1, error: error.message || "request failed" };
+  }
+}
+
 function betNotificationRecipients(bettorId) {
   return Object.values(state.users || {})
     .filter(user => user?.approved && user?.emailBetNotifications && user?.email && user.id !== bettorId)
@@ -2806,15 +2872,7 @@ async function notifyBetPlaced(event, bet = {}) {
     }
   };
 
-  try {
-    await fetch("/api/bet-email-notification", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(payload)
-    });
-  } catch {
-    // Do not block betting if email delivery fails or is not configured.
-  }
+  await postNotification("/api/bet-email-notification", payload, "New bet notification");
 }
 
 
@@ -2849,15 +2907,62 @@ async function notifyDoubleUpRequested(event, match, challenge = {}) {
     }
   };
 
-  try {
-    await fetch("/api/double-up-email-notification", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(payload)
-    });
-  } catch {
-    // Do not block double-up requests if email delivery fails or is not configured.
+  await postNotification("/api/double-up-email-notification", payload, "Double-up notification");
+}
+
+
+async function notifyMatchAccepted(event, match = {}, acceptedById = "", recipientId = "") {
+  const accepter = state.users?.[acceptedById] || currentUser();
+  const recipient = state.users?.[recipientId];
+  if (!accepter?.approved || !event || !recipient?.approved || !recipient?.emailBetNotifications || !recipient?.email) {
+    setNotificationDebug("Matchup notification", `skipped; recipient=${recipient?.email || "none"}; optedIn=${Boolean(recipient?.emailBetNotifications)}`);
+    return;
   }
+
+  const payload = {
+    recipient: {
+      id: recipient.id,
+      email: recipient.email,
+      displayName: recipient.displayName || "User"
+    },
+    accepter: {
+      id: accepter.id,
+      displayName: accepter.displayName || accepter.email || "Someone"
+    },
+    event: {
+      id: event.firestoreId || event.id,
+      shortCode: event.shortCode || "",
+      title: event.title || event.id,
+      league: event.league || "",
+      startTime: event.startTime || ""
+    },
+    match: {
+      id: match.id || match.firestoreId || "",
+      amount: Number(match.amount || match.exposure || 0),
+      pick: match.pick || ""
+    }
+  };
+
+  await postNotification("/api/matchup-email-notification", payload, "Matchup notification");
+}
+
+async function sendTestNotification() {
+  if (!isAdmin()) return;
+  const userId = document.querySelector("#notificationTestUser")?.value;
+  const recipient = state.users?.[userId];
+  const sender = currentUser();
+  if (!recipient?.email) return alert("Pick a user with an email address.");
+
+  const payload = {
+    recipients: [{ id: recipient.id, email: recipient.email, displayName: recipient.displayName || "User" }],
+    bettor: { id: sender?.id || "admin", displayName: sender?.displayName || "Admin test" },
+    event: { id: "TEST", shortCode: "TEST", title: "Notification test", league: "Everyone Loses", startTime: new Date().toISOString() },
+    bet: { id: "TEST", amount: 1, pick: "test notification" }
+  };
+
+  const result = await postNotification("/api/bet-email-notification", payload, "Test notification");
+  renderApp();
+  alert(result.sent ? `Test sent to ${recipient.email}.` : `Test did not send: ${result.reason || result.error || "check diagnostics"}`);
 }
 
 async function placeTeamBet(eventId, side) {
@@ -2929,6 +3034,12 @@ async function tryMatchTeamBet(newBet) {
   });
 
   await batch.commit();
+  const event = state.events[newBet.eventId];
+  await notifyMatchAccepted(event, {
+    id: matchRef.id,
+    amount: newBet.amount,
+    pick: formatBetPickForNotification(event, newBet)
+  }, newBet.userId, candidate.userId);
   await refreshOddsForEvent(newBet.eventId, "team-bet-matched", false, true);
 }
 
@@ -3013,6 +3124,12 @@ async function tryMatchFightCardBet(newBet) {
   });
 
   await batch.commit();
+  const event = state.events[newBet.eventId];
+  await notifyMatchAccepted(event, {
+    id: matchRef.id,
+    amount: newBet.amount,
+    pick: formatBetPickForNotification(event, newBet)
+  }, newBet.userId, candidate.userId);
 }
 
 async function removeUserFightBets(eventId, userId, fightId) {
