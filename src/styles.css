@@ -4324,3 +4324,55 @@ label {
     linear-gradient(135deg, rgba(255,193,7,.16), rgba(255,255,255,.06)),
     rgba(20, 22, 28, .55) !important;
 }
+
+
+/* v10.55 F1 stale-event repair + desktop card density tweaks */
+@media (min-width: 1181px) {
+  .team-center {
+    display: flex !important;
+    flex-direction: column;
+  }
+
+  .team-center .mini-stat-grid {
+    margin-top: auto !important;
+  }
+
+  .team-center > .odds-line {
+    margin-top: 8px !important;
+    padding-top: 8px !important;
+  }
+
+  .score-actions {
+    display: none !important;
+  }
+
+  .bet-actions {
+    display: flex;
+    gap: 10px;
+    flex-wrap: wrap;
+    align-items: center;
+  }
+
+  .bet-actions .tiny-action {
+    margin: 0;
+  }
+
+  .header-odds {
+    min-width: 124px;
+    max-width: 194px;
+    padding: 9px 10px;
+  }
+
+  .header-odds strong {
+    font-size: .64rem !important;
+    font-weight: 760 !important;
+    letter-spacing: .09em !important;
+    margin-bottom: 3px !important;
+  }
+
+  .header-odds span {
+    font-size: .78rem !important;
+    font-weight: 620 !important;
+    line-height: 1.18 !important;
+  }
+}

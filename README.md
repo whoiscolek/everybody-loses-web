@@ -166,3 +166,11 @@ Do not publish real admin passwords, API keys, or private credentials in this RE
 - The only v10.52 JavaScript change on the Now board was header odds rendering.
 - Makes header odds rendering non-fatal and wraps each event card render independently, so one malformed event/odds payload cannot blank the entire active MLB board.
 - Does not add new MLB sync/self-heal assumptions.
+
+
+## v10.55 F1 stale-event repair + desktop density
+
+- Repairs the stale F1 Friday/session event problem by matching verified Jolpica F1 races to older ESPN-style race-weekend imports and updating that existing event instead of leaving the stale event visible.
+- Allows trusted Jolpica F1 refreshes to correct title/start time/participants even if the stale event has betting records.
+- Keeps desktop odds in the event header, but makes odds text smaller and less bold.
+- Moves desktop team stats/weather lower in the scoreboard area and moves the admin Refresh odds button next to Clear my bets.

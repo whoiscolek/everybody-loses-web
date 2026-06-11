@@ -638,6 +638,7 @@ function liveContextText(event) {
 function safeRefreshFieldsForEvent(event, existing = null) {
   const existingId = existing?.firestoreId || existing?.id || "";
   const hasFinancials = existingId && eventHasFinancialRecords(existingId);
+  const trustedF1Refresh = event?.league === "F1" && event?.externalIds?.source === "jolpica-f1";
 
   const incomingOdds = event.odds || "Unavailable";
   const existingOdds = existing?.odds || "";
@@ -670,14 +671,14 @@ function safeRefreshFieldsForEvent(event, existing = null) {
     updatedAt: serverTimestamp()
   };
 
-  if (!hasFinancials) {
+  if (!hasFinancials || trustedF1Refresh) {
     fields.title = event.title;
     fields.startTime = event.startTime;
     fields.participants = event.participants || [];
     fields.fights = event.fights || [];
   }
 
-  if (hasFinancials) {
+  if (hasFinancials && !trustedF1Refresh) {
     fields.lockedStructurePreserved = true;
     fields.structurePreservedReason = "Existing bets/matches/ledger records present; sync did not change title, start time, event type, short code, or participant list.";
   }
@@ -1577,7 +1578,6 @@ function renderScoreLine(event) {
         ], event)}
         ${renderOddsDisplay(event)}
         ${eventOddsMeta(event) ? `<div class="score-sub odds-line">${escapeHtml(eventOddsMeta(event))}</div>` : ""}
-        ${renderAdminOddsButton(event) ? `<div class="score-actions">${renderAdminOddsButton(event)}</div>` : ""}
       </div>
     `;
   }
@@ -1654,7 +1654,12 @@ function renderTeamBetForm(event, locked) {
       <button class="primary" data-bet-team="${escapeHtml(event.id)}" data-side="home" ${locked || !canBet() ? "disabled" : ""}>Pick ${escapeHtml(event.home.code)}</button>
     </div>
     <p class="footer-note small">${locked ? "This event is locked." : "Multiple bets are allowed, but all of your bets on one event must stay on the same side."}</p>
-    ${canBet() && !locked ? `<div class="bet-actions"><button class="ghost" data-clear-event-bets="${escapeHtml(event.id)}">Clear my bets for this event</button></div>` : ""}
+    ${(canBet() && !locked) || renderAdminOddsButton(event) ? `
+      <div class="bet-actions">
+        ${canBet() && !locked ? `<button class="ghost" data-clear-event-bets="${escapeHtml(event.id)}">Clear my bets for this event</button>` : ""}
+        ${renderAdminOddsButton(event)}
+      </div>
+    ` : ""}
   `;
 }
 
@@ -3599,12 +3604,47 @@ function eventLooksSameRace(saved, apiEvent) {
   return !!savedTitle && !!apiTitle && savedTitle === apiTitle;
 }
 
+function findExistingF1RaceWeekendEvent(apiEvent) {
+  if (!apiEvent || apiEvent.league !== "F1" || apiEvent.type !== EVENT_TYPES.RANKED) return null;
+  if (apiEvent.externalIds?.source !== "jolpica-f1") return null;
+
+  const apiStart = new Date(apiEvent.startTime || 0).getTime();
+  if (!Number.isFinite(apiStart)) return null;
+
+  const leadInStart = apiStart - (3 * 24 * 60 * 60 * 1000);
+  const leadInEnd = apiStart + (6 * 60 * 60 * 1000);
+  const apiRound = String(apiEvent.externalIds?.f1Round || "");
+
+  return Object.values(state.events || {}).find(saved => {
+    if (!saved || saved.league !== "F1" || saved.type !== EVENT_TYPES.RANKED) return false;
+    if (saved.status === "final") return false;
+
+    const savedRound = String(saved.externalIds?.f1Round || "");
+    if (apiRound && savedRound && apiRound === savedRound) return true;
+
+    const savedStart = new Date(saved.startTime || 0).getTime();
+    if (!Number.isFinite(savedStart)) return false;
+
+    const savedSource = String(saved.externalIds?.source || saved.apiSource || "").toLowerCase();
+    const staleOrUnverified = !savedSource.includes("jolpica") || !saved.leaderboardVerified || !saved.externalIds?.f1Round;
+
+    // Legacy ESPN F1 imports often created the race as a Friday/session item
+    // with a partial top-10 list. If that stale event sits inside the race-week
+    // lead-in window, refresh that same Firestore event instead of leaving it
+    // visible next to the verified Jolpica race.
+    return staleOrUnverified && savedStart >= leadInStart && savedStart <= leadInEnd;
+  }) || null;
+}
+
 function findExistingApiEvent(apiEvent) {
   const docId = apiEventDocId(apiEvent);
   if (state.events[docId]) return state.events[docId];
 
   const exactSourceMatch = Object.values(state.events || {}).find(saved => eventMatchesApiImport(saved, apiEvent));
   if (exactSourceMatch) return exactSourceMatch;
+
+  const f1WeekendMatch = findExistingF1RaceWeekendEvent(apiEvent);
+  if (f1WeekendMatch) return f1WeekendMatch;
 
   return Object.values(state.events || {}).find(saved => eventLooksSameRace(saved, apiEvent));
 }
