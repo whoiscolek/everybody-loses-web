@@ -135,3 +135,11 @@ Do not publish real admin passwords, API keys, or private credentials in this RE
 - Matchup accepted notifications now go only to the user whose open bet was matched.
 - Double-up notifications remain scoped only to the opponent involved.
 - Notification requests now show last sent/skipped/failed details in Admin so Resend/profile-toggle problems are visible.
+
+
+## v10.50 immediate settlement UI
+
+- Settlement now optimistically updates local ledger/match state immediately after Firestore write success.
+- Ledger, leaderboard, profile, and history no longer need to wait for the snapshot round trip in the admin browser.
+- Adds a visible settlement sync notice so a successful post does not look like a missing ledger entry.
+- Admin manual settlement now passes the real Firestore event id when available.

@@ -164,6 +164,7 @@ let mlbSyncDebug = "";
 let sourceSweepDebug = "";
 let notificationDebug = localStorage.getItem("notificationDebug") || "";
 let doubleUpCountdownTimer = null;
+let settlementSyncMessage = "";
 let authUser = null;
 let loading = true;
 let dataReady = false;
@@ -1089,6 +1090,7 @@ function renderApp() {
     <main class="app-shell">
       ${renderTopbar()}
       ${renderFirebaseNotice()}
+      ${renderSettlementSyncNotice()}
       ${renderHero()}
       ${renderViews()}
     </main>
@@ -1108,6 +1110,11 @@ function keepActiveNavVisible() {
     const targetLeft = active.offsetLeft - ((nav.clientWidth - active.clientWidth) / 2);
     nav.scrollTo({ left: Math.max(0, targetLeft), behavior: "smooth" });
   });
+}
+
+function renderSettlementSyncNotice() {
+  if (!settlementSyncMessage) return "";
+  return `<section class="panel settlement-sync-notice">${escapeHtml(settlementSyncMessage)}</section>`;
 }
 
 function renderFirebaseNotice() {
@@ -3211,7 +3218,15 @@ async function settleTeamEvent(event, options = {}) {
     .filter(match => match.eventId === eventId && match.type === EVENT_TYPES.TEAM);
 
   const batch = writeBatch(db);
+  const optimisticLedger = {};
+  const optimisticMatches = {};
   let changed = 0;
+  const localNow = new Date().toISOString();
+
+  if (!options.silent) {
+    settlementSyncMessage = `Posting settlement for ${event.title}…`;
+    renderApp();
+  }
 
   for (const match of matches) {
     const matchId = match.firestoreId || match.id;
@@ -3228,6 +3243,7 @@ async function settleTeamEvent(event, options = {}) {
 
     const ledgerPayload = {
       id: existingLedger?.id || ledgerRef.id,
+      firestoreId: existingLedger?.firestoreId || ledgerRef.id,
       eventId,
       matchId,
       fromUser: loser,
@@ -3237,19 +3253,30 @@ async function settleTeamEvent(event, options = {}) {
       doubledUp: matchIsDoubled(match),
       note: `Auto-settled: ${event.title}${matchIsDoubled(match) ? " · doubled up" : ""}`,
       settled: Boolean(existingLedger?.settled || false),
-      updatedAt: serverTimestamp()
+      createdAt: existingLedger?.createdAt || localNow,
+      updatedAt: localNow
     };
 
     if (existingLedger) {
-      batch.set(ledgerRef, ledgerPayload, { merge: true });
+      batch.set(ledgerRef, { ...ledgerPayload, updatedAt: serverTimestamp() }, { merge: true });
     } else {
       batch.set(ledgerRef, {
         ...ledgerPayload,
-        createdAt: serverTimestamp()
+        createdAt: serverTimestamp(),
+        updatedAt: serverTimestamp()
       }, { merge: true });
     }
 
-    if (match.status !== "settled" || Number(match.settledAmount || 0) !== amount) {
+    const matchPatch = {
+      ...match,
+      status: "settled",
+      settledAmount: amount,
+      winner,
+      loser,
+      updatedAt: localNow
+    };
+
+    if (match.status !== "settled" || Number(match.settledAmount || 0) !== amount || match.winner !== winner || match.loser !== loser) {
       batch.set(doc(db, "matches", matchId), {
         status: "settled",
         settledAmount: amount,
@@ -3259,10 +3286,33 @@ async function settleTeamEvent(event, options = {}) {
       }, { merge: true });
     }
 
+    optimisticLedger[ledgerPayload.firestoreId] = ledgerPayload;
+    optimisticMatches[matchId] = matchPatch;
     changed += 1;
   }
 
-  if (changed) await batch.commit();
+  if (changed) {
+    await batch.commit();
+
+    // Update the current browser immediately after the write succeeds instead of
+    // waiting for the Firestore listener round trip. The listener will still
+    // reconcile the canonical server timestamps shortly after.
+    state.ledgerEntries = { ...state.ledgerEntries, ...optimisticLedger };
+    state.matches = { ...state.matches, ...optimisticMatches };
+    settlementSyncMessage = `Settlement posted for ${event.title}. Ledger/profile/leaderboard updated locally; syncing server confirmation…`;
+    renderApp();
+
+    setTimeout(() => {
+      if (settlementSyncMessage.includes(event.title)) {
+        settlementSyncMessage = "";
+        renderApp();
+      }
+    }, 6500);
+  } else if (!options.silent) {
+    settlementSyncMessage = "";
+    renderApp();
+  }
+
   if (!options.silent) alert(`Settled/repaired ${changed} matched bet${changed === 1 ? "" : "s"} for ${event.title}.`);
 }
 
@@ -4480,7 +4530,7 @@ async function settleEventFromAdmin() {
   if (!id) return alert("Enter event ID/code.");
   const event = findEventByIdOrCode(id);
   if (!event) return alert("Event not found.");
-  await settleEvent(event.id);
+  await settleEvent(event.firestoreId || event.id);
 }
 
 
