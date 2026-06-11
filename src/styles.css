@@ -4376,3 +4376,101 @@ label {
     line-height: 1.18 !important;
   }
 }
+
+
+/* v10.56 desktop card polish: remove boxed odds header, enlarge scoreboard column, center live game clock */
+@media (min-width: 1181px) {
+  .event-card {
+    grid-template-columns: minmax(320px, .80fr) minmax(580px, 1.48fr) !important;
+    grid-template-areas:
+      "header score"
+      "bet score"
+      "activity score" !important;
+  }
+
+  .score-card {
+    padding: 20px 20px 18px !important;
+  }
+
+  .team-center {
+    min-height: 330px;
+  }
+
+  .team-center .event-center-label {
+    margin-bottom: 2px;
+  }
+
+  .team-center .live-context {
+    width: 100%;
+    text-align: center !important;
+    align-self: center;
+    margin: 6px 0 12px !important;
+    font-size: .96rem;
+    font-weight: 880;
+    letter-spacing: .01em;
+  }
+
+  .team-center .team-score-row {
+    margin: 10px 0 16px;
+  }
+
+  .team-center .team-score-cell strong {
+    font-size: clamp(2.5rem, 4.1vw, 4.4rem) !important;
+  }
+
+  .header-odds {
+    min-width: 124px;
+    max-width: 194px;
+    padding: 6px 2px 6px 12px !important;
+    border: 0 !important;
+    border-radius: 0 !important;
+    background: transparent !important;
+    box-shadow: none !important;
+    backdrop-filter: none !important;
+    -webkit-backdrop-filter: none !important;
+  }
+
+  .header-odds strong {
+    margin-bottom: 2px !important;
+  }
+}
+
+
+/* v10.57 centered quick-bet action row + history retention controls */
+.compact-bet-box .bet-actions,
+.bet-actions {
+  display: flex !important;
+  justify-content: center !important;
+  align-items: center !important;
+  gap: 10px !important;
+  flex-wrap: wrap !important;
+  width: 100%;
+  text-align: center;
+}
+
+.compact-bet-box .bet-actions button,
+.bet-actions button {
+  margin: 0 !important;
+}
+
+@media (max-width: 720px) {
+  .compact-bet-box .bet-actions,
+  .bet-actions {
+    justify-content: center !important;
+  }
+
+  .compact-bet-box .bet-actions button,
+  .bet-actions button {
+    flex: 1 1 220px;
+    max-width: 280px;
+    min-width: 180px;
+  }
+}
+
+@media (max-width: 420px) {
+  .compact-bet-box .bet-actions button,
+  .bet-actions button {
+    flex-basis: 100%;
+    max-width: 100%;
+  }
+}

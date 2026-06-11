@@ -1,4 +1,6 @@
-# Everyone Loses v10.43
+# Everyone Loses
+
+Latest packaged build: v10.56 v10.43
 
 Head-to-head sports betting battles for friends.
 
@@ -174,3 +176,13 @@ Do not publish real admin passwords, API keys, or private credentials in this RE
 - Allows trusted Jolpica F1 refreshes to correct title/start time/participants even if the stale event has betting records.
 - Keeps desktop odds in the event header, but makes odds text smaller and less bold.
 - Moves desktop team stats/weather lower in the scoreboard area and moves the admin Refresh odds button next to Clear my bets.
+
+
+## v10.57 action row centering + 5-day history cleanup
+
+- Centers quick-bet action buttons, including Clear my bets and Refresh odds, on desktop and mobile.
+- History tab now only displays final events from the last 5 days.
+- Adds an admin cleanup button for final history events older than 5 days.
+- Automatic admin maintenance also removes old final history event docs from Firebase.
+- Ledger entries and settlements are preserved so profile/leaderboard stats remain intact.
+- Events with unsettled matches are protected from cleanup.

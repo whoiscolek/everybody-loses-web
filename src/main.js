@@ -53,6 +53,7 @@ const AUTO_SETTLE_INTERVAL_MS = 10 * 60 * 1000;
 const NOW_WINDOW_SYNC_LABEL = "full 48-hour Now window";
 const NOW_BOARD_LOOKAHEAD_MS = 48 * 60 * 60 * 1000;
 const NOW_BOARD_LOOKBACK_MS = 12 * 60 * 60 * 1000;
+const HISTORY_RETENTION_MS = 5 * 24 * 60 * 60 * 1000;
 
 const SPORT_GROUPS = {
   basketball: ["NBA", "NCAA Basketball"],
@@ -403,6 +404,40 @@ function eventHasFinancialRecords(eventId) {
 
 function eventIsComplete(event) {
   return event?.status === "final";
+}
+
+function eventHistoryAgeMs(event) {
+  const start = new Date(event?.startTime || 0).getTime();
+  if (!Number.isFinite(start)) return 0;
+  return Date.now() - start;
+}
+
+function eventIsExpiredHistory(event) {
+  return event?.status === "final" && eventHistoryAgeMs(event) > HISTORY_RETENTION_MS;
+}
+
+function eventIsWithinHistoryWindow(event) {
+  return event?.status === "final" && !eventIsExpiredHistory(event);
+}
+
+function functionSafeEventId(event) {
+  return event?.firestoreId || event?.id || "";
+}
+
+function eventCanBeHistoryCleaned(event) {
+  if (!eventIsExpiredHistory(event)) return false;
+  const eventId = functionSafeEventId(event);
+  if (!eventId) return false;
+
+  const unsettledMatches = Object.values(state.matches || {}).some(match =>
+    match.eventId === eventId && match.status !== "settled"
+  );
+
+  return !unsettledMatches;
+}
+
+function functionHistoryCleanupCandidateCount() {
+  return Object.values(state.events || {}).filter(eventCanBeHistoryCleaned).length;
 }
 
 function eventIsWithinNowWindow(event) {
@@ -1908,12 +1943,12 @@ function renderLeaderboard() {
 
 function renderHistory() {
   const events = Object.values(state.events)
-    .filter(event => event.status === "final")
+    .filter(eventIsWithinHistoryWindow)
     .sort((a, b) => new Date(b.startTime) - new Date(a.startTime));
 
   return `
     <div class="history-list compact-history-list">
-      ${events.length ? events.map(renderHistoryEventCard).join("") : `<div class="panel empty-state">No final event history yet.</div>`}
+      ${events.length ? events.map(renderHistoryEventCard).join("") : `<div class="panel empty-state">No final event history from the last 5 days.</div>`}
     </div>
   `;
 }
@@ -2340,6 +2375,7 @@ function renderAdmin() {
           <button class="ghost" data-action="sync-api-tomorrow" ${apiSyncRunning ? "disabled" : ""}>Sync tomorrow only</button>
           <button class="ghost" data-action="delete-demo-events">Delete old demo events</button>
           <button class="ghost" data-action="cleanup-api-events">Clean duplicate API events</button>
+          <button class="ghost" data-action="cleanup-history-events">Clean history older than 5 days${functionHistoryCleanupCandidateCount() ? ` (${functionHistoryCleanupCandidateCount()})` : ""}</button>
         </div>
         <p class="footer-note small">Automatic maintenance now runs in the background for admins: automatic source discovery sweeps, live score refresh, duplicate cleanup, final-event settlement, and odds refresh only for events with bets/matches. ESPN/imported odds remain the default display until someone actually bets. Backup buttons stay here as manual controls.</p>
         ${hiddenFutureImportedEventCount() ? `<div class="record admin-window-note"><strong>Now window</strong><span>Hiding ${hiddenFutureImportedEventCount()} far-future imported event${hiddenFutureImportedEventCount() === 1 ? "" : "s"}. The public Now board only shows live/active events through the next 48 hours.</span></div>` : ""}
@@ -2502,6 +2538,7 @@ function wireUi() {
   document.querySelector("[data-action='sync-api-tomorrow']")?.addEventListener("click", () => syncApiSchedule(1));
   document.querySelector("[data-action='delete-demo-events']")?.addEventListener("click", deleteDemoEvents);
   document.querySelector("[data-action='cleanup-api-events']")?.addEventListener("click", cleanupDuplicateApiEvents);
+  document.querySelector("[data-action='cleanup-history-events']")?.addEventListener("click", () => cleanupOldHistoryEvents());
   document.querySelector("[data-action='import-all-api-events']")?.addEventListener("click", importAllApiEvents);
   document.querySelectorAll("[data-import-api-event]").forEach(button => button.addEventListener("click", () => importApiEvent(button.dataset.importApiEvent)));
   document.querySelectorAll("[data-delete-api-event]").forEach(button => button.addEventListener("click", () => deleteApiEvent(button.dataset.deleteApiEvent)));
@@ -3692,6 +3729,74 @@ function renderApiImportResults() {
 }
 
 
+
+async function cleanupOldHistoryEvents(options = {}) {
+  if (!isAdmin()) return 0;
+
+  const candidates = Object.values(state.events || {}).filter(eventCanBeHistoryCleaned);
+  const protectedCount = Object.values(state.events || {}).filter(event =>
+    eventIsExpiredHistory(event) && !eventCanBeHistoryCleaned(event)
+  ).length;
+
+  if (!candidates.length) {
+    if (!options.silent) {
+      apiImportMessage = protectedCount
+        ? `No old history could be cleaned. ${protectedCount} old final event${protectedCount === 1 ? "" : "s"} still have unsettled matches and were protected.`
+        : "No history older than 5 days found.";
+      renderApp();
+    }
+    return 0;
+  }
+
+  if (!options.silent) {
+    const ok = confirm(`Delete ${candidates.length} final history event${candidates.length === 1 ? "" : "s"} older than 5 days from Firebase? Ledger entries and settlements are preserved.`);
+    if (!ok) return 0;
+  }
+
+  const batch = writeBatch(db);
+  let deleted = 0;
+  const ids = new Set(candidates.map(event => functionSafeEventId(event)).filter(Boolean));
+
+  for (const bet of Object.values(state.bets || {})) {
+    if (ids.has(bet.eventId)) {
+      const betId = bet.firestoreId || bet.id;
+      if (betId) {
+        batch.delete(doc(db, "bets", betId));
+        delete state.bets[betId];
+        deleted += 1;
+      }
+    }
+  }
+
+  for (const match of Object.values(state.matches || {})) {
+    if (ids.has(match.eventId)) {
+      const matchId = match.firestoreId || match.id;
+      if (matchId) {
+        batch.delete(doc(db, "matches", matchId));
+        delete state.matches[matchId];
+        deleted += 1;
+      }
+    }
+  }
+
+  for (const event of candidates) {
+    const eventId = functionSafeEventId(event);
+    if (!eventId) continue;
+    batch.delete(doc(db, "events", eventId));
+    delete state.events[eventId];
+    deleted += 1;
+  }
+
+  await batch.commit();
+
+  if (!options.silent) {
+    apiImportMessage = `Cleaned ${candidates.length} history event${candidates.length === 1 ? "" : "s"} older than 5 days from Firebase. Ledger/profile/leaderboard records were preserved.`;
+    renderApp();
+  }
+
+  return candidates.length;
+}
+
 async function cleanupDuplicateApiEvents(options = {}) {
   if (!isAdmin()) return;
 
@@ -4409,7 +4514,8 @@ async function runAutoMaintenance(reason = "timer") {
 
     if (shouldRunAutoTask("cleanup", AUTO_CLEANUP_INTERVAL_MS)) {
       const removed = await cleanupDuplicateApiEvents({ silent: true });
-      notes.push(`cleanup removed ${removed || 0}`);
+      const historyRemoved = await cleanupOldHistoryEvents({ silent: true });
+      notes.push(`cleanup removed ${removed || 0} duplicate/stale event(s), ${historyRemoved || 0} old history item(s)`);
     }
 
     if (shouldRunAutoTask("settle", AUTO_SETTLE_INTERVAL_MS)) {
