@@ -157,3 +157,12 @@ Do not publish real admin passwords, API keys, or private credentials in this RE
 - Moves team-game odds into the desktop event header next to the matchup details.
 - Removes the separate odds box from the desktop scoreboard panel to shorten cards.
 - Leaves the mobile odds layout unchanged.
+
+
+## v10.53 root-cause Now-board render isolation
+
+- Replaces the discarded guessed v10.53.
+- Based directly on v10.52.
+- The only v10.52 JavaScript change on the Now board was header odds rendering.
+- Makes header odds rendering non-fatal and wraps each event card render independently, so one malformed event/odds payload cannot blank the entire active MLB board.
+- Does not add new MLB sync/self-heal assumptions.

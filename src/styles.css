@@ -4315,3 +4315,12 @@ label {
     display: block;
   }
 }
+
+
+/* v10.53 root fix: isolate bad event-card render failures instead of blanking the entire Now board */
+.event-render-error {
+  border-color: rgba(255, 193, 7, .42) !important;
+  background:
+    linear-gradient(135deg, rgba(255,193,7,.16), rgba(255,255,255,.06)),
+    rgba(20, 22, 28, .55) !important;
+}

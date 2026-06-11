@@ -535,16 +535,21 @@ function renderOddsDisplay(event) {
 }
 
 function renderHeaderOddsDisplay(event) {
-  if (event?.type !== EVENT_TYPES.TEAM) return "";
-  const text = eventOddsText(event);
-  const canShow = shouldShowOddsText(event);
-  const pending = event?.status !== "final" ? "Odds pending" : "Odds unavailable";
-  return `
-    <div class="header-odds ${canShow ? "" : "pending"}">
-      <strong>Odds</strong>
-      <span>${escapeHtml(canShow ? text : pending)}</span>
-    </div>
-  `;
+  try {
+    if (event?.type !== EVENT_TYPES.TEAM) return "";
+    const text = eventOddsText(event);
+    const canShow = shouldShowOddsText(event);
+    const pending = event?.status !== "final" ? "Odds pending" : "Odds unavailable";
+    return `
+      <div class="header-odds ${canShow ? "" : "pending"}">
+        <strong>Odds</strong>
+        <span>${escapeHtml(canShow ? text : pending)}</span>
+      </div>
+    `;
+  } catch (error) {
+    console.error("Header odds render failed", event, error);
+    return "";
+  }
 }
 
 function eventOddsMeta(event) {
@@ -1322,9 +1327,33 @@ function renderToday() {
       </div>
     </div>
     <div class="grid">
-      ${events.length ? events.map(renderEventCard).join("") : `<div class="panel empty-state">No active/upcoming events match these filters within the Now window. Final events move to History.</div>`}
+      ${events.length ? events.map(renderEventCardSafe).join("") : `<div class="panel empty-state">No active/upcoming events match these filters within the Now window. Final events move to History.</div>`}
     </div>
   `;
+}
+
+function renderEventCardSafe(event) {
+  try {
+    return renderEventCard(event);
+  } catch (error) {
+    console.error("Event card render failed", event, error);
+    const eventId = event?.firestoreId || event?.id || "unknown-event";
+    const title = event?.title || eventId;
+    return `
+      <article class="event-card event-render-error">
+        <div class="event-top">
+          <div class="event-main">
+            <div class="sport-icon">!</div>
+            <div>
+              <div class="kicker">Render issue</div>
+              <h3 class="event-title">${escapeHtml(title)}</h3>
+              <p class="muted small">This event could not render, but the rest of the board is still shown. Event ID: ${escapeHtml(eventId)}</p>
+            </div>
+          </div>
+        </div>
+      </article>
+    `;
+  }
 }
 
 function renderEventCard(event) {
