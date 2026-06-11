@@ -195,7 +195,7 @@ async function fetchMlbStatsApiEvents(dateYYYYMMDD, espnRawEvents = []) {
 }
 
 const DEFAULT_RACING_PARTICIPANTS = {
-  F1: ["Verstappen", "Norris", "Piastri", "Leclerc", "Hamilton", "Russell", "Antonelli", "Sainz", "Alonso", "Tsunoda"],
+  F1: ["Kimi Antonelli", "Lewis Hamilton", "George Russell", "Charles Leclerc", "Oscar Piastri", "Lando Norris", "Max Verstappen", "Carlos Sainz", "Fernando Alonso", "Yuki Tsunoda", "Alexander Albon", "Pierre Gasly", "Esteban Ocon", "Nico Hulkenberg", "Lance Stroll", "Liam Lawson", "Isack Hadjar", "Oliver Bearman", "Gabriel Bortoleto", "Franco Colapinto"],
   NASCAR: ["Kyle Larson", "Denny Hamlin", "William Byron", "Chase Elliott", "Ryan Blaney", "Christopher Bell", "Tyler Reddick", "Joey Logano", "Ross Chastain", "Bubba Wallace", "Brad Keselowski", "Ty Gibbs"],
   IndyCar: ["Alex Palou", "Pato O'Ward", "Scott Dixon", "Josef Newgarden", "Scott McLaughlin", "Will Power", "Colton Herta", "Marcus Ericsson", "Kyle Kirkwood", "Rinus VeeKay"],
   MotoGP: ["Marc Marquez", "Alex Marquez", "Francesco Bagnaia", "Pedro Acosta", "Fabio Quartararo", "Marco Bezzecchi", "Franco Morbidelli", "Brad Binder", "Maverick Vinales", "Enea Bastianini"]
@@ -1084,13 +1084,75 @@ function f1ResultDetail(result) {
   return [constructorName, time, status, grid].filter(Boolean).join(" · ");
 }
 
+function addDaysIso(isoDate, days) {
+  const d = new Date(`${isoDate}T12:00:00Z`);
+  d.setUTCDate(d.getUTCDate() + days);
+  return d.toISOString().slice(0, 10);
+}
+
+function isoDateToMs(isoDate) {
+  return new Date(`${isoDate}T12:00:00Z`).getTime();
+}
+
+function f1RaceMatchesRequestedWindow(race, requestedIso) {
+  const raceMs = isoDateToMs(race?.date);
+  const requestedMs = isoDateToMs(requestedIso);
+  if (!Number.isFinite(raceMs) || !Number.isFinite(requestedMs)) return false;
+
+  // Import the actual Grand Prix race when the app syncs any date from the
+  // race-weekend lead-in through race day. This prevents ESPN practice/session
+  // dates from creating a fake Friday-ranked event for a Sunday race.
+  return raceMs >= requestedMs && raceMs <= isoDateToMs(addDaysIso(requestedIso, 3));
+}
+
+function f1StandingDriverName(standing) {
+  const driver = standing?.Driver || {};
+  return [driver.givenName, driver.familyName].filter(Boolean).join(" ")
+    || driver.code
+    || driver.driverId
+    || "Driver";
+}
+
+function f1StandingDetail(standing) {
+  const constructors = Array.isArray(standing?.Constructors) ? standing.Constructors.map(item => item.name).filter(Boolean).join(" / ") : "";
+  const points = standing?.points ? `${standing.points} pts` : "";
+  return [constructors, points, "Season entry"].filter(Boolean).join(" · ");
+}
+
+async function fetchJolpicaF1DriverEntries() {
+  try {
+    const standingsUrl = `https://api.jolpi.ca/ergast/f1/current/driverStandings.json`;
+    const standingsData = await fetchJsonUrl(standingsUrl, "F1 driver standings");
+    const standings = standingsData?.MRData?.StandingsTable?.StandingsLists?.[0]?.DriverStandings || [];
+    const rows = standings.map((standing, index) => ({
+      position: Number(standing.position) || index + 1,
+      name: f1StandingDriverName(standing),
+      detail: f1StandingDetail(standing),
+      constructorName: standing?.Constructors?.[0]?.name || "",
+      points: standing?.points || ""
+    })).filter(row => row.name);
+    if (rows.length) return rows;
+  } catch {
+    // Fall back to a full-season starter list rather than ESPN's partial top-10 ordering.
+  }
+
+  return DEFAULT_RACING_PARTICIPANTS.F1.map((name, index) => ({
+    position: index + 1,
+    name,
+    detail: "Season entry"
+  }));
+}
+
 async function fetchJolpicaF1ForDate(date) {
   const isoDate = ymdToIsoDate(date);
   const scheduleUrl = `https://api.jolpi.ca/ergast/f1/current.json`;
   const scheduleData = await fetchJsonUrl(scheduleUrl, "F1 schedule");
   const races = scheduleData?.MRData?.RaceTable?.Races || [];
 
-  const matching = races.find(race => race.date === isoDate);
+  const matching = races
+    .filter(race => f1RaceMatchesRequestedWindow(race, isoDate))
+    .sort((a, b) => isoDateToMs(a.date) - isoDateToMs(b.date))[0];
+
   if (!matching) {
     return null;
   }
@@ -1116,8 +1178,9 @@ async function fetchJolpicaF1ForDate(date) {
     leaderboardSource: "Jolpica Ergast F1 results",
     leaderboardVerified: !!results.length,
     liveStats: [
-      { label: "Source", value: results.length ? "Jolpica F1 results" : "Jolpica F1 schedule" },
+      { label: "Source", value: results.length ? "Jolpica F1 results" : "Jolpica F1 schedule + driver standings" },
       { label: "Round", value: String(round || "TBD") },
+      { label: "Race date", value: matching.date || "TBD" },
       { label: "Circuit", value: matching.Circuit?.circuitName || "TBD" }
     ],
     resultOrder: [],
@@ -1131,7 +1194,7 @@ async function fetchJolpicaF1ForDate(date) {
     },
     intel: results.length
       ? "F1 final leaderboard imported from Jolpica/Ergast results, not ESPN ordering."
-      : "F1 event imported from Jolpica/Ergast schedule. Final results will appear after the race results endpoint updates."
+      : "F1 Grand Prix imported from Jolpica/Ergast schedule with a full driver-standings entry list. Final results will appear after the race results endpoint updates."
   };
 
   if (results.length) {
@@ -1153,12 +1216,17 @@ async function fetchJolpicaF1ForDate(date) {
       { label: "Circuit", value: matching.Circuit?.circuitName || "TBD" }
     ];
   } else {
-    baseEvent.participants = DEFAULT_RACING_PARTICIPANTS.F1;
-    baseEvent.leaderboard = DEFAULT_RACING_PARTICIPANTS.F1.map((name, index) => ({
-      position: index + 1,
-      name,
-      detail: "Entry"
-    }));
+    const rows = await fetchJolpicaF1DriverEntries();
+    baseEvent.participants = rows.map(row => row.name);
+    baseEvent.leaderboard = rows;
+    baseEvent.leaderboardSource = "Jolpica Ergast F1 driver standings entry list";
+    baseEvent.liveStats = [
+      { label: "Source", value: "Jolpica F1 schedule + driver standings" },
+      { label: "Round", value: String(round || "TBD") },
+      { label: "Entries", value: String(rows.length) },
+      { label: "Race date", value: matching.date || "TBD" },
+      { label: "Circuit", value: matching.Circuit?.circuitName || "TBD" }
+    ];
   }
 
   return baseEvent;
@@ -1728,13 +1796,24 @@ export default async function handler(req, res) {
     if (config.useJolpicaF1) {
       try {
         const f1Event = await fetchJolpicaF1ForDate(date);
-        if (f1Event) {
-          events = [f1Event];
-          url = "https://api.jolpi.ca/ergast/f1/current.json";
-        }
+        if (f1Event) events = [f1Event];
+        url = "https://api.jolpi.ca/ergast/f1/current.json";
       } catch (error) {
-        // Fall back to ESPN schedule if the verified F1 source is unavailable.
+        events = [];
+        url = "https://api.jolpi.ca/ergast/f1/current.json";
       }
+
+      return res.status(200).json({
+        source: "jolpica-f1",
+        league: config.league,
+        date,
+        count: events.length,
+        url,
+        note: events.length
+          ? "F1 imports use Jolpica/Ergast schedule/results and driver standings. ESPN F1 fallback is disabled because it can import practice/session dates and partial top-10 ordering."
+          : "No Jolpica F1 Grand Prix matched this date or the next three days.",
+        events
+      });
     }
 
     if (!events.length) {

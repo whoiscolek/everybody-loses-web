@@ -143,3 +143,10 @@ Do not publish real admin passwords, API keys, or private credentials in this RE
 - Ledger, leaderboard, profile, and history no longer need to wait for the snapshot round trip in the admin browser.
 - Adds a visible settlement sync notice so a successful post does not look like a missing ledger entry.
 - Admin manual settlement now passes the real Firestore event id when available.
+
+
+## v10.51 F1 verified race imports
+
+- F1 now uses Jolpica/Ergast schedule/results only instead of falling back to ESPN racing schedule data.
+- F1 imports the actual Grand Prix race date when syncing the race-weekend lead-in window, preventing Friday practice/session dates from appearing as the race.
+- Pregame F1 entries now use the current driver standings entry list/fallback full grid instead of the old 10-driver placeholder list.
