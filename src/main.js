@@ -534,6 +534,19 @@ function renderOddsDisplay(event) {
   `;
 }
 
+function renderHeaderOddsDisplay(event) {
+  if (event?.type !== EVENT_TYPES.TEAM) return "";
+  const text = eventOddsText(event);
+  const canShow = shouldShowOddsText(event);
+  const pending = event?.status !== "final" ? "Odds pending" : "Odds unavailable";
+  return `
+    <div class="header-odds ${canShow ? "" : "pending"}">
+      <strong>Odds</strong>
+      <span>${escapeHtml(canShow ? text : pending)}</span>
+    </div>
+  `;
+}
+
 function eventOddsMeta(event) {
   if (!eventCanUseOddsApi(event) || !event?.oddsLive) return "";
   const book = event.oddsLive.bookmaker ? `Book: ${event.oddsLive.bookmaker}` : "";
@@ -1339,6 +1352,7 @@ function renderEventCard(event) {
             </div>
           </div>
         </div>
+        ${event.type === EVENT_TYPES.TEAM ? renderHeaderOddsDisplay(event) : ""}
       </div>
       ${renderScoreLine(event)}
       <div class="bet-box compact-bet-box">

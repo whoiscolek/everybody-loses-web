@@ -150,3 +150,10 @@ Do not publish real admin passwords, API keys, or private credentials in this RE
 - F1 now uses Jolpica/Ergast schedule/results only instead of falling back to ESPN racing schedule data.
 - F1 imports the actual Grand Prix race date when syncing the race-weekend lead-in window, preventing Friday practice/session dates from appearing as the race.
 - Pregame F1 entries now use the current driver standings entry list/fallback full grid instead of the old 10-driver placeholder list.
+
+
+## v10.52 desktop odds placement
+
+- Moves team-game odds into the desktop event header next to the matchup details.
+- Removes the separate odds box from the desktop scoreboard panel to shorten cards.
+- Leaves the mobile odds layout unchanged.
