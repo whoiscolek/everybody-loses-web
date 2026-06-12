@@ -160,6 +160,7 @@ let apiImportMessage = "";
 let apiSyncRunning = false;
 let autoMaintenanceRunning = false;
 let autoMaintenanceTimer = null;
+let settlementMaintenanceTimer = null;
 let autoMaintenanceMessage = "";
 let mlbSyncDebug = "";
 let sourceSweepDebug = "";
@@ -386,16 +387,32 @@ function currentUser() {
   return state.currentUserId ? state.users[state.currentUserId] : null;
 }
 
+function eventIdCandidates(eventOrId) {
+  if (!eventOrId || typeof eventOrId === "string") return new Set([String(eventOrId || "")].filter(Boolean));
+  return new Set([
+    eventOrId.firestoreId,
+    eventOrId.id,
+    eventOrId.apiEventId,
+    eventOrId.externalIds?.espnEventId,
+    eventOrId.externalIds?.mlbGamePk
+  ].map(value => String(value || "")).filter(Boolean));
+}
+
+function recordMatchesEvent(record, eventOrId) {
+  const ids = eventIdCandidates(eventOrId);
+  return ids.has(String(record?.eventId || ""));
+}
+
 function eventBetCount(eventId) {
-  return Object.values(state.bets || {}).filter(bet => bet.eventId === eventId).length;
+  return Object.values(state.bets || {}).filter(bet => recordMatchesEvent(bet, eventId)).length;
 }
 
 function eventMatchCount(eventId) {
-  return Object.values(state.matches || {}).filter(match => match.eventId === eventId).length;
+  return Object.values(state.matches || {}).filter(match => recordMatchesEvent(match, eventId)).length;
 }
 
 function eventLedgerCount(eventId) {
-  return Object.values(state.ledgerEntries || {}).filter(entry => entry.eventId === eventId).length;
+  return Object.values(state.ledgerEntries || {}).filter(entry => recordMatchesEvent(entry, eventId)).length;
 }
 
 function eventHasFinancialRecords(eventId) {
@@ -731,6 +748,15 @@ function canBet() {
   return Boolean(user?.approved);
 }
 
+function canSettleFinalEvents() {
+  // Settlement is deterministic from final event scores + matched bets. Firestore
+  // rules already allow approved users to write matches/ledger entries, and the
+  // ledger id is match-based/idempotent, so letting approved clients repair final
+  // settlements prevents final games from sitting unsettled when an admin browser
+  // is not open.
+  return canBet();
+}
+
 function money(value) {
   const num = Number(value || 0);
   return `${num < 0 ? "-" : ""}$${Math.abs(num).toFixed(2).replace(/\.00$/, "")}`;
@@ -1000,10 +1026,11 @@ function matchLedgerId(eventId, matchId) {
 }
 
 function findLedgerForMatch(eventId, matchId, fromUser, toUser) {
+  const ids = eventIdCandidates(eventId);
   return Object.values(state.ledgerEntries || {}).find(entry =>
     (entry.matchId && entry.matchId === matchId) ||
     (
-      entry.eventId === eventId &&
+      ids.has(String(entry.eventId || "")) &&
       entry.fromUser === fromUser &&
       entry.toUser === toUser &&
       !entry.settled
@@ -1152,6 +1179,7 @@ function renderApp() {
   wireUi();
   keepActiveNavVisible();
   maybeStartAutoMaintenance();
+  maybeStartSettlementMaintenance();
   ensureDoubleUpCountdownTimer();
 }
 
@@ -1742,8 +1770,8 @@ function renderRankedBetForm(event, locked) {
 }
 
 function renderEventQueues(event) {
-  const openBets = Object.values(state.bets).filter(bet => bet.eventId === event.id && bet.status === "open");
-  const matched = Object.values(state.matches).filter(match => match.eventId === event.id);
+  const openBets = Object.values(state.bets).filter(bet => recordMatchesEvent(bet, event) && bet.status === "open");
+  const matched = Object.values(state.matches).filter(match => recordMatchesEvent(match, event));
 
   if (!openBets.length && !matched.length) return "";
 
@@ -1955,9 +1983,9 @@ function renderHistory() {
 
 function historyBetSummary(event) {
   const eventId = event.firestoreId || event.id;
-  const bets = Object.values(state.bets || {}).filter(bet => bet.eventId === eventId || bet.eventId === event.id);
-  const matches = Object.values(state.matches || {}).filter(match => match.eventId === eventId || match.eventId === event.id);
-  const ledger = Object.values(state.ledgerEntries || {}).filter(entry => entry.eventId === eventId || entry.eventId === event.id);
+  const bets = Object.values(state.bets || {}).filter(bet => recordMatchesEvent(bet, event));
+  const matches = Object.values(state.matches || {}).filter(match => recordMatchesEvent(match, event));
+  const ledger = Object.values(state.ledgerEntries || {}).filter(entry => recordMatchesEvent(entry, event));
 
   if (ledger.length) {
     return ledger.map(entry => `${userName(entry.fromUser)} owes ${userName(entry.toUser)} ${money(entry.amount)}${entry.doubledUp ? " · doubled up" : ""}`).join(" · ");
@@ -3278,7 +3306,7 @@ async function placeRankedBet(eventId) {
 }
 
 async function settleEvent(eventId, options = {}) {
-  if (!isAdmin()) return;
+  if (!canSettleFinalEvents()) return;
   const event = state.events[eventId] || findEventByIdOrCode(eventId);
   if (!event) { if (!options.silent) alert("Event not found."); return; }
   if (event.status !== "final") { if (!options.silent) alert("Set event status to final before settling."); return; }
@@ -3291,6 +3319,7 @@ async function settleTeamEvent(event, options = {}) {
   if (!event.score) { if (!options.silent) alert("Team/custom event needs a final score first."); return; }
 
   const eventId = event.firestoreId || event.id;
+  const eventIds = eventIdCandidates(event);
   const winningSide = Number(event.score.home) > Number(event.score.away)
     ? "home"
     : Number(event.score.away) > Number(event.score.home)
@@ -3300,7 +3329,7 @@ async function settleTeamEvent(event, options = {}) {
   if (!winningSide) { if (!options.silent) alert("Tie settlement is not implemented yet."); return; }
 
   const matches = Object.values(state.matches)
-    .filter(match => match.eventId === eventId && match.type === EVENT_TYPES.TEAM);
+    .filter(match => eventIds.has(String(match.eventId || "")) && (match.type === EVENT_TYPES.TEAM || (!match.type && match.sideA && match.sideB)));
 
   const batch = writeBatch(db);
   const optimisticLedger = {};
@@ -4441,15 +4470,18 @@ function activeTeamEventsForOdds() {
 
 function finalEventsNeedingSettlement() {
   return Object.values(state.events || {}).filter(event => {
-    if (event.status !== "final") return false;
-    const eventId = event.firestoreId || event.id;
+    if (!eventIsComplete(event)) return false;
+    const ids = eventIdCandidates(event);
     return Object.values(state.matches || {}).some(match => {
-      if (match.eventId !== eventId) return false;
+      if (!ids.has(String(match.eventId || ""))) return false;
       if (match.status !== "settled") return true;
 
       const amount = matchEffectiveAmount(match);
       const matchId = match.firestoreId || match.id;
-      const maybeLedger = Object.values(state.ledgerEntries || {}).find(entry => entry.eventId === eventId && (entry.matchId === matchId || (!entry.matchId && Number(entry.amount) === amount)));
+      const maybeLedger = Object.values(state.ledgerEntries || {}).find(entry =>
+        ids.has(String(entry.eventId || "")) &&
+        (entry.matchId === matchId || (!entry.matchId && Number(entry.amount) === amount))
+      );
       return !maybeLedger || Number(maybeLedger.amount || 0) !== amount;
     });
   });
@@ -4461,8 +4493,8 @@ async function autoSettleFinalEvents() {
     try {
       await settleEvent(event.firestoreId || event.id, { silent: true });
       settled += 1;
-    } catch {
-      // keep automatic maintenance non-blocking
+    } catch (error) {
+      autoMaintenanceMessage = `Settlement repair skipped ${event.title || event.id}: ${error?.message || String(error)}`;
     }
   }
   return settled;
@@ -4533,6 +4565,23 @@ async function runAutoMaintenance(reason = "timer") {
     }
   } finally {
     autoMaintenanceRunning = false;
+  }
+}
+
+function maybeStartSettlementMaintenance() {
+  if (!canSettleFinalEvents()) return;
+
+  if (!settlementMaintenanceTimer) {
+    // Run settlement repair for every approved user, not only admins. This is
+    // what keeps completed NHL/soccer/etc. matches from sitting unsettled when
+    // an admin browser is not open. The operation is idempotent because ledger
+    // rows are keyed by event+match.
+    setTimeout(() => autoSettleFinalEvents(), 1200);
+    settlementMaintenanceTimer = setInterval(() => autoSettleFinalEvents(), 60 * 1000);
+
+    window.addEventListener("focus", () => {
+      if (canSettleFinalEvents()) autoSettleFinalEvents();
+    });
   }
 }
 

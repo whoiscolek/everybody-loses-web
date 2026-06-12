@@ -186,3 +186,11 @@ Do not publish real admin passwords, API keys, or private credentials in this RE
 - Automatic admin maintenance also removes old final history event docs from Firebase.
 - Ledger entries and settlements are preserved so profile/leaderboard stats remain intact.
 - Events with unsettled matches are protected from cleanup.
+
+## v10.58 settlement reliability repair
+
+- Root cause: final-event settlement was only started from admin auto-maintenance, so completed games could remain unsettled if an admin browser was not open or if the admin cleanup loop did not run.
+- Approved users now run an idempotent settlement-repair loop for final matched events.
+- Team settlement now accepts older/team match records even if the match type field is missing.
+- Settlement/event matching now checks all stable event IDs, not only one event document id.
+- History/event activity matching uses the same robust event-id matching.
