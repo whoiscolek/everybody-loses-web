@@ -161,6 +161,7 @@ let apiSyncRunning = false;
 let autoMaintenanceRunning = false;
 let autoMaintenanceTimer = null;
 let settlementMaintenanceTimer = null;
+let approvedLiveRefreshRunning = false;
 let autoMaintenanceMessage = "";
 let mlbSyncDebug = "";
 let sourceSweepDebug = "";
@@ -4194,23 +4195,22 @@ function liveRefreshCandidateEvents() {
 }
 
 async function syncLiveScoreEvents(options = {}) {
-  if (!isAdmin()) return { updated: 0, fetched: 0 };
+  // Existing live/upcoming events may be refreshed by any approved user. Before
+  // v10.59 this was admin-only, which meant final scores/statuses did not reach
+  // Firestore until an admin browser happened to be open.
+  if (!canBet()) return { updated: 0, fetched: 0 };
 
   const candidates = liveRefreshCandidateEvents();
   if (!candidates.length) return { updated: 0, fetched: 0 };
 
+  const candidateIds = new Set(candidates.flatMap(event => eventIdentityValues(event)));
   const leaguesByDate = new Map();
   for (const event of candidates) {
     const league = event.league;
     if (!API_IMPORT_LEAGUES.includes(league)) continue;
-    // ESPN scoreboard date queries are based on the sports day, not the UTC date.
-    // Night games in ET often start after midnight UTC; using toISOString() made
-    // MLB live refresh ask ESPN for tomorrow and miss the current game entirely.
     const displayDate = dateISOInDisplayTimeZone(event.startTime || Date.now());
     const datesToTry = new Set([displayDate]);
 
-    // Tiny cushion for edge cases around midnight / international events. This still
-    // stays narrow and avoids a full all-league sync every 30 seconds.
     if (event.status === "live") {
       const d = new Date(`${displayDate}T12:00:00Z`);
       d.setUTCDate(d.getUTCDate() - 1);
@@ -4228,27 +4228,56 @@ async function syncLiveScoreEvents(options = {}) {
   if (!leaguesByDate.size) return { updated: 0, fetched: 0 };
 
   const batch = writeBatch(db);
-  const usedCodes = new Set(Object.values(state.events || {}).map(event => event.shortCode).filter(Boolean));
   let fetched = 0;
   let updated = 0;
 
   for (const { league, date } of leaguesByDate.values()) {
     try {
-      const events = await fetchApiEventsForLeagueDate(league, date);
-      fetched += events.length;
-      for (const event of events) {
-        const result = await saveApiEventToBatch(batch, event, usedCodes);
-        if (result === "updated") updated += 1;
+      const incomingEvents = await fetchApiEventsForLeagueDate(league, date);
+      fetched += incomingEvents.length;
+
+      for (const incoming of incomingEvents) {
+        const existing = findExistingApiEvent(incoming);
+        if (!existing) continue; // approved refreshes never create unrelated events
+
+        const existingIds = eventIdentityValues(existing);
+        if (!existingIds.some(id => candidateIds.has(id))) continue;
+
+        const existingId = existing.firestoreId || existing.id;
+        if (!existingId) continue;
+
+        const refresh = safeRefreshFieldsForEvent(incoming, existing);
+        const approvedRefresh = {
+          status: refresh.status,
+          score: refresh.score || null,
+          liveStats: refresh.liveStats || [],
+          weather: refresh.weather || existing.weather || null,
+          liveContext: refresh.liveContext || "",
+          gameContext: refresh.gameContext || "",
+          leaderboard: refresh.leaderboard || existing.leaderboard || [],
+          resultOrder: refresh.resultOrder || existing.resultOrder || [],
+          leaderboardVerified: Boolean(refresh.leaderboardVerified),
+          leaderboardSource: refresh.leaderboardSource || existing.leaderboardSource || "",
+          updatedAt: serverTimestamp()
+        };
+
+        batch.set(doc(db, "events", existingId), approvedRefresh, { merge: true });
+        state.events[existingId] = {
+          ...existing,
+          ...approvedRefresh,
+          updatedAt: new Date(),
+          firestoreId: existingId
+        };
+        updated += 1;
       }
     } catch {
-      // Keep live refresh non-blocking.
+      // A single source failure must not block other leagues or settlement repair.
     }
   }
 
   if (updated) await batch.commit();
   return { updated, fetched };
 }
-
 
 async function syncLeagueNowWindow(league, options = {}) {
   if (!isAdmin()) return { added: 0, updated: 0, fetched: 0, skipped: 0, league };
@@ -4568,20 +4597,35 @@ async function runAutoMaintenance(reason = "timer") {
   }
 }
 
+async function refreshExistingEventsAndSettle(reason = "timer") {
+  if (!canSettleFinalEvents() || approvedLiveRefreshRunning) return;
+  approvedLiveRefreshRunning = true;
+  try {
+    await syncLiveScoreEvents({ silent: true, reason });
+    await autoSettleFinalEvents();
+  } finally {
+    approvedLiveRefreshRunning = false;
+  }
+}
+
 function maybeStartSettlementMaintenance() {
   if (!canSettleFinalEvents()) return;
 
   if (!settlementMaintenanceTimer) {
-    // Run settlement repair for every approved user, not only admins. This is
-    // what keeps completed NHL/soccer/etc. matches from sitting unsettled when
-    // an admin browser is not open. The operation is idempotent because ledger
-    // rows are keyed by event+match.
-    setTimeout(() => autoSettleFinalEvents(), 1200);
-    settlementMaintenanceTimer = setInterval(() => autoSettleFinalEvents(), 60 * 1000);
+    // Refresh source status first, then settle. This runs for every approved
+    // client, including mobile, rather than waiting for an admin desktop.
+    setTimeout(() => refreshExistingEventsAndSettle("startup"), 600);
+    settlementMaintenanceTimer = setInterval(() => refreshExistingEventsAndSettle("interval"), 30 * 1000);
 
-    window.addEventListener("focus", () => {
-      if (canSettleFinalEvents()) autoSettleFinalEvents();
-    });
+    const refreshOnReturn = () => {
+      if (canSettleFinalEvents() && document.visibilityState !== "hidden") {
+        refreshExistingEventsAndSettle("foreground");
+      }
+    };
+
+    window.addEventListener("focus", refreshOnReturn);
+    window.addEventListener("pageshow", refreshOnReturn);
+    document.addEventListener("visibilitychange", refreshOnReturn);
   }
 }
 

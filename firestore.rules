@@ -33,7 +33,23 @@ service cloud.firestore {
 
     match /events/{eventId} {
       allow read: if signedIn();
-      allow create, update, delete: if admin();
+      allow create, delete: if admin();
+      allow update: if admin() || (
+        approved() &&
+        request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+          'status',
+          'score',
+          'liveStats',
+          'weather',
+          'liveContext',
+          'gameContext',
+          'leaderboard',
+          'resultOrder',
+          'leaderboardVerified',
+          'leaderboardSource',
+          'updatedAt'
+        ])
+      );
     }
 
     match /bets/{betId} {
