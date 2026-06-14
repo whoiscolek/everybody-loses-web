@@ -154,7 +154,7 @@ const AVATAR_CHOICES = ["😀", "😎", "🔥", "🧠", "🎯", "🏁", "⚡", "
 
 let activeTab = "today";
 let authMode = "login";
-let filters = { sport: "all", league: "all" };
+let filters = { sport: "all", league: "all", betState: "all" };
 let apiImportResults = [];
 let apiImportMessage = "";
 let apiSyncRunning = false;
@@ -426,6 +426,24 @@ function eventLedgerCount(eventId) {
 
 function eventHasFinancialRecords(eventId) {
   return eventBetCount(eventId) > 0 || eventMatchCount(eventId) > 0 || eventLedgerCount(eventId) > 0;
+}
+
+function eventBetActivity(event) {
+  const bets = Object.values(state.bets || {}).filter(bet => recordMatchesEvent(bet, event));
+  const matches = Object.values(state.matches || {}).filter(match => recordMatchesEvent(match, event));
+  const hasPlacedBets = bets.length > 0 || matches.length > 0;
+  const hasActiveBets = matches.some(match => String(match.status || "").toLowerCase() === "matched");
+
+  return { hasPlacedBets, hasActiveBets };
+}
+
+function eventMatchesBetStateFilter(event) {
+  const { hasPlacedBets, hasActiveBets } = eventBetActivity(event);
+
+  if (filters.betState === "placed") return hasPlacedBets;
+  if (filters.betState === "active") return hasActiveBets;
+  if (filters.betState === "none") return !hasPlacedBets;
+  return true;
 }
 
 function eventIsComplete(event) {
@@ -741,6 +759,21 @@ function safeRefreshFieldsForEvent(event, existing = null) {
     updatedAt: serverTimestamp()
   };
 
+  if (event?.type === EVENT_TYPES.TEAM) {
+    fields.away = {
+      ...(existing?.away || {}),
+      ...(event.away || {}),
+      code: existing?.away?.code || event.away?.code || "AWAY",
+      name: event.away?.name || existing?.away?.name || existing?.away?.code || event.away?.code || "Away team"
+    };
+    fields.home = {
+      ...(existing?.home || {}),
+      ...(event.home || {}),
+      code: existing?.home?.code || event.home?.code || "HOME",
+      name: event.home?.name || existing?.home?.name || existing?.home?.code || event.home?.code || "Home team"
+    };
+  }
+
   if (!hasFinancials || trustedF1Refresh) {
     fields.title = event.title;
     fields.startTime = event.startTime;
@@ -788,6 +821,21 @@ function escapeHtml(value) {
 
 function label(value) {
   return String(value || "").replaceAll("_", " ").replace(/\b\w/g, char => char.toUpperCase());
+}
+
+function teamDisplayName(event, side) {
+  const team = event?.[side] || {};
+  const name = String(team.name || "").trim();
+  const code = String(team.code || "").trim();
+
+  if (name && name.toUpperCase() !== code.toUpperCase()) return name;
+  return name || code || (side === "away" ? "Away team" : "Home team");
+}
+
+function eventDisplayTitle(event) {
+  if (event?.type !== EVENT_TYPES.TEAM) return event?.title || event?.id || "Event";
+  const separator = event?.sport === "soccer" ? "vs" : "at";
+  return `${teamDisplayName(event, "away")} ${separator} ${teamDisplayName(event, "home")}`;
 }
 
 function userName(id) {
@@ -1384,6 +1432,7 @@ function renderToday() {
   const events = allVisibleEvents
     .filter(event => filters.sport === "all" || event.sport === filters.sport)
     .filter(event => filters.league === "all" || event.league === filters.league)
+    .filter(eventMatchesBetStateFilter)
     .sort((a, b) => new Date(a.startTime) - new Date(b.startTime));
 
   const leagues = filters.sport === "all" ? Object.values(SPORT_GROUPS).flat() : SPORT_GROUPS[filters.sport] || [];
@@ -1402,6 +1451,15 @@ function renderToday() {
         <select id="leagueFilter">
           <option value="all">All leagues</option>
           ${leagues.map(league => `<option value="${league}" ${filters.league === league ? "selected" : ""}>${escapeHtml(league)}</option>`).join("")}
+        </select>
+      </div>
+      <div class="bet-state-filter">
+        <label>Bet activity</label>
+        <select id="betStateFilter">
+          <option value="all" ${filters.betState === "all" ? "selected" : ""}>All Games</option>
+          <option value="placed" ${filters.betState === "placed" ? "selected" : ""}>Games with Bets Placed</option>
+          <option value="active" ${filters.betState === "active" ? "selected" : ""}>Games with Active Bets</option>
+          <option value="none" ${filters.betState === "none" ? "selected" : ""}>Games with No Bets at All</option>
         </select>
       </div>
     </div>
@@ -1446,14 +1504,14 @@ function renderEventCard(event) {
           <div class="sport-icon">${renderLeagueLogo(event.sport, event.league)}</div>
           <div>
             <div class="kicker">${escapeHtml(event.league)} · ${event.type === EVENT_TYPES.TEAM ? "Head-to-head" : event.type === EVENT_TYPES.FIGHT_CARD ? "Fight card" : "Ranked finish"}</div>
-            <h3 class="event-title">${escapeHtml(event.title)}</h3>
+            <h3 class="event-title">${escapeHtml(eventDisplayTitle(event))}</h3>
             <div class="meta-line">
               <span class="status-badge ${escapeHtml(event.status)}">${escapeHtml(label(event.status))}</span>
               <span class="badge">${escapeHtml(formatTime(event.startTime))} ET</span>
             </div>
             <div class="logo-stack">
               ${event.type === EVENT_TYPES.TEAM
-                ? `<span class="soft-badge">${escapeHtml(event.away.code)}</span><span class="soft-badge">vs</span><span class="soft-badge">${escapeHtml(event.home.code)}</span>`
+                ? `<span class="soft-badge team-name-badge">${escapeHtml(teamDisplayName(event, "away"))}</span><span class="soft-badge">vs</span><span class="soft-badge team-name-badge">${escapeHtml(teamDisplayName(event, "home"))}</span>`
                 : event.type === EVENT_TYPES.FIGHT_CARD
                   ? `<span class="soft-badge">${(event.fights || []).length} fights</span>`
                   : `<span class="soft-badge">${event.participants.length} participants</span>`}
@@ -1628,9 +1686,9 @@ function renderScoreLine(event) {
     const homeScore = hasScore ? event.score.home : "—";
     const winner = event.status === "final" && hasScore
       ? Number(event.score.away) > Number(event.score.home)
-        ? event.away.code
+        ? teamDisplayName(event, "away")
         : Number(event.score.home) > Number(event.score.away)
-          ? event.home.code
+          ? teamDisplayName(event, "home")
           : "Draw"
       : "";
 
@@ -1640,12 +1698,12 @@ function renderScoreLine(event) {
         ${liveContextText(event) ? `<div class="score-sub live-context">${escapeHtml(liveContextText(event))}</div>` : ""}
         <div class="team-score-row">
           <div class="team-score-cell">
-            <span class="team-code">${escapeHtml(event.away.code)}</span>
+            <span class="team-code team-full-name">${escapeHtml(teamDisplayName(event, "away"))}</span>
             <strong>${escapeHtml(String(awayScore))}</strong>
           </div>
           <span class="score-divider">vs</span>
           <div class="team-score-cell right">
-            <span class="team-code">${escapeHtml(event.home.code)}</span>
+            <span class="team-code team-full-name">${escapeHtml(teamDisplayName(event, "home"))}</span>
             <strong>${escapeHtml(String(homeScore))}</strong>
           </div>
         </div>
@@ -1728,8 +1786,8 @@ function renderTeamBetForm(event, locked) {
         <label>Bet amount</label>
         <input id="amount-${escapeHtml(event.id)}" type="number" min="1" step="1" value="1" ${locked ? "disabled" : ""} />
       </div>
-      <button class="primary" data-bet-team="${escapeHtml(event.id)}" data-side="away" ${locked || !canBet() ? "disabled" : ""}>Pick ${escapeHtml(event.away.code)}</button>
-      <button class="primary" data-bet-team="${escapeHtml(event.id)}" data-side="home" ${locked || !canBet() ? "disabled" : ""}>Pick ${escapeHtml(event.home.code)}</button>
+      <button class="primary" data-bet-team="${escapeHtml(event.id)}" data-side="away" ${locked || !canBet() ? "disabled" : ""}>Pick ${escapeHtml(teamDisplayName(event, "away"))}</button>
+      <button class="primary" data-bet-team="${escapeHtml(event.id)}" data-side="home" ${locked || !canBet() ? "disabled" : ""}>Pick ${escapeHtml(teamDisplayName(event, "home"))}</button>
     </div>
     <p class="footer-note small">${locked ? "This event is locked." : "Multiple bets are allowed, but all of your bets on one event must stay on the same side."}</p>
     ${(canBet() && !locked) || renderAdminOddsButton(event) ? `
@@ -1813,7 +1871,7 @@ function renderEventQueues(event) {
 }
 
 function displayPick(event, bet) {
-  if (event?.type === EVENT_TYPES.TEAM) return bet.side === "home" ? event.home.code : event.away.code;
+  if (event?.type === EVENT_TYPES.TEAM) return bet.side === "home" ? teamDisplayName(event, "home") : teamDisplayName(event, "away");
   if (event?.type === EVENT_TYPES.FIGHT_CARD) {
     const fight = fightById(event, bet.fightId);
     return `${fight?.label || "Fight"} · ${fightPickName(fight, bet.side)}`;
@@ -1860,7 +1918,7 @@ function renderMyBets() {
 
 function renderBetRecord(bet) {
   const event = state.events[bet.eventId] || findEventByIdOrCode(bet.eventId);
-  return `<div class="record"><strong>${escapeHtml(event?.title || bet.eventId)}</strong><br><span class="muted small">${escapeHtml(displayPick(event, bet))} · ${money(bet.amount)} · ${escapeHtml(label(bet.status))}</span><br><span class="tiny muted">${escapeHtml(event?.shortCode || bet.eventId)}</span></div>`;
+  return `<div class="record"><strong>${escapeHtml(event ? eventDisplayTitle(event) : bet.eventId)}</strong><br><span class="muted small">${escapeHtml(displayPick(event, bet))} · ${money(bet.amount)} · ${escapeHtml(label(bet.status))}</span><br><span class="tiny muted">${escapeHtml(event?.shortCode || bet.eventId)}</span></div>`;
 }
 
 function renderMatchRecord(match) {
@@ -1872,7 +1930,7 @@ function renderMatchRecord(match) {
       : doubleUpIsExpired(match)
         ? " · Double up expired"
         : "";
-  return `<div class="record"><strong>${escapeHtml(event?.title || match.eventId)}</strong><br><span class="muted small">${escapeHtml(userName(match.userA))} vs ${escapeHtml(userName(match.userB))} · ${escapeHtml(label(match.status))} · ${money(matchEffectiveAmount(match))}${escapeHtml(doubleText)}</span><br><span class="tiny muted">${escapeHtml(event?.shortCode || match.eventId)}</span></div>`;
+  return `<div class="record"><strong>${escapeHtml(event ? eventDisplayTitle(event) : match.eventId)}</strong><br><span class="muted small">${escapeHtml(userName(match.userA))} vs ${escapeHtml(userName(match.userB))} · ${escapeHtml(label(match.status))} · ${money(matchEffectiveAmount(match))}${escapeHtml(doubleText)}</span><br><span class="tiny muted">${escapeHtml(event?.shortCode || match.eventId)}</span></div>`;
 }
 
 function renderLedger() {
@@ -2041,8 +2099,8 @@ function renderCompactLeaderboard(event) {
 
 function renderHistoryResultLine(event) {
   if (event.type === EVENT_TYPES.TEAM) {
-    const away = event.away?.code || "Away";
-    const home = event.home?.code || "Home";
+    const away = teamDisplayName(event, "away");
+    const home = teamDisplayName(event, "home");
     const awayScore = event.score?.away ?? "—";
     const homeScore = event.score?.home ?? "—";
     return `${away} ${awayScore} · ${home} ${homeScore}`;
@@ -2056,7 +2114,7 @@ function renderHistoryEventCard(event) {
   const eventId = event.firestoreId || event.id;
   const externalRefs = formatExternalRefs(event.externalIds);
   const matchup = event.type === EVENT_TYPES.TEAM
-    ? `${event.away?.code || "Away"} vs ${event.home?.code || "Home"}`
+    ? `${teamDisplayName(event, "away")} vs ${teamDisplayName(event, "home")}`
     : `${(event.participants || []).length} entries`;
   const displayCode = event.shortCode || nextEventDisplayCode(event.league, event.startTime);
   const betSummary = historyBetSummary(event);
@@ -2068,7 +2126,7 @@ function renderHistoryEventCard(event) {
         <div class="sport-icon">${renderLeagueLogo(event.sport, event.league)}</div>
         <div>
           <div class="kicker">${escapeHtml(event.league)} · ${escapeHtml(formatTime(event.startTime))} ET</div>
-          <h3>${escapeHtml(event.title)}</h3>
+          <h3>${escapeHtml(eventDisplayTitle(event))}</h3>
           <p class="muted small">${escapeHtml(matchup)}</p>
         </div>
       </div>
@@ -2335,7 +2393,7 @@ function renderApiEventMaintenance() {
     return `
       <div class="record api-maintenance-row">
         <div class="api-maintenance-main">
-          <strong>${escapeHtml(event.title || eventId)}</strong><br />
+          <strong>${escapeHtml(eventDisplayTitle(event))}</strong><br />
           <span class="muted small api-maintenance-meta">${escapeHtml(event.league || "Unknown")} · ${escapeHtml(formatTime(event.startTime))} ET · ${escapeHtml(event.shortCode || eventId)}</span><br />
           <span class="small api-maintenance-meta">Source: ${escapeHtml(source)} · ${escapeHtml(protectedLabel)}</span>
         </div>
@@ -2585,6 +2643,7 @@ function wireUi() {
   document.querySelector("[data-action='logout']")?.addEventListener("click", logout);
   document.querySelector("#sportFilter")?.addEventListener("change", event => { filters.sport = event.target.value; filters.league = "all"; renderApp(); });
   document.querySelector("#leagueFilter")?.addEventListener("change", event => { filters.league = event.target.value; renderApp(); });
+  document.querySelector("#betStateFilter")?.addEventListener("change", event => { filters.betState = event.target.value; renderApp(); });
   document.querySelectorAll("[data-bet-team]").forEach(button => button.addEventListener("click", () => placeTeamBet(button.dataset.betTeam, button.dataset.side)));
   document.querySelectorAll("[data-bet-ranked]").forEach(button => button.addEventListener("click", () => placeRankedBet(button.dataset.betRanked)));
   document.querySelectorAll("[data-bet-fight]").forEach(button => button.addEventListener("click", () => placeFightCardBet(button.dataset.betFight, button.dataset.fightId, button.dataset.side)));
@@ -2995,7 +3054,7 @@ function betNotificationRecipients(bettorId) {
 
 function formatBetPickForNotification(event, bet = {}) {
   if (!event) return "Unknown pick";
-  if (event.type === EVENT_TYPES.TEAM) return bet.side === "home" ? event.home?.code || "Home" : event.away?.code || "Away";
+  if (event.type === EVENT_TYPES.TEAM) return bet.side === "home" ? teamDisplayName(event, "home") : teamDisplayName(event, "away");
   if (event.type === EVENT_TYPES.FIGHT_CARD) {
     const fight = fightById(event, bet.fightId);
     return `${fight?.label || bet.fightLabel || "Fight"} · ${fightPickName(fight, bet.side)}`;
@@ -3020,7 +3079,7 @@ async function notifyBetPlaced(event, bet = {}) {
     event: {
       id: event.id,
       shortCode: event.shortCode || "",
-      title: event.title || event.id,
+      title: eventDisplayTitle(event),
       league: event.league || "",
       startTime: event.startTime || ""
     },
@@ -3054,7 +3113,7 @@ async function notifyDoubleUpRequested(event, match, challenge = {}) {
     event: {
       id: event.firestoreId || event.id,
       shortCode: event.shortCode || "",
-      title: event.title || event.id,
+      title: eventDisplayTitle(event),
       league: event.league || "",
       startTime: event.startTime || ""
     },
@@ -3091,7 +3150,7 @@ async function notifyMatchAccepted(event, match = {}, acceptedById = "", recipie
     event: {
       id: event.firestoreId || event.id,
       shortCode: event.shortCode || "",
-      title: event.title || event.id,
+      title: eventDisplayTitle(event),
       league: event.league || "",
       startTime: event.startTime || ""
     },
@@ -3377,7 +3436,7 @@ async function settleTeamEvent(event, options = {}) {
   const localNow = new Date().toISOString();
 
   if (!options.silent) {
-    settlementSyncMessage = `Posting settlement for ${event.title}…`;
+    settlementSyncMessage = `Posting settlement for ${eventDisplayTitle(event)}…`;
     renderApp();
   }
 
@@ -3404,7 +3463,7 @@ async function settleTeamEvent(event, options = {}) {
       amount,
       originalAmount: Number(match.doubleUp?.originalAmount || match.exposure || amount),
       doubledUp: matchIsDoubled(match),
-      note: `Auto-settled: ${event.title}${matchIsDoubled(match) ? " · doubled up" : ""}`,
+      note: `Auto-settled: ${eventDisplayTitle(event)}${matchIsDoubled(match) ? " · doubled up" : ""}`,
       settled: Boolean(existingLedger?.settled || false),
       createdAt: existingLedger?.createdAt || localNow,
       updatedAt: localNow
@@ -3452,11 +3511,11 @@ async function settleTeamEvent(event, options = {}) {
     // reconcile the canonical server timestamps shortly after.
     state.ledgerEntries = { ...state.ledgerEntries, ...optimisticLedger };
     state.matches = { ...state.matches, ...optimisticMatches };
-    settlementSyncMessage = `Settlement posted for ${event.title}. Ledger/profile/leaderboard updated locally; syncing server confirmation…`;
+    settlementSyncMessage = `Settlement posted for ${eventDisplayTitle(event)}. Ledger/profile/leaderboard updated locally; syncing server confirmation…`;
     renderApp();
 
     setTimeout(() => {
-      if (settlementSyncMessage.includes(event.title)) {
+      if (settlementSyncMessage.includes(eventDisplayTitle(event))) {
         settlementSyncMessage = "";
         renderApp();
       }
@@ -3466,7 +3525,7 @@ async function settleTeamEvent(event, options = {}) {
     renderApp();
   }
 
-  if (!options.silent) alert(`Settled/repaired ${changed} matched bet${changed === 1 ? "" : "s"} for ${event.title}.`);
+  if (!options.silent) alert(`Settled/repaired ${changed} matched bet${changed === 1 ? "" : "s"} for ${eventDisplayTitle(event)}.`);
 }
 
 async function settleRankedEvent(event, options = {}) {
@@ -3789,12 +3848,12 @@ function renderApiImportResults() {
     const scoreText = event.type === EVENT_TYPES.RANKED
       ? `${(event.participants || []).slice(0, 6).join(", ")}${(event.participants || []).length > 6 ? "..." : ""}`
       : event.score
-        ? `${event.away.code} ${event.score.away} · ${event.home.code} ${event.score.home}`
-        : `${event.away.code} vs ${event.home.code}`;
+        ? `${teamDisplayName(event, "away")} ${event.score.away} · ${teamDisplayName(event, "home")} ${event.score.home}`
+        : `${teamDisplayName(event, "away")} vs ${teamDisplayName(event, "home")}`;
     return `
       <div class="record api-result-row">
         <div>
-          <strong>${escapeHtml(event.title)}</strong><br />
+          <strong>${escapeHtml(eventDisplayTitle(event))}</strong><br />
           <span class="muted small">${escapeHtml(event.league)} · ${escapeHtml(formatTime(event.startTime))} ET · ${escapeHtml(label(event.status))}</span><br />
           <span class="small">${escapeHtml(scoreText)} · Odds: ${escapeHtml(event.odds || "Unavailable")}</span>
         </div>
@@ -4019,7 +4078,7 @@ async function importApiEvent(apiEventId) {
     const safetyNote = eventHasFinancialRecords(existingDocId) ? " Betting structure was preserved because this event has bets/matches/ledger records." : "";
     apiImportMessage = `Refreshed existing ${event.title}. It is saved as ${existing.shortCode || existingDocId}.${safetyNote}`;
     activeTab = "today";
-    filters = { sport: event.sport || "all", league: event.league || "all" };
+    filters = { sport: event.sport || "all", league: event.league || "all", betState: "all" };
     renderApp();
     return;
   }
@@ -4046,7 +4105,7 @@ async function importApiEvent(apiEventId) {
 
   apiImportMessage = `Imported ${event.title}. It is now saved as ${savedEvent.shortCode}.`;
   activeTab = "today";
-  filters = { sport: event.sport || "all", league: event.league || "all" };
+  filters = { sport: event.sport || "all", league: event.league || "all", betState: "all" };
   renderApp();
 }
 

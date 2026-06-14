@@ -162,3 +162,9 @@ APP_URL
 ```
 
 `ODDS_API_KEY` remains limited to matched-bet odds workflows. ESPN/imported odds remain the default display.
+## v10.62 changes
+
+- Added a Now-tab bet activity filter with All games, bets placed, active matched bets, and no bets.
+- Team and country matchups now display full names instead of abbreviations whenever imported source data provides them.
+- Refreshing an existing team event updates its display names even when bet structure is protected.
+

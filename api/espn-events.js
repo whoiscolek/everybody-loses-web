@@ -148,6 +148,8 @@ function mapMlbStatsApiGame(game, espnRaw = null) {
   const statusText = mlbStatusLine(game) || labelStatus(status);
   const liveContext = status === "live" ? statusText : status === "final" ? "Final" : "";
   const pitcherLine = mlbProbablePitcherLine(game, awayCode, homeCode);
+  const awayName = awayTeam.name || awayTeam.teamName || awayCode;
+  const homeName = homeTeam.name || homeTeam.teamName || homeCode;
 
   return {
     apiSource: "mlb-statsapi",
@@ -155,14 +157,14 @@ function mapMlbStatsApiGame(game, espnRaw = null) {
     sport: "baseball",
     league: "MLB",
     type: "TEAM_HEAD_TO_HEAD",
-    title: `${awayCode} @ ${homeCode}`,
+    title: `${awayName} at ${homeName}`,
     away: {
       code: awayCode,
-      name: awayTeam.name || awayTeam.teamName || awayCode
+      name: awayName
     },
     home: {
       code: homeCode,
-      name: homeTeam.name || homeTeam.teamName || homeCode
+      name: homeName
     },
     startTime: game.gameDate || new Date().toISOString(),
     status,
@@ -211,6 +213,21 @@ function ymd(date = new Date()) {
 function cleanCode(value, fallback = "TBD") {
   const raw = String(value || fallback).trim();
   return raw.replace(/[^a-z0-9]/gi, "").slice(0, 8).toUpperCase() || fallback;
+}
+
+function fullTeamName(team = {}, fallback = "Team") {
+  const location = String(team.location || "").trim();
+  const name = String(team.name || "").trim();
+  const combinedLocationName = location && name && !name.toLowerCase().startsWith(location.toLowerCase())
+    ? `${location} ${name}`
+    : name;
+  return String(
+    team.displayName
+    || team.fullName
+    || combinedLocationName
+    || team.shortDisplayName
+    || fallback
+  ).trim();
 }
 
 function getCompetitor(competition, homeAway) {
@@ -335,6 +352,8 @@ function mapTeamEvent(event, config) {
   const homeTeam = home.team || {};
   const awayCode = cleanCode(awayTeam.abbreviation || awayTeam.shortDisplayName || awayTeam.displayName, "AWAY");
   const homeCode = cleanCode(homeTeam.abbreviation || homeTeam.shortDisplayName || homeTeam.displayName, "HOME");
+  const awayName = fullTeamName(awayTeam, awayCode);
+  const homeName = fullTeamName(homeTeam, homeCode);
   const status = getStatus(event);
   const odds = competition.odds?.[0]?.details || competition.odds?.[0]?.overUnder || "API schedule import";
   const startTime = event.date || competition.date || new Date().toISOString();
@@ -364,14 +383,14 @@ function mapTeamEvent(event, config) {
     sport: config.appSport,
     league: config.league,
     type: "TEAM_HEAD_TO_HEAD",
-    title: event.shortName || event.name || `${awayCode} at ${homeCode}`,
+    title: `${awayName} ${config.appSport === "soccer" ? "vs" : "at"} ${homeName}`,
     away: {
       code: awayCode,
-      name: awayTeam.displayName || awayTeam.name || awayCode
+      name: awayName
     },
     home: {
       code: homeCode,
-      name: homeTeam.displayName || homeTeam.name || homeCode
+      name: homeName
     },
     startTime,
     status,

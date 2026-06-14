@@ -4510,3 +4510,60 @@ label {
     justify-self: start;
   }
 }
+
+/* v10.62 Now bet-state filters + full team/country names */
+.today-filters {
+  grid-template-columns: repeat(3, minmax(0, 260px));
+}
+
+.today-filters .bet-state-filter {
+  min-width: min(100%, 260px);
+}
+
+.team-name-badge {
+  max-width: min(100%, 240px);
+  white-space: normal;
+  line-height: 1.18;
+  text-align: center;
+}
+
+.team-score-cell {
+  min-width: 0;
+}
+
+.team-code.team-full-name {
+  font-size: clamp(.72rem, 1vw, .9rem);
+  line-height: 1.2;
+  letter-spacing: 0 !important;
+  text-transform: none;
+  overflow-wrap: anywhere;
+}
+
+.compact-bet-box .money-row > button.primary {
+  min-width: 0;
+  max-width: 100%;
+  white-space: normal;
+  line-height: 1.16;
+  text-align: center;
+}
+
+@media (max-width: 820px) {
+  .toolbar.today-filters {
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) !important;
+  }
+
+  .today-filters .bet-state-filter {
+    grid-column: 1 / -1;
+    min-width: 0;
+  }
+}
+
+@media (max-width: 480px) {
+  .team-score-row {
+    gap: 8px;
+  }
+
+  .team-code.team-full-name {
+    font-size: .7rem;
+  }
+}
