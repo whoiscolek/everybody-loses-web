@@ -2503,19 +2503,35 @@ button.danger {
 }
 
 .compact-bet-box .money-row {
-  grid-template-columns: minmax(90px, .75fr) auto auto;
+  grid-template-columns: minmax(110px, .7fr) minmax(0, 1fr) minmax(0, 1fr);
   gap: 8px;
   align-items: end;
 }
 
+.compact-bet-box .money-row > div:first-child {
+  min-width: 0;
+}
+
+.compact-bet-box .money-row label {
+  display: block;
+  margin-bottom: 6px;
+  font-size: .74rem;
+  font-weight: 800;
+  letter-spacing: .03em;
+  text-transform: uppercase;
+}
+
 .compact-bet-box input {
   padding: 10px 11px;
+  min-height: 50px;
+  font-size: .95rem;
 }
 
 .compact-bet-box button.primary,
 .compact-bet-box button.ghost,
 .compact-bet-box button.danger {
-  padding: 10px 12px;
+  padding: 10px 10px;
+  min-height: 50px;
 }
 
 .compact-bet-box .footer-note {
@@ -4543,8 +4559,10 @@ label {
   min-width: 0;
   max-width: 100%;
   white-space: normal;
-  line-height: 1.16;
+  line-height: 1.12;
   text-align: center;
+  font-size: clamp(.78rem, .82vw, .9rem);
+  font-weight: 700;
 }
 
 @media (max-width: 820px) {
