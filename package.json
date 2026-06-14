@@ -6,8 +6,8 @@
   },
   "dependencies": {
     "@vitejs/plugin-react": "latest",
-    "vite": "latest",
-    "firebase": "latest"
-  },
-  "devDependencies": {}
+    "firebase": "latest",
+    "firebase-admin": "^14.0.0",
+    "vite": "latest"
+  }
 }

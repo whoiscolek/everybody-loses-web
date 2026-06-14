@@ -33,23 +33,9 @@ service cloud.firestore {
 
     match /events/{eventId} {
       allow read: if signedIn();
-      allow create, delete: if admin();
-      allow update: if admin() || (
-        approved() &&
-        request.resource.data.diff(resource.data).affectedKeys().hasOnly([
-          'status',
-          'score',
-          'liveStats',
-          'weather',
-          'liveContext',
-          'gameContext',
-          'leaderboard',
-          'resultOrder',
-          'leaderboardVerified',
-          'leaderboardSource',
-          'updatedAt'
-        ])
-      );
+      // Routine source refresh/finalization is performed by the Firebase Admin
+      // maintenance function. Browser event writes are admin-only.
+      allow create, update, delete: if admin();
     }
 
     match /bets/{betId} {
@@ -69,7 +55,9 @@ service cloud.firestore {
         resource.data.toUser == request.auth.uid ||
         admin()
       );
-      allow create, update, delete: if admin() || approved();
+      // Server maintenance writes canonical ledger entries. Admin retains manual
+      // repair access; ordinary users cannot manufacture ledger balances.
+      allow create, update, delete: if admin();
     }
 
     match /settlements/{settlementId} {
@@ -78,7 +66,12 @@ service cloud.firestore {
         resource.data.toUser == request.auth.uid ||
         admin()
       );
-      allow create, update, delete: if admin() || approved();
+      allow create, update, delete: if admin();
+    }
+
+    match /system/{docId} {
+      allow read: if signedIn();
+      allow write: if admin();
     }
   }
 }

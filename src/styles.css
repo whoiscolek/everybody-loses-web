@@ -4474,3 +4474,39 @@ label {
     max-width: 100%;
   }
 }
+
+/* v10.60 server-maintenance health */
+.maintenance-health {
+  margin-bottom: 16px;
+}
+
+.maintenance-health-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 12px;
+}
+
+.maintenance-health-head h3,
+.maintenance-health-head p {
+  margin-top: 0;
+}
+
+.maintenance-health.healthy {
+  border-color: rgba(57, 217, 138, .24) !important;
+}
+
+.maintenance-health.warning {
+  border-color: rgba(255, 209, 102, .28) !important;
+}
+
+@media (max-width: 720px) {
+  .maintenance-health-head {
+    display: grid;
+  }
+
+  .maintenance-health-head .status-badge {
+    justify-self: start;
+  }
+}

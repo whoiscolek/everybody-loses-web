@@ -52,7 +52,7 @@ const AUTO_CLEANUP_INTERVAL_MS = 6 * 60 * 60 * 1000;
 const AUTO_SETTLE_INTERVAL_MS = 10 * 60 * 1000;
 const NOW_WINDOW_SYNC_LABEL = "full 48-hour Now window";
 const NOW_BOARD_LOOKAHEAD_MS = 48 * 60 * 60 * 1000;
-const NOW_BOARD_LOOKBACK_MS = 12 * 60 * 60 * 1000;
+const NOW_BOARD_LOOKBACK_MS = 4 * 60 * 60 * 1000;
 const HISTORY_RETENTION_MS = 5 * 24 * 60 * 60 * 1000;
 
 const SPORT_GROUPS = {
@@ -179,7 +179,8 @@ let state = {
   bets: {},
   matches: {},
   ledgerEntries: {},
-  settlements: {}
+  settlements: {},
+  maintenance: {}
 };
 
 let unsubscribeAll = [];
@@ -207,7 +208,8 @@ function startApp() {
         bets: {},
         matches: {},
         ledgerEntries: {},
-        settlements: {}
+        settlements: {},
+        maintenance: {}
       };
       dataReady = false;
     }
@@ -337,7 +339,13 @@ function subscribeToData() {
       renderApp();
     }),
     subscribeLedgerLikeCollection("ledgerEntries", "ledgerEntries"),
-    subscribeLedgerLikeCollection("settlements", "settlements")
+    subscribeLedgerLikeCollection("settlements", "settlements"),
+    onSnapshot(doc(db, "system", "maintenance"), snapshot => {
+      state.maintenance = snapshot.exists() ? snapshot.data() : {};
+      renderApp();
+    }, () => {
+      // Maintenance health is supplemental; the board still renders without it.
+    })
   ];
 
   unsubscribeAll = subscriptions;
@@ -458,14 +466,21 @@ function functionHistoryCleanupCandidateCount() {
   return Object.values(state.events || {}).filter(eventCanBeHistoryCleaned).length;
 }
 
+function maxLiveAgeMs(event) {
+  if (event?.type === EVENT_TYPES.FIGHT_CARD || event?.type === EVENT_TYPES.RANKED) return 14 * 60 * 60 * 1000;
+  if (event?.league === "MLB") return 10 * 60 * 60 * 1000;
+  return 8 * 60 * 60 * 1000;
+}
+
 function eventIsWithinNowWindow(event) {
   if (!event || event.status === "final") return false;
-  if (event.status === "live") return true;
+  if (event.hiddenFromNow || ["archived", "history"].includes(event.boardState)) return false;
 
   const start = new Date(event.startTime || 0).getTime();
   if (!Number.isFinite(start)) return false;
 
   const now = Date.now();
+  if (event.status === "live") return now - start <= maxLiveAgeMs(event);
   return start >= now - NOW_BOARD_LOOKBACK_MS && start <= now + NOW_BOARD_LOOKAHEAD_MS;
 }
 
@@ -521,8 +536,9 @@ function nowWindowDateISOs() {
 }
 
 function eventHasActiveBetInterest(eventId) {
-  return Object.values(state.bets || {}).some(bet => bet.eventId === eventId && bet.status !== "settled")
-    || Object.values(state.matches || {}).some(match => match.eventId === eventId && match.status !== "settled");
+  const event = state.events[eventId] || findEventByIdOrCode(eventId) || eventId;
+  return Object.values(state.bets || {}).some(bet => recordMatchesEvent(bet, event) && bet.status !== "settled")
+    || Object.values(state.matches || {}).some(match => recordMatchesEvent(match, event) && match.status !== "settled");
 }
 
 function eventWeatherText(event) {
@@ -531,7 +547,8 @@ function eventWeatherText(event) {
 }
 
 function eventHasMatchedOddsInterest(eventId) {
-  return Object.values(state.matches || {}).some(match => match.eventId === eventId && match.status !== "settled");
+  const event = state.events[eventId] || findEventByIdOrCode(eventId) || eventId;
+  return Object.values(state.matches || {}).some(match => recordMatchesEvent(match, event) && match.status !== "settled");
 }
 
 function eventCanUseOddsApi(event, forceMatched = false) {
@@ -750,12 +767,9 @@ function canBet() {
 }
 
 function canSettleFinalEvents() {
-  // Settlement is deterministic from final event scores + matched bets. Firestore
-  // rules already allow approved users to write matches/ledger entries, and the
-  // ledger id is match-based/idempotent, so letting approved clients repair final
-  // settlements prevents final games from sitting unsettled when an admin browser
-  // is not open.
-  return canBet();
+  // Routine settlement is server-side in v10.60. Keep this permission only for
+  // explicit admin repair tools.
+  return isAdmin();
 }
 
 function money(value) {
@@ -1808,14 +1822,14 @@ function displayPick(event, bet) {
 }
 
 function betIsCurrent(bet) {
-  const event = state.events[bet?.eventId];
+  const event = state.events[bet?.eventId] || findEventByIdOrCode(bet?.eventId);
   if (!bet || bet.status === "settled" || bet.status === "cancelled") return false;
   if (event?.status === "final") return false;
   return true;
 }
 
 function matchIsCurrent(match) {
-  const event = state.events[match?.eventId];
+  const event = state.events[match?.eventId] || findEventByIdOrCode(match?.eventId);
   if (!match || match.status !== "matched") return false;
   if (event?.status === "final") return false;
   return true;
@@ -1845,12 +1859,12 @@ function renderMyBets() {
 }
 
 function renderBetRecord(bet) {
-  const event = state.events[bet.eventId];
+  const event = state.events[bet.eventId] || findEventByIdOrCode(bet.eventId);
   return `<div class="record"><strong>${escapeHtml(event?.title || bet.eventId)}</strong><br><span class="muted small">${escapeHtml(displayPick(event, bet))} · ${money(bet.amount)} · ${escapeHtml(label(bet.status))}</span><br><span class="tiny muted">${escapeHtml(event?.shortCode || bet.eventId)}</span></div>`;
 }
 
 function renderMatchRecord(match) {
-  const event = state.events[match.eventId];
+  const event = state.events[match.eventId] || findEventByIdOrCode(match.eventId);
   const doubleText = matchIsDoubled(match)
     ? " · Doubled up"
     : doubleUpIsPending(match)
@@ -2361,6 +2375,28 @@ function renderAdminUserManagement() {
   }).join("");
 }
 
+function renderMaintenanceHealth() {
+  const maintenance = state.maintenance || {};
+  const summary = maintenance.lastSummary || {};
+  const lastSuccessMs = toDateValue(maintenance.lastSuccessAt);
+  const ageMinutes = lastSuccessMs ? Math.max(0, Math.round((Date.now() - lastSuccessMs) / 60000)) : null;
+  const healthy = ageMinutes !== null && ageMinutes <= 12 && !maintenance.lastError;
+  const status = maintenance.running ? "Running now" : healthy ? "Healthy" : ageMinutes === null ? "Not configured" : "Stale / needs attention";
+  const detail = lastSuccessMs
+    ? `Last successful server run ${ageMinutes} minute${ageMinutes === 1 ? "" : "s"} ago · ${summary.sourceSuccesses || 0}/${summary.sourceRequests || 0} source requests · ${summary.settlement?.ledgerWrites || 0} ledger write${summary.settlement?.ledgerWrites === 1 ? "" : "s"}`
+    : "No server maintenance run has been recorded yet. Configure the scheduled maintenance workflow before relying on unattended updates.";
+  return `
+    <div class="admin-card maintenance-health ${healthy ? "healthy" : "warning"}">
+      <div class="maintenance-health-head">
+        <div><h3>Server maintenance</h3><p class="muted small">One shared pipeline refreshes every sport, removes stale Now cards, settles finished bets, and writes all users’ ledgers.</p></div>
+        <span class="status-badge ${healthy ? "live" : "pregame"}">${escapeHtml(status)}</span>
+      </div>
+      <div class="record"><strong>${escapeHtml(detail)}</strong>${maintenance.lastError ? `<br><span class="bad small">${escapeHtml(String(maintenance.lastError).slice(0, 800))}</span>` : ""}</div>
+      <button class="ghost" data-action="run-server-maintenance">Run server refresh now</button>
+    </div>
+  `;
+}
+
 function renderAdmin() {
   if (!isAdmin()) return renderAdminUnlock();
 
@@ -2369,6 +2405,7 @@ function renderAdmin() {
 
   return `
     ${renderAdminStats()}
+    ${renderMaintenanceHealth()}
     <div class="admin-grid">
       <div class="admin-card">
         <h3>User approvals</h3>
@@ -2406,7 +2443,7 @@ function renderAdmin() {
           <button class="ghost" data-action="cleanup-api-events">Clean duplicate API events</button>
           <button class="ghost" data-action="cleanup-history-events">Clean history older than 5 days${functionHistoryCleanupCandidateCount() ? ` (${functionHistoryCleanupCandidateCount()})` : ""}</button>
         </div>
-        <p class="footer-note small">Automatic maintenance now runs in the background for admins: automatic source discovery sweeps, live score refresh, duplicate cleanup, final-event settlement, and odds refresh only for events with bets/matches. ESPN/imported odds remain the default display until someone actually bets. Backup buttons stay here as manual controls.</p>
+        <p class="footer-note small">Automatic event refresh and settlement now run through the server maintenance pipeline rather than whichever browser happens to be open. These buttons are diagnostics/manual backup controls. ESPN/imported odds remain the default display until someone actually bets. Backup buttons stay here as manual controls.</p>
         ${hiddenFutureImportedEventCount() ? `<div class="record admin-window-note"><strong>Now window</strong><span>Hiding ${hiddenFutureImportedEventCount()} far-future imported event${hiddenFutureImportedEventCount() === 1 ? "" : "s"}. The public Now board only shows live/active events through the next 48 hours.</span></div>` : ""}
         <label>Manual league/date fetch</label>
         <select id="apiLeague">
@@ -2557,6 +2594,7 @@ function wireUi() {
   document.querySelectorAll("[data-approve]").forEach(button => button.addEventListener("click", () => approveUser(button.dataset.approve)));
   document.querySelectorAll("[data-delete-user]").forEach(button => button.addEventListener("click", () => deleteUserProfile(button.dataset.deleteUser)));
   document.querySelector("[data-action='test-notification']")?.addEventListener("click", sendTestNotification);
+  document.querySelector("[data-action=\'run-server-maintenance\']")?.addEventListener("click", () => triggerServerMaintenance("manual"));
   document.querySelector("[data-action='save-profile']")?.addEventListener("click", saveProfile);
   document.querySelector("#profileImageUpload")?.addEventListener("change", updateProfileUploadTile);
   document.querySelector("[data-action='admin-unlock']")?.addEventListener("click", adminUnlock);
@@ -3562,9 +3600,17 @@ async function settleBalance(otherUserId, amount) {
 }
 
 function findEventByIdOrCode(input) {
-  const value = String(input || "").trim().toUpperCase();
+  const raw = String(input || "").trim();
+  const value = raw.toUpperCase();
   if (!value) return null;
-  return state.events[value] || Object.values(state.events).find(event => String(event.shortCode || "").toUpperCase() === value) || null;
+  return state.events[raw]
+    || state.events[value]
+    || Object.values(state.events).find(event =>
+      String(event.shortCode || "").toUpperCase() === value
+      || eventIdCandidates(event).has(raw)
+      || eventIdCandidates(event).has(value)
+    )
+    || null;
 }
 
 function apiEventDocId(event) {
@@ -4597,32 +4643,45 @@ async function runAutoMaintenance(reason = "timer") {
   }
 }
 
-async function refreshExistingEventsAndSettle(reason = "timer") {
-  if (!canSettleFinalEvents() || approvedLiveRefreshRunning) return;
+async function triggerServerMaintenance(reason = "foreground") {
+  if (!currentUser()?.approved || approvedLiveRefreshRunning) return null;
   approvedLiveRefreshRunning = true;
   try {
-    await syncLiveScoreEvents({ silent: true, reason });
-    await autoSettleFinalEvents();
+    const response = await fetch(`/api/maintenance?mode=quick&reason=${encodeURIComponent(reason)}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" }
+    });
+    const result = await response.json().catch(() => ({}));
+    if (!response.ok && response.status !== 202) throw new Error(result.error || `Maintenance returned ${response.status}`);
+    if (reason === "manual") {
+      apiImportMessage = result.skipped
+        ? "Server maintenance is already running."
+        : `Server refresh complete: ${result.updated || 0} updated, ${result.added || 0} added, ${result.settlement?.ledgerWrites || 0} ledger write(s).`;
+      renderApp();
+    }
+    return result;
+  } catch (error) {
+    if (reason === "manual") {
+      apiImportMessage = `Server maintenance failed: ${error?.message || String(error)}`;
+      renderApp();
+    }
+    return null;
   } finally {
     approvedLiveRefreshRunning = false;
   }
 }
 
 function maybeStartSettlementMaintenance() {
-  if (!canSettleFinalEvents()) return;
-
+  if (!currentUser()?.approved) return;
   if (!settlementMaintenanceTimer) {
-    // Refresh source status first, then settle. This runs for every approved
-    // client, including mobile, rather than waiting for an admin desktop.
-    setTimeout(() => refreshExistingEventsAndSettle("startup"), 600);
-    settlementMaintenanceTimer = setInterval(() => refreshExistingEventsAndSettle("interval"), 30 * 1000);
+    setTimeout(() => triggerServerMaintenance("startup"), 800);
+    settlementMaintenanceTimer = setInterval(() => {
+      if (document.visibilityState !== "hidden") triggerServerMaintenance("interval");
+    }, 2 * 60 * 1000);
 
     const refreshOnReturn = () => {
-      if (canSettleFinalEvents() && document.visibilityState !== "hidden") {
-        refreshExistingEventsAndSettle("foreground");
-      }
+      if (currentUser()?.approved && document.visibilityState !== "hidden") triggerServerMaintenance("foreground");
     };
-
     window.addEventListener("focus", refreshOnReturn);
     window.addEventListener("pageshow", refreshOnReturn);
     document.addEventListener("visibilitychange", refreshOnReturn);
@@ -4630,19 +4689,8 @@ function maybeStartSettlementMaintenance() {
 }
 
 function maybeStartAutoMaintenance() {
-  if (!isAdmin()) return;
-
-  if (!autoMaintenanceTimer) {
-    // Start with discovery, not only score refresh, so missing games populate
-    // automatically when an admin opens the app.
-    runAutoMaintenance("startup");
-    setTimeout(() => syncNowWindowSchedule({ silent: true }), 1000);
-    autoMaintenanceTimer = setInterval(() => runAutoMaintenance("interval"), 30 * 1000);
-
-    window.addEventListener("focus", () => {
-      if (isAdmin()) runAutoMaintenance("focus");
-    });
-  }
+  // Automatic discovery/finalization is server-side in v10.60. Admin browsers
+  // no longer run a second competing maintenance implementation.
 }
 
 async function deleteDemoEvents() {
