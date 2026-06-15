@@ -249,13 +249,22 @@ function getStatus(event) {
     .join(" ")
     .toLowerCase();
 
+  const statusIds = new Set(types.map(type => Number(type.id)).filter(Number.isFinite));
+  // 3 is ESPN's common final state; soccer uses 28 for full time. Other
+  // completion variants are still recognized through completed/state/text,
+  // avoiding guesses that could classify postponed or cancelled games as final.
+  const finalStatusIds = new Set([3, 28]);
+  const liveStatusIds = new Set([2]);
+
   if (
     types.some(type => type.completed === true || String(type.state || "").toLowerCase() === "post")
+    || [...statusIds].some(id => finalStatusIds.has(id))
     || /(^|\b)(final|full time|full-time|ft|completed|complete)(\b|$)/i.test(text)
   ) return "final";
 
   if (
     types.some(type => String(type.state || "").toLowerCase() === "in")
+    || [...statusIds].some(id => liveStatusIds.has(id))
     || /in progress|halftime|half-time|extra time|penalties|live/i.test(text)
   ) return "live";
 
@@ -1641,32 +1650,60 @@ function summaryWeather(summary) {
 
 function venueCityStateFromSummary(summary, competition, mappedEvent = null) {
   const venue = summary?.gameInfo?.venue || competition?.venue || {};
-  const address = venue.address || {};
+  const address = venue.address || competition?.venue?.address || {};
   const homeCode = mappedEvent?.home?.code || "";
   const fallback = TEAM_LOCATION_FALLBACKS[homeCode] || [];
+
+  let city = String(address.city || venue.city || fallback[0] || "").trim();
+  let state = String(address.state || address.stateAbbreviation || address.region || venue.state || fallback[1] || "").trim();
+
+  // ESPN soccer venues often put both values in address.city (for example
+  // "Arlington, Texas") and leave address.state empty. Open-Meteo expects the
+  // city name separately, so split that representation before geocoding.
+  if (!state && city.includes(",")) {
+    const pieces = city.split(",").map(value => value.trim()).filter(Boolean);
+    if (pieces.length > 1) {
+      state = pieces.pop() || "";
+      city = pieces.join(", ");
+    }
+  }
+
   return {
     venueName: venue.fullName || competition?.venue?.fullName || "",
-    city: address.city || venue.city || fallback[0] || "",
-    state: address.state || address.stateAbbreviation || venue.state || fallback[1] || ""
+    city,
+    state,
+    country: String(address.country || venue.country || "").trim()
   };
 }
 
-async function fetchWeatherForCity(city, state) {
+async function fetchWeatherForCity(city, state, country = "") {
   if (!city) return "";
 
   const cityName = String(city || "").trim();
   const stateName = String(state || "").trim();
   const stateUpper = stateName.toUpperCase();
+  const countryName = String(country || "").trim();
+  const countryUpper = countryName.toUpperCase();
 
   try {
     const geoUrl = `https://geocoding-api.open-meteo.com/v1/search?name=${encodeURIComponent(cityName)}&count=10&language=en&format=json`;
     const geo = await fetchJsonUrl(geoUrl, "Weather geocoding");
     const candidates = Array.isArray(geo?.results) ? geo.results : [];
-    const result = candidates.find(item => {
+    const matchingCountry = candidates.filter(item => {
+      if (!countryUpper) return true;
+      const candidateCountry = String(item.country || "").toUpperCase();
+      const candidateCode = String(item.country_code || "").toUpperCase();
+      return candidateCountry === countryUpper
+        || candidateCountry.includes(countryUpper)
+        || countryUpper.includes(candidateCountry)
+        || candidateCode === countryUpper;
+    });
+    const pool = matchingCountry.length ? matchingCountry : candidates;
+    const result = pool.find(item => {
       const admin1 = String(item.admin1 || "").toUpperCase();
       const admin1Code = String(item.admin1_code || "").toUpperCase();
       return !stateUpper || admin1 === stateUpper || admin1Code === stateUpper || admin1.includes(stateUpper);
-    }) || candidates[0];
+    }) || pool[0];
 
     if (!result?.latitude || !result?.longitude) return "";
 
@@ -1702,7 +1739,7 @@ async function enrichTeamEvent(mappedEvent, rawEvent, config) {
 
   const venueParts = venueCityStateFromSummary(summary, competition, mappedEvent);
   const espnWeather = summaryWeather(summary);
-  const weatherText = espnWeather || await fetchWeatherForCity(venueParts.city, venueParts.state);
+  const weatherText = espnWeather || await fetchWeatherForCity(venueParts.city, venueParts.state, venueParts.country);
   const espnUsefulStats = pickUsefulTeamStats(summary, mappedEvent, rawEvent);
   const mlbPregameStats = config.league === "MLB" ? await fetchMlbPregameTeamStats(mappedEvent) : [];
   const usefulStats = config.league === "MLB"
@@ -1724,7 +1761,7 @@ async function enrichTeamEvent(mappedEvent, rawEvent, config) {
   return {
     ...mappedEvent,
     liveStats,
-    weather: weatherText ? { summary: weatherText, city: venueParts.city, state: venueParts.state } : null,
+    weather: weatherText ? { summary: weatherText, city: venueParts.city, state: venueParts.state, country: venueParts.country } : null,
     venue: venueParts.venueName || mappedEvent.venue || ""
   };
 }

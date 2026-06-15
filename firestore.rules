@@ -40,7 +40,7 @@ service cloud.firestore {
 
     match /bets/{betId} {
       allow read: if signedIn();
-      allow create: if approved() && request.resource.data.userId == request.auth.uid;
+      allow create: if admin() || (approved() && request.resource.data.userId == request.auth.uid);
       allow update, delete: if approved() || admin();
     }
 

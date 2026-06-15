@@ -296,14 +296,16 @@ export default async function handler(req, res) {
       eventId: canonicalEventId,
       matchId: matchRef.id,
       betAId: betARef.id,
-      betBId: betBRef.id
+      betBId: betBRef.id,
+      runtime: process.version
     });
   } catch (error) {
     console.error("repair-matchup failed", error);
     return json(res, Number(error.status) || 500, {
       error: error.message || "Matchup repair failed.",
       code: error.code || "REPAIR_MATCHUP_FAILED",
-      stage
+      stage,
+      runtime: process.version
     });
   }
 }

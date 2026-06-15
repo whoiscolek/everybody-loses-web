@@ -1,175 +1,172 @@
-# Everybody Loses v10.67
-
-## v10.67 reliability fixes
-
-- World Cup and other ESPN events now recognize additional final-state signals such as `state: post`, full-time, completed, and competition-level status fields.
-- Score refresh requests bypass browser/CDN caches.
-- An admin browser now performs a targeted live/final refresh and settlement fallback when server maintenance is unavailable, so a completed event does not remain stuck on Now.
-- Matchup repair first repairs existing bets directly through the signed-in admin session. The server endpoint is only needed when a selected user has no existing bet document.
-- Secure repair failures now report the exact server stage and credential/configuration error instead of only `status 500`.
-
-# Everyone Loses v10.60
+# Everybody Loses v10.68
 
 Head-to-head sports betting battles for friends.
 
-## v10.65 interaction stability
+## What v10.68 fixes
 
-- Stops the Double Up countdown from rebuilding the entire application every second.
-- Preserves active form values, focus, text selection, page position, and navigation scroll during unavoidable live-data renders.
-- Defers passive Firestore renders while a user is actively editing a field, then applies them when editing ends.
-- Hardens navigation tab clicks so Admin and other tabs respond consistently during live updates.
+### 1. Vercel repair and maintenance crashes
 
-## What changed in v10.60
+v10.67 installed `firebase-admin` 14 while still pinning the project to Node 20. Firebase Admin 14 requires Node 22 or newer, so Vercel could terminate `/api/repair-matchup` and `/api/maintenance` before either handler returned its own diagnostic JSON.
 
-v10.60 replaces the browser-dependent refresh/settlement system with one server-side maintenance pipeline.
+v10.68:
 
-The sport feeds are still league-specific:
+- pins the repository and Vercel functions to Node `22.x`
+- includes `.nvmrc` with Node 22
+- keeps `firebase-admin` 14
+- reports the runtime version in maintenance and repair responses
+- retains the browser-side admin repair path as a fallback
 
-- MLB: MLB Stats API, with ESPN only for supplemental weather/odds
-- F1: Jolpica/Ergast
-- NASCAR: NASCAR official live data when available
-- IndyCar: INDYCAR official live timing when available
-- MotoGP: MotoGP PulseLive when available
-- NBA, NHL, NFL, NCAA, soccer, World Cup, MLS, Champions League, UFC: ESPN league-specific endpoints
+A game being live does not prevent an administrator from repairing its matchup.
 
-The shared server pipeline now handles what happens after retrieval:
+### 2. Completed World Cup games remaining in Now
 
-1. Discover the full Now window.
-2. Refresh existing live/upcoming events.
-3. Correct status, scores, clocks, stats, dates, and result order.
-4. Remove stale events from Now when their source no longer verifies them.
-5. Mark final events as History.
-6. Settle matched bets idempotently.
-7. Close matched and unmatched bet entries for final events.
-8. Write deterministic ledger entries so all users receive the same result.
-9. Update Profile and Leaderboard through Firestore listeners.
-10. Clean final event/bet/match records after five days while preserving ledger history.
+v10.68 strengthens the entire finalization path:
 
-The browser no longer performs routine finalization or settlement writes. Opening an approved account triggers a quick server refresh, but scheduled maintenance is what makes the app work when nobody has it open.
+- recognizes ESPN `Full Time`, `FT`, `completed`, `state: post`, common final status, and soccer status ID 28
+- bypasses browser and CDN caches on score requests
+- refreshes the current deployment rather than trusting a potentially stale `APP_URL`
+- matches legacy events by league, scheduled date/time, and both teams when source IDs differ
+- checks adjacent dates for live events and events with unsettled matches
+- moves a verified final event to History immediately
+- settles win/loss matchups idempotently
+- voids both the match and its matched bet records when a game ends in a draw
+- expires unmatched bets after the final result
 
-## Required one-time setup
+### 3. World Cup weather
 
-### 1. Firebase Admin credentials in Vercel
+ESPN soccer venues sometimes provide locations as one field such as `Arlington, Texas`, or provide a city and country without a US state. v10.68 separates city/state and uses country-aware Open-Meteo geocoding. When weather genuinely cannot be resolved, the card now says `Weather unavailable for this venue` instead of telling the user to sync repeatedly.
 
-In Firebase Console:
+### 4. Matchup repair
 
-1. Open **Project settings**.
-2. Open **Service accounts**.
-3. Generate a new private key.
-4. Copy the JSON into a Vercel environment variable named:
+The Admin repair action first writes directly through the signed-in administrator. It can reuse existing bets or create a missing bet record under the included v10.68 Firestore rules. The secure Vercel endpoint remains available as a fallback and now runs under the compatible Node runtime.
 
-```txt
-FIREBASE_SERVICE_ACCOUNT_JSON
-```
+## Required deployment steps
 
-Store it as one JSON string. Do not commit the service-account file to GitHub.
+### 1. Replace the repository files and push to GitHub
 
-Alternative split variables are supported:
+Use the complete v10.68 package, including:
 
-```txt
-FIREBASE_PROJECT_ID
-FIREBASE_CLIENT_EMAIL
-FIREBASE_PRIVATE_KEY
-```
+- `package.json`
+- `package-lock.json`
+- `.nvmrc`
+- `api/`
+- `src/`
+- `firestore.rules`
+- `.github/workflows/server-maintenance.yml`
 
-### 2. Maintenance secret in Vercel
+### 2. Confirm Node 22 in Vercel
 
-Generate a long random value and add:
+The repository requests Node `22.x`. In Vercel, also check:
 
-```txt
-MAINTENANCE_SECRET
-```
+**Project → Settings → Build and Deployment → Node.js Version**
 
-Also keep:
+If the project has a manual override, set it to **22.x**. Then redeploy the latest commit. A cache-free redeploy is appropriate after changing the runtime.
+
+### 3. Keep Firebase Admin credentials in Vercel
+
+Preferred variable:
 
 ```txt
-APP_URL=https://everybody-loses-web.vercel.app
+FIREBASE_SERVICE_ACCOUNT_JSON=<complete service-account JSON>
 ```
 
-or replace it with the production domain.
-
-### 3. Scheduled trigger
-
-This repo includes:
+Alternative split variables:
 
 ```txt
-.github/workflows/server-maintenance.yml
+FIREBASE_PROJECT_ID=everyone-loses
+FIREBASE_CLIENT_EMAIL=...
+FIREBASE_PRIVATE_KEY=...
 ```
 
-In GitHub repository settings, add these Actions secrets:
+Do not commit the service-account file or private key.
+
+### 4. Deploy the included Firestore rules
+
+Pushing to Vercel does not publish Firebase rules. Publish `firestore.rules` once through Firebase Console, or run:
+
+```bash
+firebase deploy --only firestore:rules
+```
+
+The v10.68 rule change permits an approved administrator to create a missing bet record during matchup repair.
+
+### 5. Verify the GitHub Actions maintenance secret
+
+The workflow now falls back to the repository's confirmed production domain:
 
 ```txt
-MAINTENANCE_URL=https://everybody-loses-web.vercel.app
-MAINTENANCE_SECRET=<same value used in Vercel>
+https://everybody-loses.vercel.app
 ```
 
-The workflow calls the maintenance endpoint every five minutes. It can also be run manually from the GitHub Actions page.
-
-### 4. Deploy Firestore rules
-
-Publish the included:
+In GitHub repository settings, keep:
 
 ```txt
-firestore.rules
+MAINTENANCE_SECRET=<same value stored in Vercel>
 ```
 
-The new rules make routine event and ledger writes server-controlled. Users can still place and match bets, accept double-ups, and read their own ledger.
+`MAINTENANCE_URL` is optional and can override the fallback if the production domain changes. The previous workflow fallback used `everybody-loses-web.vercel.app`, which was not the production domain linked by this repository.
 
-### 5. Redeploy Vercel
+### 6. Verify after deployment
 
-Redeploy after adding the environment variables.
+While signed in as admin:
 
-## Maintenance endpoint
+1. Open **Admin**.
+2. Press **Run server refresh now**.
+3. Confirm the Server maintenance card reports version `10.68` and a Node `v22...` runtime.
+4. Confirm the completed World Cup event moves to History.
+5. Confirm its match is settled, or voided with no ledger debt if it ended in a draw.
+6. Retry **Repair/create match** for the ongoing game. Live status is allowed and should not block repair.
 
-Scheduled/full run:
+## Maintenance design
+
+The scheduled pipeline runs every five minutes and:
+
+1. discovers the Now window
+2. refreshes existing live/upcoming/recent events
+3. updates scores, clocks, stats, weather, dates, and result order
+4. moves final events to History
+5. settles matched bets idempotently
+6. closes matched and unmatched bet records
+7. writes deterministic ledger entries
+8. removes old final event records after the retention period while preserving ledger history
+
+Scheduled/full request:
 
 ```txt
 GET /api/maintenance?mode=auto
 Authorization: Bearer <MAINTENANCE_SECRET>
 ```
 
-Quick refresh for already-known events:
+Foreground quick request:
 
 ```txt
 POST /api/maintenance?mode=quick
 ```
 
-Approved clients call the quick mode on startup and when returning to the app. A Firestore lease prevents overlapping runs.
-
-## Admin health monitor
-
-Admin now includes a **Server maintenance** card showing:
-
-- whether maintenance is healthy or stale
-- how long ago the last successful run occurred
-- source request totals
-- ledger writes from the last run
-- the most recent server error
-- a manual **Run server refresh now** button
-
-## Important settlement behavior
+## Settlement behavior
 
 - Team win/loss: loser owes winner the effective matched amount.
-- Accepted double-up: settlement uses the doubled amount.
-- Draw/tie: matched bets are voided and no ledger debt is created.
-- Unmatched bets on final events: marked expired so they disappear from My Bets.
-- Ledger IDs are deterministic by event + match, preventing duplicate settlement rows.
-- Existing event IDs and source IDs are normalized during settlement.
+- Accepted Double Up: settlement uses the doubled amount.
+- Draw/tie: match and matched bets are voided; no ledger debt is created.
+- Unmatched bets on a final event: expired.
+- Ledger IDs are deterministic by event and match, preventing duplicate debt entries.
 
 ## Local development
 
+Use Node 22:
+
 ```bash
-npm install
+npm ci
 npm run dev
 ```
 
-## Production build
+Production build:
 
 ```bash
 npm run build
 ```
 
-## Other optional environment variables
+## Optional integrations
 
 ```txt
 ODDS_API_KEY
@@ -178,18 +175,4 @@ NOTIFICATION_FROM_EMAIL
 APP_URL
 ```
 
-`ODDS_API_KEY` remains limited to matched-bet odds workflows. ESPN/imported odds remain the default display.
-## v10.62 changes
-
-- Added a Now-tab bet activity filter with All games, bets placed, active matched bets, and no bets.
-- Team and country matchups now display full names instead of abbreviations whenever imported source data provides them.
-- Refreshing an existing team event updates its display names even when bet structure is protected.
-
-
-
-## v10.66 changes
-
-- Moved Matchup repair to an authenticated Vercel server endpoint using Firebase Admin.
-- Admins can now create bets for either selected user without browser Firestore rules rejecting the batch.
-- Added visible progress, success, validation, authorization, and server-error feedback to Repair/create match.
-- The button disables while the repair is running to prevent duplicate submissions.
+`APP_URL` is now only a fallback. Maintenance normally derives the host of the deployment that received the request.

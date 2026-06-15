@@ -35,7 +35,7 @@ function buildEmail({ recipient, accepter, event, match, appUrl }) {
   const time = formatTime(event?.startTime);
   const amount = money(match?.amount);
   const pick = escapeText(match?.pick || "their side");
-  const url = appUrl || "https://everybody-loses-web.vercel.app";
+  const url = appUrl || "https://everybody-loses.vercel.app";
 
   return {
     to: recipient.email,

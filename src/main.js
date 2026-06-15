@@ -597,7 +597,7 @@ function eventHasActiveBetInterest(eventId) {
 
 function eventWeatherText(event) {
   const text = event?.weather?.summary || event?.weatherText || "";
-  return text || "Weather pending — sync today to refresh.";
+  return text || "Weather unavailable for this venue.";
 }
 
 function eventHasMatchedOddsInterest(eventId) {
@@ -2587,8 +2587,9 @@ function renderMaintenanceHealth() {
   const ageMinutes = lastSuccessMs ? Math.max(0, Math.round((Date.now() - lastSuccessMs) / 60000)) : null;
   const healthy = ageMinutes !== null && ageMinutes <= 12 && !maintenance.lastError;
   const status = maintenance.running ? "Running now" : healthy ? "Healthy" : ageMinutes === null ? "Not configured" : "Stale / needs attention";
+  const runtimeDetail = [summary.version ? `v${summary.version}` : "", summary.runtime || ""].filter(Boolean).join(" · ");
   const detail = lastSuccessMs
-    ? `Last successful server run ${ageMinutes} minute${ageMinutes === 1 ? "" : "s"} ago · ${summary.sourceSuccesses || 0}/${summary.sourceRequests || 0} source requests · ${summary.settlement?.ledgerWrites || 0} ledger write${summary.settlement?.ledgerWrites === 1 ? "" : "s"}`
+    ? `Last successful server run ${ageMinutes} minute${ageMinutes === 1 ? "" : "s"} ago · ${summary.sourceSuccesses || 0}/${summary.sourceRequests || 0} source requests · ${summary.settlement?.ledgerWrites || 0} ledger write${summary.settlement?.ledgerWrites === 1 ? "" : "s"}${runtimeDetail ? ` · ${runtimeDetail}` : ""}`
     : "No server maintenance run has been recorded yet. Configure the scheduled maintenance workflow before relying on unattended updates.";
   return `
     <div class="admin-card maintenance-health ${healthy ? "healthy" : "warning"}">
@@ -3567,45 +3568,142 @@ async function settleEvent(eventId, options = {}) {
 }
 
 async function settleTeamEvent(event, options = {}) {
-  if (!event.score) { if (!options.silent) alert("Team/custom event needs a final score first."); return; }
+  if (!event.score) { if (!options.silent) alert("Team/custom event needs a final score first."); return 0; }
 
   const eventId = event.firestoreId || event.id;
   const eventIds = eventIdCandidates(event);
-  const winningSide = Number(event.score.home) > Number(event.score.away)
-    ? "home"
-    : Number(event.score.away) > Number(event.score.home)
-      ? "away"
-      : null;
-
-  if (!winningSide) { if (!options.silent) alert("Tie settlement is not implemented yet."); return; }
-
+  const homeScore = Number(event.score.home);
+  const awayScore = Number(event.score.away);
+  const winningSide = homeScore > awayScore ? "home" : awayScore > homeScore ? "away" : null;
   const matches = Object.values(state.matches)
     .filter(match => eventIds.has(String(match.eventId || "")) && (match.type === EVENT_TYPES.TEAM || (!match.type && match.sideA && match.sideB)));
-
+  const eventBets = Object.values(state.bets || {}).filter(bet => eventIds.has(String(bet.eventId || "")));
   const batch = writeBatch(db);
   const optimisticLedger = {};
   const optimisticMatches = {};
+  const optimisticBets = {};
   let changed = 0;
+  let writes = 0;
   const localNow = new Date().toISOString();
 
   if (!options.silent) {
-    settlementSyncMessage = `Posting settlement for ${eventDisplayTitle(event)}…`;
+    settlementSyncMessage = winningSide
+      ? `Posting settlement for ${eventDisplayTitle(event)}…`
+      : `Voiding matched bets for the ${eventDisplayTitle(event)} draw…`;
     renderApp();
   }
 
-  for (const match of matches) {
-    const matchId = match.firestoreId || match.id;
-    const winner = match.sideA === winningSide ? match.userA : match.userB;
-    const loser = winner === match.userA ? match.userB : match.userA;
-    const amount = matchEffectiveAmount(match);
+  const matchedBetIds = new Set(matches.flatMap(match => [match.betA, match.betB]).filter(Boolean).map(String));
 
+  if (!winningSide) {
+    for (const match of matches) {
+      if (["cancelled", "void"].includes(String(match.status || ""))) continue;
+      const matchId = match.firestoreId || match.id;
+      if (!matchId) continue;
+
+      batch.set(doc(db, "matches", matchId), {
+        eventId,
+        status: "void",
+        result: "draw",
+        settledAmount: 0,
+        winner: null,
+        loser: null,
+        settledAt: serverTimestamp(),
+        updatedAt: serverTimestamp()
+      }, { merge: true });
+      optimisticMatches[matchId] = {
+        ...match,
+        eventId,
+        status: "void",
+        result: "draw",
+        settledAmount: 0,
+        winner: null,
+        loser: null,
+        updatedAt: localNow
+      };
+      writes += 1;
+      changed += 1;
+
+      for (const betId of [match.betA, match.betB].filter(Boolean).map(String)) {
+        const bet = state.bets[betId] || Object.values(state.bets || {}).find(item => String(item.firestoreId || item.id) === betId);
+        batch.set(doc(db, "bets", betId), {
+          eventId,
+          status: "void",
+          updatedAt: serverTimestamp()
+        }, { merge: true });
+        optimisticBets[betId] = { ...(bet || {}), eventId, status: "void", updatedAt: localNow };
+        writes += 1;
+      }
+
+      const staleLedger = Object.values(state.ledgerEntries || {}).find(entry =>
+        eventIds.has(String(entry.eventId || ""))
+        && String(entry.matchId || "") === String(matchId)
+      );
+      if (staleLedger) {
+        batch.delete(doc(db, "ledgerEntries", staleLedger.firestoreId || staleLedger.id));
+        optimisticLedger[staleLedger.firestoreId || staleLedger.id] = null;
+        writes += 1;
+      }
+    }
+
+    // Unmatched offers did not win or lose; close them as expired so no stale
+    // World Cup bets remain active after the final whistle.
+    for (const bet of eventBets) {
+      const betId = String(bet.firestoreId || bet.id || "");
+      if (!betId || matchedBetIds.has(betId) || ["settled", "expired", "void", "cancelled"].includes(String(bet.status || ""))) continue;
+      batch.set(doc(db, "bets", betId), { eventId, status: "expired", updatedAt: serverTimestamp() }, { merge: true });
+      optimisticBets[betId] = { ...bet, eventId, status: "expired", updatedAt: localNow };
+      writes += 1;
+    }
+
+    batch.set(doc(db, "events", eventId), {
+      boardState: "history",
+      hiddenFromNow: true,
+      settlementStatus: "complete",
+      settledAt: serverTimestamp(),
+      updatedAt: serverTimestamp()
+    }, { merge: true });
+    writes += 1;
+
+    await batch.commit();
+    state.matches = { ...state.matches, ...optimisticMatches };
+    state.bets = { ...state.bets, ...optimisticBets };
+    for (const [ledgerId, ledgerValue] of Object.entries(optimisticLedger)) {
+      if (ledgerValue === null) delete state.ledgerEntries[ledgerId];
+    }
+    state.events[eventId] = {
+      ...event,
+      boardState: "history",
+      hiddenFromNow: true,
+      settlementStatus: "complete",
+      updatedAt: localNow,
+      firestoreId: eventId
+    };
+    settlementSyncMessage = `Draw confirmed for ${eventDisplayTitle(event)}. Matched bets were voided and no ledger debt was created.`;
+    renderApp();
+
+    if (!options.silent) alert(`Voided ${changed} matched bet${changed === 1 ? "" : "s"} because ${eventDisplayTitle(event)} ended in a draw.`);
+    return changed;
+  }
+
+  for (const match of matches) {
+    if (["cancelled", "void"].includes(String(match.status || ""))) continue;
+    const matchId = match.firestoreId || match.id;
+    if (!matchId) continue;
+
+    const winner = match.sideA === winningSide
+      ? match.userA
+      : match.sideB === winningSide
+        ? match.userB
+        : null;
+    const loser = winner === match.userA ? match.userB : winner === match.userB ? match.userA : null;
+    const amount = matchEffectiveAmount(match);
     if (!winner || !loser || !Number.isFinite(amount) || amount <= 0) continue;
 
     const existingLedger = findLedgerForMatch(eventId, matchId, loser, winner);
     const ledgerRef = existingLedger
       ? doc(db, "ledgerEntries", existingLedger.firestoreId || existingLedger.id)
       : doc(db, "ledgerEntries", matchLedgerId(eventId, matchId));
-
     const ledgerPayload = {
       id: existingLedger?.id || ledgerRef.id,
       firestoreId: existingLedger?.firestoreId || ledgerRef.id,
@@ -3622,63 +3720,84 @@ async function settleTeamEvent(event, options = {}) {
       updatedAt: localNow
     };
 
-    if (existingLedger) {
-      batch.set(ledgerRef, { ...ledgerPayload, updatedAt: serverTimestamp() }, { merge: true });
-    } else {
-      batch.set(ledgerRef, {
-        ...ledgerPayload,
-        createdAt: serverTimestamp(),
-        updatedAt: serverTimestamp()
-      }, { merge: true });
+    batch.set(ledgerRef, {
+      ...ledgerPayload,
+      createdAt: existingLedger?.createdAt || serverTimestamp(),
+      updatedAt: serverTimestamp()
+    }, { merge: true });
+    batch.set(doc(db, "matches", matchId), {
+      eventId,
+      status: "settled",
+      settledAmount: amount,
+      winner,
+      loser,
+      settledAt: serverTimestamp(),
+      updatedAt: serverTimestamp()
+    }, { merge: true });
+    writes += 2;
+
+    for (const betId of [match.betA, match.betB].filter(Boolean).map(String)) {
+      const bet = state.bets[betId] || Object.values(state.bets || {}).find(item => String(item.firestoreId || item.id) === betId);
+      batch.set(doc(db, "bets", betId), { eventId, status: "settled", updatedAt: serverTimestamp() }, { merge: true });
+      optimisticBets[betId] = { ...(bet || {}), eventId, status: "settled", updatedAt: localNow };
+      writes += 1;
     }
 
-    const matchPatch = {
+    optimisticLedger[ledgerPayload.firestoreId] = ledgerPayload;
+    optimisticMatches[matchId] = {
       ...match,
+      eventId,
       status: "settled",
       settledAmount: amount,
       winner,
       loser,
       updatedAt: localNow
     };
-
-    if (match.status !== "settled" || Number(match.settledAmount || 0) !== amount || match.winner !== winner || match.loser !== loser) {
-      batch.set(doc(db, "matches", matchId), {
-        status: "settled",
-        settledAmount: amount,
-        winner,
-        loser,
-        updatedAt: serverTimestamp()
-      }, { merge: true });
-    }
-
-    optimisticLedger[ledgerPayload.firestoreId] = ledgerPayload;
-    optimisticMatches[matchId] = matchPatch;
     changed += 1;
   }
 
-  if (changed) {
-    await batch.commit();
-
-    // Update the current browser immediately after the write succeeds instead of
-    // waiting for the Firestore listener round trip. The listener will still
-    // reconcile the canonical server timestamps shortly after.
-    state.ledgerEntries = { ...state.ledgerEntries, ...optimisticLedger };
-    state.matches = { ...state.matches, ...optimisticMatches };
-    settlementSyncMessage = `Settlement posted for ${eventDisplayTitle(event)}. Ledger/profile/leaderboard updated locally; syncing server confirmation…`;
-    renderApp();
-
-    setTimeout(() => {
-      if (settlementSyncMessage.includes(eventDisplayTitle(event))) {
-        settlementSyncMessage = "";
-        renderApp();
-      }
-    }, 6500);
-  } else if (!options.silent) {
-    settlementSyncMessage = "";
-    renderApp();
+  for (const bet of eventBets) {
+    const betId = String(bet.firestoreId || bet.id || "");
+    if (!betId || matchedBetIds.has(betId) || ["settled", "expired", "void", "cancelled"].includes(String(bet.status || ""))) continue;
+    batch.set(doc(db, "bets", betId), { eventId, status: "expired", updatedAt: serverTimestamp() }, { merge: true });
+    optimisticBets[betId] = { ...bet, eventId, status: "expired", updatedAt: localNow };
+    writes += 1;
   }
 
+  batch.set(doc(db, "events", eventId), {
+    boardState: "history",
+    hiddenFromNow: true,
+    settlementStatus: "complete",
+    settledAt: serverTimestamp(),
+    updatedAt: serverTimestamp()
+  }, { merge: true });
+  writes += 1;
+
+  if (writes) await batch.commit();
+
+  state.ledgerEntries = { ...state.ledgerEntries, ...optimisticLedger };
+  state.matches = { ...state.matches, ...optimisticMatches };
+  state.bets = { ...state.bets, ...optimisticBets };
+  state.events[eventId] = {
+    ...event,
+    boardState: "history",
+    hiddenFromNow: true,
+    settlementStatus: "complete",
+    updatedAt: localNow,
+    firestoreId: eventId
+  };
+  settlementSyncMessage = `Settlement posted for ${eventDisplayTitle(event)}. Ledger/profile/leaderboard updated locally; syncing server confirmation…`;
+  renderApp();
+
+  setTimeout(() => {
+    if (settlementSyncMessage.includes(eventDisplayTitle(event))) {
+      settlementSyncMessage = "";
+      renderApp();
+    }
+  }, 6500);
+
   if (!options.silent) alert(`Settled/repaired ${changed} matched bet${changed === 1 ? "" : "s"} for ${eventDisplayTitle(event)}.`);
+  return changed;
 }
 
 async function settleRankedEvent(event, options = {}) {
@@ -3836,6 +3955,42 @@ function apiEventDocId(event) {
     .toUpperCase();
 }
 
+function normalizeTeamIdentityText(value) {
+  return String(value || "")
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "")
+    .trim();
+}
+
+function teamIdentityAliases(team = {}) {
+  return [...new Set([
+    team.code,
+    team.name,
+    team.displayName,
+    team.shortDisplayName,
+    team.location
+  ].map(normalizeTeamIdentityText).filter(Boolean))];
+}
+
+function teamEventsLikelySame(saved, incoming) {
+  if (saved?.type !== EVENT_TYPES.TEAM || incoming?.type !== EVENT_TYPES.TEAM) return false;
+  if (normalizeTeamIdentityText(saved.league) !== normalizeTeamIdentityText(incoming.league)) return false;
+
+  const savedStart = new Date(saved.startTime || 0).getTime();
+  const incomingStart = new Date(incoming.startTime || 0).getTime();
+  const startsClose = Number.isFinite(savedStart)
+    && Number.isFinite(incomingStart)
+    && Math.abs(savedStart - incomingStart) <= 12 * 60 * 60 * 1000;
+  const sameDisplayDate = dateISOInDisplayTimeZone(saved.startTime || 0) === dateISOInDisplayTimeZone(incoming.startTime || 0);
+  if (!startsClose && !sameDisplayDate) return false;
+
+  const intersects = (left, right) => left.some(value => right.includes(value));
+  return intersects(teamIdentityAliases(saved.away), teamIdentityAliases(incoming.away))
+    && intersects(teamIdentityAliases(saved.home), teamIdentityAliases(incoming.home));
+}
+
 function eventMatchesApiImport(saved, apiEvent) {
   if (!saved || !apiEvent) return false;
 
@@ -3850,6 +4005,11 @@ function eventMatchesApiImport(saved, apiEvent) {
   const savedEspn = saved.externalIds?.espnEventId || saved.externalIds?.eventId || "";
   const apiEspn = apiEvent.externalIds?.espnEventId || apiEvent.externalIds?.eventId || "";
   if (savedEspn && apiEspn && String(savedEspn) === String(apiEspn)) return true;
+
+  // Older imports sometimes lost or changed source IDs when team names were
+  // expanded from abbreviations. Match the same scheduled teams as a fallback
+  // so final scores cannot create a second event while the original stays live.
+  if (teamEventsLikelySame(saved, apiEvent)) return true;
 
   const savedTitle = String(saved.title || "").trim().toLowerCase();
   const apiTitle = String(apiEvent.title || "").trim().toLowerCase();
@@ -4471,7 +4631,12 @@ async function syncLiveScoreEvents(options = {}) {
     const displayDate = dateISOInDisplayTimeZone(event.startTime || Date.now());
     const datesToTry = new Set([displayDate]);
 
-    if (event.status === "live") {
+    const eventIds = eventIdCandidates(event);
+    const hasUnsettledMatch = Object.values(state.matches || {}).some(match =>
+      eventIds.has(String(match.eventId || ""))
+      && !["settled", "void", "cancelled"].includes(String(match.status || ""))
+    );
+    if (event.status === "live" || hasUnsettledMatch) {
       const d = new Date(`${displayDate}T12:00:00Z`);
       d.setUTCDate(d.getUTCDate() - 1);
       datesToTry.add(d.toISOString().slice(0, 10));
@@ -5166,19 +5331,20 @@ async function repairMatchupDirectlyInBrowser({ eventId, userA, userB, pickA, pi
 
   const betA = reusableRepairBet(event, userA, canonicalFightId);
   const betB = reusableRepairBet(event, userB, canonicalFightId);
-  if (!betA || !betB) {
-    const missing = [!betA ? state.users[userA]?.displayName || "User A" : "", !betB ? state.users[userB]?.displayName || "User B" : ""]
-      .filter(Boolean)
-      .join(" and ");
-    const error = new Error(`No reusable existing bet was found for ${missing}. Server repair is required to create a missing bet.`);
-    error.needsServer = true;
-    throw error;
-  }
-
   const eventDocId = event.firestoreId || event.id;
-  const betAId = betA.firestoreId || betA.id;
-  const betBId = betB.firestoreId || betB.id;
-  if (!eventDocId || !betAId || !betBId) throw new Error("The event or one of its bets is missing a Firestore document ID.");
+  if (!eventDocId) throw new Error("The event is missing a Firestore document ID.");
+
+  // Reuse an existing bet when possible. If one side never created a bet, an
+  // approved admin can create the missing record directly under the v10.68
+  // Firestore rules; older rules will reject this and trigger the server fallback.
+  const betARef = betA
+    ? doc(db, "bets", betA.firestoreId || betA.id)
+    : doc(collection(db, "bets"));
+  const betBRef = betB
+    ? doc(db, "bets", betB.firestoreId || betB.id)
+    : doc(collection(db, "bets"));
+  const betAId = betARef.id;
+  const betBId = betBRef.id;
 
   const conflicts = Object.values(state.matches || {}).filter(match => {
     if (!recordMatchesEvent(match, event)) return false;
@@ -5217,8 +5383,22 @@ async function repairMatchupDirectlyInBrowser({ eventId, userA, userB, pickA, pi
     updatedAt: serverTimestamp()
   };
 
-  batch.set(doc(db, "bets", betAId), { ...sharedBetPatch, side: sideA }, { merge: true });
-  batch.set(doc(db, "bets", betBId), { ...sharedBetPatch, side: sideB }, { merge: true });
+  batch.set(betARef, {
+    id: betAId,
+    type: event.type,
+    userId: userA,
+    ...sharedBetPatch,
+    side: sideA,
+    createdAt: betA?.createdAt || serverTimestamp()
+  }, { merge: true });
+  batch.set(betBRef, {
+    id: betBId,
+    type: event.type,
+    userId: userB,
+    ...sharedBetPatch,
+    side: sideB,
+    createdAt: betB?.createdAt || serverTimestamp()
+  }, { merge: true });
 
   const matchRef = doc(collection(db, "matches"));
   batch.set(matchRef, {
@@ -5244,7 +5424,7 @@ async function repairMatchupDirectlyInBrowser({ eventId, userA, userB, pickA, pi
   await batch.commit();
   return {
     ok: true,
-    message: `Match repaired directly in Firestore. Removed ${conflicts.length} conflicting match${conflicts.length === 1 ? "" : "es"} and created the intended match.`
+    message: `Match repaired directly in Firestore. Removed ${conflicts.length} conflicting match${conflicts.length === 1 ? "" : "es"}, ${betA && betB ? "reused both bets" : "created the missing bet record"}, and created the intended match.`
   };
 }
 

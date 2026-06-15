@@ -18,7 +18,7 @@ const LEASE_MS = 75 * 1000;
 const NOW_LOOKAHEAD_MS = 48 * 60 * 60 * 1000;
 const PREGAME_LOOKBACK_MS = 4 * 60 * 60 * 1000;
 const HISTORY_RETENTION_MS = 5 * 24 * 60 * 60 * 1000;
-const MAINTENANCE_VERSION = "10.67";
+const MAINTENANCE_VERSION = "10.68";
 
 function json(res, status, body) {
   res.statusCode = status;
@@ -126,6 +126,53 @@ function normalizeTitle(value) {
   return String(value || "").toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
 }
 
+function normalizeTeamToken(value) {
+  return String(value || "")
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "")
+    .trim();
+}
+
+function teamAliases(team = {}) {
+  return [...new Set([
+    team.code,
+    team.name,
+    team.displayName,
+    team.shortDisplayName,
+    team.location
+  ].map(normalizeTeamToken).filter(Boolean))];
+}
+
+function teamIdentityKeys(event = {}) {
+  if (event.type !== EVENT_TYPES.TEAM) return [];
+  const league = normalizeTeamToken(event.league);
+  const day = dateForEvent(event);
+  const away = teamAliases(event.away);
+  const home = teamAliases(event.home);
+  const keys = [];
+  for (const awayKey of away) {
+    for (const homeKey of home) keys.push(`${league}|${day}|${awayKey}|${homeKey}`);
+  }
+  return [...new Set(keys)];
+}
+
+function teamEventsLookSame(saved = {}, incoming = {}) {
+  if (saved.type !== EVENT_TYPES.TEAM || incoming.type !== EVENT_TYPES.TEAM) return false;
+  if (normalizeTeamToken(saved.league) !== normalizeTeamToken(incoming.league)) return false;
+
+  const savedStart = dateMs(saved.startTime);
+  const incomingStart = dateMs(incoming.startTime);
+  const startsClose = savedStart && incomingStart && Math.abs(savedStart - incomingStart) <= 12 * 60 * 60 * 1000;
+  const sameDay = dateForEvent(saved) === dateForEvent(incoming);
+  if (!startsClose && !sameDay) return false;
+
+  const intersects = (left, right) => left.some(value => right.includes(value));
+  return intersects(teamAliases(saved.away), teamAliases(incoming.away))
+    && intersects(teamAliases(saved.home), teamAliases(incoming.home));
+}
+
 function canonicalKey(event = {}) {
   const league = String(event.league || "").toLowerCase();
   const type = String(event.type || "");
@@ -213,11 +260,16 @@ function requestAuthorized(req) {
 }
 
 function inferOrigin(req) {
+  // Always call the API on the same deployment that invoked maintenance. An old
+  // or mistyped APP_URL previously sent refreshes to a different Vercel domain,
+  // leaving live/final events stale even though maintenance itself was running.
+  const host = String(req.headers["x-forwarded-host"] || req.headers.host || "").split(",")[0].trim();
+  const proto = String(req.headers["x-forwarded-proto"] || "https").split(",")[0].trim() || "https";
+  if (host) return `${proto}://${host}`;
+
   const configured = String(process.env.APP_URL || "").replace(/\/$/, "");
   if (configured) return configured.startsWith("http") ? configured : `https://${configured}`;
-  const host = req.headers["x-forwarded-host"] || req.headers.host;
-  const proto = req.headers["x-forwarded-proto"] || "https";
-  return `${proto}://${host}`;
+  throw new Error("Could not determine the deployment origin for source refreshes.");
 }
 
 async function mapLimit(items, limit, mapper) {
@@ -247,7 +299,7 @@ async function fetchSource(origin, league, dateISO) {
       signal: controller.signal,
       cache: "no-store",
       headers: {
-        "User-Agent": "Everyone-Loses-Maintenance/10.67",
+        "User-Agent": "Everyone-Loses-Maintenance/10.68",
         "Cache-Control": "no-cache, no-store, max-age=0",
         Pragma: "no-cache"
       }
@@ -371,6 +423,7 @@ async function settleFinalEvents(db, FieldValue, events, bets, matches, ledgerEn
     const eventMatches = matches.filter(match => recordBelongs(match, event));
     const eventBets = bets.filter(bet => recordBelongs(bet, event));
     let changed = false;
+    let eventDeferred = 0;
     const batch = db.batch();
 
     if (event.type === EVENT_TYPES.TEAM) {
@@ -399,10 +452,20 @@ async function settleFinalEvents(db, FieldValue, events, bets, matches, ledgerEn
             settledAt: FieldValue.serverTimestamp(),
             updatedAt: FieldValue.serverTimestamp()
           }, { merge: true });
+          const staleLedger = ledgerByMatch.get(matchId) || ledgerEntries.find(entry =>
+            recordBelongs(entry, event) && String(entry.matchId || "") === String(matchId)
+          );
+          if (staleLedger) {
+            batch.delete(db.collection("ledgerEntries").doc(staleLedger.firestoreId || staleLedger.id));
+          }
           summary.tiesVoided += 1;
         } else {
-          const winner = match.sideA === winningSide ? match.userA : match.userB;
-          const loser = winner === match.userA ? match.userB : match.userA;
+          const winner = match.sideA === winningSide
+            ? match.userA
+            : match.sideB === winningSide
+              ? match.userB
+              : null;
+          const loser = winner === match.userA ? match.userB : winner === match.userB ? match.userA : null;
           if (!winner || !loser || amount <= 0) continue;
           const existingLedger = ledgerByMatch.get(matchId) || ledgerEntries.find(entry =>
             recordBelongs(entry, event)
@@ -456,11 +519,11 @@ async function settleFinalEvents(db, FieldValue, events, bets, matches, ledgerEn
         if (match.status === "cancelled" || match.status === "void") continue;
         const fight = (event.fights || []).find(f => String(f.id) === String(match.fightId));
         const winnerName = String(resultMap[match.fightId] || "").toLowerCase();
-        if (!fight || !winnerName) { summary.deferred += 1; continue; }
+        if (!fight || !winnerName) { summary.deferred += 1; eventDeferred += 1; continue; }
         const sideAName = String(match.sideA === "fighterA" ? fight.fighterA : fight.fighterB).toLowerCase();
         const sideBName = String(match.sideB === "fighterA" ? fight.fighterA : fight.fighterB).toLowerCase();
         const winner = winnerName === sideAName ? match.userA : winnerName === sideBName ? match.userB : null;
-        if (!winner) { summary.deferred += 1; continue; }
+        if (!winner) { summary.deferred += 1; eventDeferred += 1; continue; }
         const loser = winner === match.userA ? match.userB : match.userA;
         const matchId = match.firestoreId || match.id;
         const amount = effectiveAmount(match);
@@ -546,7 +609,7 @@ async function settleFinalEvents(db, FieldValue, events, bets, matches, ledgerEn
       batch.set(db.collection("events").doc(eventId), {
         boardState: "history",
         hiddenFromNow: true,
-        settlementStatus: summary.deferred ? "partial" : "complete",
+        settlementStatus: eventDeferred ? "partial" : "complete",
         settledAt: FieldValue.serverTimestamp(),
         updatedAt: FieldValue.serverTimestamp()
       }, { merge: true });
@@ -614,6 +677,7 @@ async function runMaintenance(req, mode) {
 
     const byIdentity = new Map();
     const byCanonical = new Map();
+    const byTeamIdentity = new Map();
     const indexEvent = event => {
       for (const id of eventIdentityValues(event)) {
         if (!byIdentity.has(id)) byIdentity.set(id, []);
@@ -622,6 +686,10 @@ async function runMaintenance(req, mode) {
       const key = canonicalKey(event);
       if (!byCanonical.has(key)) byCanonical.set(key, []);
       byCanonical.get(key).push(event);
+      for (const teamKey of teamIdentityKeys(event)) {
+        if (!byTeamIdentity.has(teamKey)) byTeamIdentity.set(teamKey, []);
+        byTeamIdentity.get(teamKey).push(event);
+      }
     };
     events.forEach(indexEvent);
 
@@ -642,7 +710,16 @@ async function runMaintenance(req, mode) {
       for (const incoming of result.events) {
         const identityCandidates = eventIdentityValues(incoming).flatMap(id => byIdentity.get(id) || []);
         const canonicalCandidates = byCanonical.get(canonicalKey(incoming)) || [];
-        const candidates = [...new Set([...identityCandidates, ...canonicalCandidates])];
+        const teamKeyCandidates = teamIdentityKeys(incoming).flatMap(key => byTeamIdentity.get(key) || []);
+        const nearbyTeamCandidates = incoming.type === EVENT_TYPES.TEAM
+          ? events.filter(saved => teamEventsLookSame(saved, incoming))
+          : [];
+        const candidates = [...new Set([
+          ...identityCandidates,
+          ...canonicalCandidates,
+          ...teamKeyCandidates,
+          ...nearbyTeamCandidates
+        ])];
         const existing = chooseExisting(candidates, refsByEventId);
         const docId = existing?.firestoreId || existing?.id || deterministicEventId(incoming);
         const nowIso = new Date().toISOString();
@@ -698,6 +775,7 @@ async function runMaintenance(req, mode) {
     const historyRemoved = await cleanupHistory(db, FieldValue, events, bets, matches);
     const summary = {
       version: MAINTENANCE_VERSION,
+      runtime: process.version,
       mode,
       fullDiscovery,
       durationMs: Date.now() - started,

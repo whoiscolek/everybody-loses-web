@@ -35,7 +35,7 @@ function buildEmail({ recipient, bettor, event, bet, appUrl }) {
   const amount = money(bet?.amount);
   const code = escapeText(event?.shortCode || event?.id || "");
   const time = formatTime(event?.startTime);
-  const url = appUrl || "https://everybody-loses-web.vercel.app";
+  const url = appUrl || "https://everybody-loses.vercel.app";
 
   return {
     to: recipient.email,

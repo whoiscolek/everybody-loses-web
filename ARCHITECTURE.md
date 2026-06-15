@@ -1,79 +1,75 @@
-# v10.60 Event Lifecycle Audit
+# Everybody Loses v10.68 Architecture
 
-## Root causes in v10.59
+## Client
 
-The repeated failures were not primarily caused by MLB, NHL, World Cup, or any individual source.
+- Vite single-page application in `src/main.js`
+- Firebase Web SDK for authentication and real-time Firestore listeners
+- Approved admins retain a foreground refresh and settlement fallback
+- Admin matchup repair first attempts one atomic Firestore batch
 
-The shared lifecycle had four architectural defects:
+## Server functions
 
-1. **Browser-dependent maintenance**
-   - Discovery, score refresh, finalization, and settlement ran in client browsers.
-   - Full discovery was admin-only.
-   - If no qualifying browser was open, Firestore stayed stale indefinitely.
+- `api/espn-events.js`: league-specific event retrieval and enrichment
+- `api/maintenance.js`: shared discovery, refresh, finalization, settlement, and cleanup pipeline
+- `api/repair-matchup.js`: authenticated server-side repair fallback
+- `api/_admin.js`: Firebase Admin initialization and credential normalization
+- notification and odds functions remain independent
 
-2. **Multiple competing maintenance loops**
-   - Admin discovery, approved-user live refresh, settlement repair, cleanup, and localStorage throttles ran separately.
-   - The system could refresh an event without settling it, or attempt settlement before the final status arrived.
+## Runtime
 
-3. **Stale Now visibility was too permissive**
-   - Pregame events remained visible for a 12-hour lookback.
-   - Events marked `live` could remain visible indefinitely.
-   - There was no central server state declaring an event verified, stale, archived, or final.
+`firebase-admin` 14 requires Node 22 or newer. The repository pins:
 
-4. **Settlement did not fully close the lifecycle**
-   - Team settlement could write a match/ledger result without updating both underlying bet documents.
-   - Already-settled matches with missing ledger rows or still-matched bet documents were not always repaired.
-   - Event IDs could differ between Firestore document IDs and source IDs.
-
-## v10.60 lifecycle
-
-```text
-sport-specific source
-        ↓
-server maintenance lease
-        ↓
-discovery + stable identity matching
-        ↓
-canonical Firestore event
-        ↓
-boardState: now / history / archived
-        ↓
-final event settlement
-        ↓
-match + both bet docs + deterministic ledger row
-        ↓
-Firestore listeners update every user
+```json
+"engines": { "node": "22.x" }
 ```
 
-## Source independence
+and includes `.nvmrc` with `22`.
 
-Each sport keeps its preferred source. The maintenance layer consumes the normalized output from `/api/espn-events` and does not require every league to share one provider.
+## Finalization flow
 
-## Idempotency
+1. GitHub Actions calls `/api/maintenance?mode=auto` every five minutes.
+2. Maintenance derives the current deployment origin from the request host.
+3. It fetches source data with cache bypassing.
+4. Events are matched by stable source IDs, canonical keys, and a team/date fallback for legacy records.
+5. ESPN final states include completed/state-post/text signals and soccer Full Time status ID 28.
+6. Final events are written with `boardState: history` and `hiddenFromNow: true`.
+7. Match and bet records are settled or voided.
+8. Deterministic ledger IDs make retries idempotent.
 
-- Only one maintenance run holds the Firestore lease at a time.
-- Team/fight ledger IDs are deterministic by event and match.
-- Ranked ledger IDs are deterministic by event and bet pair.
-- Re-running maintenance repairs missing fields instead of adding duplicate debts.
+## Browser fallback
 
-## Stale-event handling
+An approved admin browser independently refreshes active/recent events if the server route is unavailable. It checks adjacent dates for live events or any event with an unsettled match. Its settlement logic mirrors the server, including draw voids and closing matched bet records.
 
-- Pregame cards disappear after a strict four-hour past-start fallback unless a source verifies them.
-- Live cards have sport-aware hard maximum ages.
-- A source-successful lookup that no longer returns an old event archives it from Now.
-- Archived events are retained for diagnosis unless final-history cleanup applies.
+## Weather
 
-## Scheduling
+ESPN summary weather is preferred. Otherwise, venue city/state/country are normalized and sent to Open-Meteo. Combined city/state strings are split before geocoding, and country is used to disambiguate international World Cup venues.
 
-The included GitHub Actions workflow calls `/api/maintenance?mode=auto` every five minutes. Opening the app also requests a quick server refresh, but browser activity is no longer the primary scheduler.
+## Matchup repair
 
-## Admin matchup repair (v10.66)
+The browser path:
 
-`POST /api/repair-matchup` performs matchup repair with the Firebase Admin SDK. The client supplies a fresh Firebase ID token; the endpoint verifies that the signed-in user's Firestore profile is approved and administrative before writing. This avoids client Firestore create-rule conflicts when an admin needs to create or reuse bets owned by other users.
+1. resolves the event by internal ID or short code
+2. validates team/UFC picks
+3. reuses or creates the selected users' bet records
+4. removes conflicting unsettled matches
+5. reopens displaced bets
+6. creates the intended match atomically
 
+The included Firestore rules authorize approved admins to create a missing bet record. If direct repair is denied, the client calls the Node 22 Firebase Admin endpoint.
 
-## v10.67 resilience layer
+## Required external configuration
 
-The shared maintenance endpoint remains the primary updater. When an authenticated admin has the app open, the client also verifies active and recently started events directly against the normalized sports endpoint and runs idempotent settlement repair. This is a fallback for server credential/scheduler failures, not a second full discovery system.
+Vercel:
 
-Matchup repair reuses existing bet documents in a client-side admin batch whenever possible. Only repairs that need a brand-new bet document require the Firebase Admin server endpoint.
+- Firebase Admin credentials
+- `MAINTENANCE_SECRET`
+- Node 22.x if a dashboard override exists
+
+GitHub Actions:
+
+- matching `MAINTENANCE_SECRET`
+- optional `MAINTENANCE_URL` override; otherwise the workflow uses `https://everybody-loses.vercel.app`
+
+Firebase:
+
+- publish the included `firestore.rules`
