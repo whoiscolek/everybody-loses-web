@@ -471,6 +471,24 @@ function ufcWinnerFromCompetition(competition) {
   return ufcFighterName(winner);
 }
 
+function ufcCardSection(competition = {}) {
+  const text = [
+    competition?.type?.text,
+    competition?.type?.name,
+    competition?.note,
+    competition?.headline,
+    competition?.cardSection,
+    competition?.group?.name,
+    competition?.group?.displayName
+  ].filter(Boolean).join(" ").toLowerCase();
+
+  if (/early\s+prelim|prelim/.test(text)) return "prelims";
+  if (/co[- ]?main/.test(text)) return "co-main";
+  if (/main\s+event/.test(text)) return "main-event";
+  if (/main\s+card/.test(text)) return "main-card";
+  return "";
+}
+
 function extractUfcFightsFromEvent(event) {
   const fights = [];
   const competitions = Array.isArray(event?.competitions) ? event.competitions : [];
@@ -490,16 +508,31 @@ function extractUfcFightsFromEvent(event) {
     fights.push({
       id: fightId,
       order: fights.length + 1,
+      sourceOrder: index + 1,
       fighterA,
       fighterB,
       label: `${fighterA} vs ${fighterB}`,
       status: ufcFightStatus(competition, event),
       winner: ufcWinnerFromCompetition(competition),
-      detail: detailBits.join(" · ")
+      detail: detailBits.join(" · "),
+      cardSection: ufcCardSection(competition)
     });
   });
 
-  return fights;
+  // ESPN sometimes labels prelim fights explicitly and sometimes exposes only the
+  // main card without section labels. Exclude explicitly labeled prelims, but never
+  // assume that a main card contains exactly five fights.
+  const hasPrelimLabels = fights.some(fight => fight.cardSection === "prelims");
+  const cardFights = hasPrelimLabels
+    ? fights.filter(fight => fight.cardSection !== "prelims")
+    : fights;
+
+  return cardFights.map((fight, index, list) => {
+    let cardRole = fight.cardSection;
+    if ((!cardRole || cardRole === "main-card") && list.length >= 2 && index === list.length - 2) cardRole = "co-main";
+    if ((!cardRole || cardRole === "main-card") && index === list.length - 1) cardRole = "main-event";
+    return { ...fight, order: index + 1, cardRole };
+  });
 }
 
 function mapUfcFightCards(rawEvents, config, date) {
@@ -510,7 +543,7 @@ function mapUfcFightCards(rawEvents, config, date) {
     const fights = extractUfcFightsFromEvent(event);
     if (!fights.length) continue;
 
-    const mainCard = fights.slice(0, 5).map((fight, index) => ({ ...fight, order: index + 1 }));
+    const mainCard = fights.map((fight, index) => ({ ...fight, order: index + 1 }));
     const startTime = event.date || event.competitions?.[0]?.date || new Date().toISOString();
     const statuses = mainCard.map(fight => fight.status);
     const status = statuses.includes("live") ? "live" : statuses.length && statuses.every(item => item === "final") ? "final" : getStatus(event);
@@ -534,7 +567,7 @@ function mapUfcFightCards(rawEvents, config, date) {
       liveStats: [
         { label: "Status", value: labelStatus(status) },
         { label: "Fights", value: String(mainCard.length) },
-        { label: "Main event", value: mainCard[0]?.label || "TBD" },
+        { label: "Main event", value: (mainCard.find(fight => fight.cardRole === "main-event") || mainCard[mainCard.length - 1])?.label || "TBD" },
         { label: "Venue", value: venue || "Venue pending" }
       ],
       externalIds: {

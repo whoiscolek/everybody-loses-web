@@ -155,6 +155,7 @@ const AVATAR_CHOICES = ["😀", "😎", "🔥", "🧠", "🎯", "🏁", "⚡", "
 let activeTab = "today";
 let authMode = "login";
 let filters = { sport: "all", league: "all", betState: "all" };
+let historyFilters = { sport: "all", league: "all", betState: "all" };
 let apiImportResults = [];
 let apiImportMessage = "";
 let apiSyncRunning = false;
@@ -484,12 +485,12 @@ function eventBetActivity(event) {
   return { hasPlacedBets, hasActiveBets };
 }
 
-function eventMatchesBetStateFilter(event) {
+function eventMatchesBetStateFilter(event, betState = filters.betState) {
   const { hasPlacedBets, hasActiveBets } = eventBetActivity(event);
 
-  if (filters.betState === "placed") return hasPlacedBets;
-  if (filters.betState === "active") return hasActiveBets;
-  if (filters.betState === "none") return !hasPlacedBets;
+  if (betState === "placed") return hasPlacedBets;
+  if (betState === "active") return hasActiveBets;
+  if (betState === "none") return !hasPlacedBets;
   return true;
 }
 
@@ -753,6 +754,59 @@ function liveContextFromStats(event) {
   return value;
 }
 
+function normalizedFightIdentityPart(value) {
+  return String(value || "")
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, " ")
+    .trim();
+}
+
+function fightIdentityKey(fight = {}) {
+  const names = [normalizedFightIdentityPart(fight.fighterA), normalizedFightIdentityPart(fight.fighterB)]
+    .filter(Boolean)
+    .sort();
+  return names.length === 2 ? names.join("::") : "";
+}
+
+function mergeImportedUfcFights(existingFights = [], incomingFights = []) {
+  const existing = Array.isArray(existingFights) ? existingFights.filter(Boolean) : [];
+  const incoming = Array.isArray(incomingFights) ? incomingFights.filter(Boolean) : [];
+  if (!incoming.length) return existing;
+
+  const existingById = new Map(existing.map(fight => [String(fight.id || ""), fight]).filter(([id]) => id));
+  const existingByPair = new Map(existing.map(fight => [fightIdentityKey(fight), fight]).filter(([key]) => key));
+  const usedExistingIds = new Set();
+
+  const merged = incoming.map((fight, index) => {
+    const incomingId = String(fight.id || "");
+    const prior = existingById.get(incomingId) || existingByPair.get(fightIdentityKey(fight)) || null;
+    if (prior?.id) usedExistingIds.add(String(prior.id));
+    return {
+      ...(prior || {}),
+      ...fight,
+      // Preserve the original ID when the same matchup was already bet on.
+      id: prior?.id || fight.id,
+      order: index + 1
+    };
+  });
+
+  for (const fight of existing) {
+    if (fight?.id && usedExistingIds.has(String(fight.id))) continue;
+    const pair = fightIdentityKey(fight);
+    if (pair && merged.some(item => fightIdentityKey(item) === pair)) continue;
+    merged.push({ ...fight, order: merged.length + 1 });
+  }
+
+  return merged;
+}
+
+function fightResultsFromFightList(fights = []) {
+  return Object.fromEntries((fights || [])
+    .filter(fight => fight?.id && fight?.winner)
+    .map(fight => [fight.id, fight.winner]));
+}
+
 function liveContextText(event) {
   if (!event) return "";
   if (event.liveContext) return String(event.liveContext);
@@ -800,7 +854,7 @@ function safeRefreshFieldsForEvent(event, existing = null) {
     weatherText: preservedWeatherText,
     venue: event.venue || existing?.venue || "",
     resultOrder: event.resultOrder?.length ? event.resultOrder : existing?.resultOrder || [],
-    fightResults: event.fightResults && Object.keys(event.fightResults).length ? event.fightResults : existing?.fightResults || {},
+    fightResults: { ...(existing?.fightResults || {}), ...(event.fightResults || {}) },
     intel: event.intel || existing?.intel || "",
     externalIds: mergeExternalIds(existing?.externalIds || {}, event.externalIds || {}),
     updatedAt: serverTimestamp()
@@ -821,16 +875,28 @@ function safeRefreshFieldsForEvent(event, existing = null) {
     };
   }
 
+  if (event?.type === EVENT_TYPES.FIGHT_CARD) {
+    const mergedFights = mergeImportedUfcFights(existing?.fights || [], event.fights || []);
+    fields.fights = mergedFights;
+    fields.fightResults = {
+      ...(existing?.fightResults || {}),
+      ...(event.fightResults || {}),
+      ...fightResultsFromFightList(mergedFights)
+    };
+  }
+
   if (!hasFinancials || trustedF1Refresh) {
     fields.title = event.title;
     fields.startTime = event.startTime;
     fields.participants = event.participants || [];
-    fields.fights = event.fights || [];
+    if (event?.type !== EVENT_TYPES.FIGHT_CARD) fields.fights = event.fights || [];
   }
 
   if (hasFinancials && !trustedF1Refresh) {
     fields.lockedStructurePreserved = true;
-    fields.structurePreservedReason = "Existing bets/matches/ledger records present; sync did not change title, start time, event type, short code, or participant list.";
+    fields.structurePreservedReason = event?.type === EVENT_TYPES.FIGHT_CARD
+      ? "Existing UFC bets/matches were preserved; sync retained existing fight IDs while merging newly discovered fights, statuses, and results."
+      : "Existing bets/matches/ledger records present; sync did not change title, start time, event type, short code, or participant list.";
   }
 
   return fields;
@@ -1946,7 +2012,7 @@ function renderScoreLine(event) {
             const locked = fightIsLocked(event, fight);
             return `
             <div class="fight-row ${locked ? "fight-locked" : "fight-open"}">
-              <span class="fight-number">#${escapeHtml(fight.order || "")}</span>
+              <span class="fight-number">#${escapeHtml(fight.order || "")}${fight.cardRole === "main-event" ? " · Main" : fight.cardRole === "co-main" ? " · Co-main" : ""}</span>
               <strong>${escapeHtml(fight.fighterA)}</strong>
               <span class="score-divider">vs</span>
               <strong>${escapeHtml(fight.fighterB)}</strong>
@@ -2037,7 +2103,7 @@ function renderFightCardBetForm(event, locked) {
         <div class="fight-bet-row ${fightLocked ? "fight-locked" : "fight-open"}">
           <div>
             <strong>${escapeHtml(fight.label || `${fight.fighterA} vs ${fight.fighterB}`)}</strong>
-            <span class="muted tiny">Fight ${escapeHtml(fight.order || "")} · ${escapeHtml(fightStatusText(event, fight))}${winner ? ` · Winner: ${escapeHtml(winner)}` : ""}</span>
+            <span class="muted tiny">${fight.cardRole === "main-event" ? "Main event" : fight.cardRole === "co-main" ? "Co-main event" : `Fight ${escapeHtml(fight.order || "")}`} · ${escapeHtml(fightStatusText(event, fight))}${winner ? ` · Winner: ${escapeHtml(winner)}` : ""}</span>
           </div>
           <input id="amount-${escapeHtml(event.id)}-${escapeHtml(fight.id)}" type="number" min="1" step="1" value="1" ${disabled ? "disabled" : ""} />
           <button class="primary" data-bet-fight="${escapeHtml(event.id)}" data-fight-id="${escapeHtml(fight.id)}" data-side="fighterA" ${disabled ? "disabled" : ""}>Pick ${escapeHtml(fighterCode(fight.fighterA))}</button>
@@ -2270,13 +2336,47 @@ function renderLeaderboard() {
 }
 
 function renderHistory() {
-  const events = Object.values(state.events)
-    .filter(eventIsWithinHistoryWindow)
+  const allHistoryEvents = Object.values(state.events)
+    .filter(eventIsWithinHistoryWindow);
+
+  const events = allHistoryEvents
+    .filter(event => historyFilters.sport === "all" || event.sport === historyFilters.sport)
+    .filter(event => historyFilters.league === "all" || event.league === historyFilters.league)
+    .filter(event => eventMatchesBetStateFilter(event, historyFilters.betState))
     .sort((a, b) => new Date(b.startTime) - new Date(a.startTime));
 
+  const leagues = historyFilters.sport === "all"
+    ? Object.values(SPORT_GROUPS).flat()
+    : SPORT_GROUPS[historyFilters.sport] || [];
+
   return `
+    <div class="toolbar panel today-filters history-filters">
+      <div>
+        <label>Sport</label>
+        <select id="historySportFilter">
+          <option value="all">All sports</option>
+          ${Object.keys(SPORT_GROUPS).map(sport => `<option value="${sport}" ${historyFilters.sport === sport ? "selected" : ""}>${escapeHtml(label(sport))}</option>`).join("")}
+        </select>
+      </div>
+      <div>
+        <label>League / origin</label>
+        <select id="historyLeagueFilter">
+          <option value="all">All leagues</option>
+          ${leagues.map(league => `<option value="${league}" ${historyFilters.league === league ? "selected" : ""}>${escapeHtml(league)}</option>`).join("")}
+        </select>
+      </div>
+      <div class="bet-state-filter">
+        <label>Bet activity</label>
+        <select id="historyBetStateFilter">
+          <option value="all" ${historyFilters.betState === "all" ? "selected" : ""}>All Games</option>
+          <option value="placed" ${historyFilters.betState === "placed" ? "selected" : ""}>Games with Bets Placed</option>
+          <option value="active" ${historyFilters.betState === "active" ? "selected" : ""}>Games with Active Bets</option>
+          <option value="none" ${historyFilters.betState === "none" ? "selected" : ""}>Games with No Bets at All</option>
+        </select>
+      </div>
+    </div>
     <div class="history-list compact-history-list">
-      ${events.length ? events.map(renderHistoryEventCard).join("") : `<div class="panel empty-state">No final event history from the last 5 days.</div>`}
+      ${events.length ? events.map(renderHistoryEventCard).join("") : `<div class="panel empty-state">No final event history matches these filters from the last 5 days.</div>`}
     </div>
   `;
 }
@@ -2901,6 +3001,9 @@ function wireUi() {
   document.querySelector("#sportFilter")?.addEventListener("change", event => { filters.sport = event.target.value; filters.league = "all"; renderApp(); });
   document.querySelector("#leagueFilter")?.addEventListener("change", event => { filters.league = event.target.value; renderApp(); });
   document.querySelector("#betStateFilter")?.addEventListener("change", event => { filters.betState = event.target.value; renderApp(); });
+  document.querySelector("#historySportFilter")?.addEventListener("change", event => { historyFilters.sport = event.target.value; historyFilters.league = "all"; renderApp(); });
+  document.querySelector("#historyLeagueFilter")?.addEventListener("change", event => { historyFilters.league = event.target.value; renderApp(); });
+  document.querySelector("#historyBetStateFilter")?.addEventListener("change", event => { historyFilters.betState = event.target.value; renderApp(); });
   document.querySelectorAll("[data-bet-team]").forEach(button => button.addEventListener("click", () => placeTeamBet(button.dataset.betTeam, button.dataset.side)));
   document.querySelectorAll("[data-bet-ranked]").forEach(button => button.addEventListener("click", () => placeRankedBet(button.dataset.betRanked)));
   document.querySelectorAll("[data-bet-fight]").forEach(button => button.addEventListener("click", () => placeFightCardBet(button.dataset.betFight, button.dataset.fightId, button.dataset.side)));

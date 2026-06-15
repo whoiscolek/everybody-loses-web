@@ -18,7 +18,7 @@ const LEASE_MS = 75 * 1000;
 const NOW_LOOKAHEAD_MS = 48 * 60 * 60 * 1000;
 const PREGAME_LOOKBACK_MS = 4 * 60 * 60 * 1000;
 const HISTORY_RETENTION_MS = 5 * 24 * 60 * 60 * 1000;
-const MAINTENANCE_VERSION = "10.70";
+const MAINTENANCE_VERSION = "10.72";
 
 function json(res, status, body) {
   res.statusCode = status;
@@ -370,7 +370,7 @@ async function fetchSource(origin, league, dateISO) {
       signal: controller.signal,
       cache: "no-store",
       headers: {
-        "User-Agent": "Everyone-Loses-Maintenance/10.70",
+        "User-Agent": "Everyone-Loses-Maintenance/10.72",
         "Cache-Control": "no-cache, no-store, max-age=0",
         Pragma: "no-cache"
       }
@@ -392,16 +392,60 @@ function chooseExisting(candidates, refsByEventId) {
   })[0] || null;
 }
 
+function normalizedFightIdentityPart(value) {
+  return String(value || "").trim().toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
+}
+
+function fightIdentityKey(fight = {}) {
+  const names = [normalizedFightIdentityPart(fight.fighterA), normalizedFightIdentityPart(fight.fighterB)]
+    .filter(Boolean)
+    .sort();
+  return names.length === 2 ? names.join("::") : "";
+}
+
+function mergeUfcFights(existingFights = [], incomingFights = []) {
+  const existing = Array.isArray(existingFights) ? existingFights.filter(Boolean) : [];
+  const incoming = Array.isArray(incomingFights) ? incomingFights.filter(Boolean) : [];
+  if (!incoming.length) return existing;
+
+  const existingById = new Map(existing.map(fight => [String(fight.id || ""), fight]).filter(([id]) => id));
+  const existingByPair = new Map(existing.map(fight => [fightIdentityKey(fight), fight]).filter(([key]) => key));
+  const used = new Set();
+  const merged = incoming.map((fight, index) => {
+    const prior = existingById.get(String(fight.id || "")) || existingByPair.get(fightIdentityKey(fight)) || null;
+    if (prior?.id) used.add(String(prior.id));
+    return { ...(prior || {}), ...fight, id: prior?.id || fight.id, order: index + 1 };
+  });
+
+  for (const fight of existing) {
+    if (fight?.id && used.has(String(fight.id))) continue;
+    const pair = fightIdentityKey(fight);
+    if (pair && merged.some(item => fightIdentityKey(item) === pair)) continue;
+    merged.push({ ...fight, order: merged.length + 1 });
+  }
+  return merged;
+}
+
 function mergeIncoming(existing, incoming, nowIso) {
   const status = protectedStatus(existing, incoming);
   const incomingScore = hasScore(incoming.score) ? incoming.score : null;
   const score = incomingScore || (hasScore(existing?.score) ? existing.score : null);
   const incomingOdds = incoming.odds;
   const odds = placeholderOdds(incomingOdds) && !placeholderOdds(existing?.odds) ? existing.odds : incomingOdds || existing?.odds || "Unavailable";
+  const mergedFights = incoming?.type === EVENT_TYPES.FIGHT_CARD || existing?.type === EVENT_TYPES.FIGHT_CARD
+    ? mergeUfcFights(existing?.fights || [], incoming?.fights || [])
+    : (incoming?.fights || existing?.fights || []);
+  const mergedFightResults = {
+    ...(existing?.fightResults || {}),
+    ...(incoming?.fightResults || {}),
+    ...Object.fromEntries(mergedFights.filter(fight => fight?.id && fight?.winner).map(fight => [fight.id, fight.winner]))
+  };
   const merged = {
     ...existing,
     ...incoming,
     status,
+    fights: mergedFights,
+    fightResults: mergedFightResults,
     score,
     odds,
     liveStats: Array.isArray(incoming.liveStats) && incoming.liveStats.length ? incoming.liveStats : (existing?.liveStats || []),

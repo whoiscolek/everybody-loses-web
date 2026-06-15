@@ -1,4 +1,17 @@
-# Everybody Loses v10.70
+# Everybody Loses
+
+## v10.72
+
+UFC cards are no longer truncated to five fights. The importer keeps every fight ESPN identifies as part of the main card, excludes fights explicitly labeled as prelims, and supports special main cards containing six, seven, or more fights.
+
+Refreshing an existing UFC event can now append newly discovered fights even when bets already exist. Existing fight IDs are preserved by fighter-pair matching so current bets and matches remain attached to the same fights.
+
+Main-event and co-main-event labels are shown when available or inferred from source order. No Firestore rules change is required.
+
+## v10.71
+
+History now has independent Sport, League/origin, and Bet Activity filters matching the Now tab.
+ v10.70
 
 Head-to-head sports betting battles for friends.
 
