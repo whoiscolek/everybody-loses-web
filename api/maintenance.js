@@ -18,7 +18,8 @@ const LEASE_MS = 75 * 1000;
 const NOW_LOOKAHEAD_MS = 48 * 60 * 60 * 1000;
 const PREGAME_LOOKBACK_MS = 4 * 60 * 60 * 1000;
 const HISTORY_RETENTION_MS = 5 * 24 * 60 * 60 * 1000;
-const MAINTENANCE_VERSION = "10.73";
+const MAINTENANCE_VERSION = "10.74";
+const UFC_EXPECTED_MAIN_CARD_COUNTS = { "600058854": 7 };
 
 function json(res, status, body) {
   res.statusCode = status;
@@ -370,7 +371,7 @@ async function fetchSource(origin, league, dateISO) {
       signal: controller.signal,
       cache: "no-store",
       headers: {
-        "User-Agent": "Everyone-Loses-Maintenance/10.73",
+        "User-Agent": "Everyone-Loses-Maintenance/10.74",
         "Cache-Control": "no-cache, no-store, max-age=0",
         Pragma: "no-cache"
       }
@@ -378,6 +379,28 @@ async function fetchSource(origin, league, dateISO) {
     const data = await response.json().catch(() => ({}));
     if (!response.ok) throw new Error(data.error || `${league} ${dateISO} source returned ${response.status}`);
     return { league, dateISO, events: Array.isArray(data.events) ? data.events : [], source: data.source || "unknown", note: data.note || "" };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+async function fetchTargetedUfcSource(origin, eventId, dateISO) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 22000);
+  try {
+    const url = `${origin}/api/espn-events?league=UFC&eventId=${encodeURIComponent(eventId)}&date=${dateISO.replace(/-/g, "")}&fresh=${Date.now()}`;
+    const response = await fetch(url, {
+      signal: controller.signal,
+      cache: "no-store",
+      headers: {
+        "User-Agent": "Everyone-Loses-Maintenance/10.74",
+        "Cache-Control": "no-cache, no-store, max-age=0",
+        Pragma: "no-cache"
+      }
+    });
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(data.error || `UFC event ${eventId} source returned ${response.status}`);
+    return { league: "UFC", dateISO, events: Array.isArray(data.events) ? data.events : [], source: data.source || "espn-ufc-direct", note: data.note || "", targetedEventId: eventId };
   } finally {
     clearTimeout(timer);
   }
@@ -471,6 +494,21 @@ function mergeIncoming(existing, incoming, nowIso) {
   return clean(merged);
 }
 
+function ufcCardNeedsRepair(event = {}) {
+  if (event?.type !== EVENT_TYPES.FIGHT_CARD && event?.league !== "UFC") return false;
+  const candidates = [
+    event?.externalIds?.espnFightCenterEventId,
+    event?.externalIds?.espnEventId,
+    event?.externalIds?.ufcOverrideEventId,
+    event?.apiEventId,
+    event?.id,
+    event?.firestoreId
+  ].map(value => String(value || ""));
+  const eventId = candidates.find(value => UFC_EXPECTED_MAIN_CARD_COUNTS[value]);
+  const expected = UFC_EXPECTED_MAIN_CARD_COUNTS[eventId] || 0;
+  return Boolean(expected && (event.fights || []).length < expected);
+}
+
 function buildFetchPlan(events, matches, fullDiscovery) {
   const plan = new Map();
   const add = (league, dateISO) => {
@@ -483,7 +521,7 @@ function buildFetchPlan(events, matches, fullDiscovery) {
     const ids = eventIdentityValues(event);
     const hasUnsettled = ids.some(id => unsettledEventIds.has(id));
     const start = dateMs(event.startTime);
-    const relevant = hasUnsettled || (event.status !== "final" && (
+    const relevant = hasUnsettled || ufcCardNeedsRepair(event) || (event.status !== "final" && (
       event.status === "live" || !start || start >= Date.now() - 36 * 60 * 60 * 1000
     ));
     if (!relevant) continue;
@@ -863,7 +901,30 @@ async function runMaintenance(req, mode) {
     const state = lease.state || {};
     const fullDiscovery = mode === "full" || mode === "auto" && Date.now() - dateMs(state.lastFullDiscoveryAt) >= FULL_DISCOVERY_INTERVAL_MS;
     const plan = buildFetchPlan(events, matches, fullDiscovery);
-    const sourceResults = await mapLimit(plan, 12, async item => fetchSource(origin, item.league, item.dateISO));
+    let sourceResults = await mapLimit(plan, 12, async item => fetchSource(origin, item.league, item.dateISO));
+
+    const targetedUfcRepairs = events
+      .filter(ufcCardNeedsRepair)
+      .map(event => {
+        const candidates = [
+          event?.externalIds?.espnFightCenterEventId,
+          event?.externalIds?.espnEventId,
+          event?.externalIds?.ufcOverrideEventId,
+          event?.apiEventId,
+          event?.id,
+          event?.firestoreId
+        ].map(value => String(value || ""));
+        return {
+          eventId: candidates.find(value => UFC_EXPECTED_MAIN_CARD_COUNTS[value]) || "",
+          dateISO: dateForEvent(event)
+        };
+      })
+      .filter(item => item.eventId && item.dateISO);
+
+    if (targetedUfcRepairs.length) {
+      const directResults = await mapLimit(targetedUfcRepairs, 3, item => fetchTargetedUfcSource(origin, item.eventId, item.dateISO));
+      sourceResults = [...sourceResults, ...directResults];
+    }
 
     const refsByEventId = new Map();
     for (const record of [...bets, ...matches]) {

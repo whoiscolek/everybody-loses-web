@@ -4884,13 +4884,37 @@ async function syncApiSchedule(daysFromToday = 0, options = {}) {
   }
 }
 
+const UFC_EXPECTED_MAIN_CARD_COUNTS = {
+  "600058854": 7
+};
+
+function ufcRepairEventId(event = {}) {
+  const candidates = [
+    event?.externalIds?.espnFightCenterEventId,
+    event?.externalIds?.espnEventId,
+    event?.externalIds?.ufcOverrideEventId,
+    event?.apiEventId,
+    event?.id,
+    event?.firestoreId
+  ].map(value => String(value || ""));
+  return candidates.find(value => UFC_EXPECTED_MAIN_CARD_COUNTS[value]) || "";
+}
+
+function ufcCardNeedsRepair(event = {}) {
+  if (event?.type !== EVENT_TYPES.FIGHT_CARD) return false;
+  const eventId = ufcRepairEventId(event);
+  const expected = UFC_EXPECTED_MAIN_CARD_COUNTS[eventId] || 0;
+  return Boolean(expected && (event.fights || []).length < expected);
+}
+
 function liveRefreshCandidateEvents() {
   const now = Date.now();
   const soonMs = 20 * 60 * 1000;
   const recentMs = 36 * 60 * 60 * 1000;
 
   return Object.values(state.events || {}).filter(event => {
-    if (!event || event.status === "final") return false;
+    if (!event) return false;
+    if (event.status === "final" && !ufcCardNeedsRepair(event)) return false;
     if (![EVENT_TYPES.TEAM, EVENT_TYPES.RANKED, EVENT_TYPES.FIGHT_CARD].includes(event.type)) return false;
     const start = new Date(event.startTime || 0).getTime();
     if (!Number.isFinite(start)) return event.status === "live";
@@ -4941,7 +4965,22 @@ async function syncLiveScoreEvents(options = {}) {
 
   for (const { league, date } of leaguesByDate.values()) {
     try {
-      const incomingEvents = await fetchApiEventsForLeagueDate(league, date);
+      let incomingEvents = await fetchApiEventsForLeagueDate(league, date);
+      const repairTargets = candidates.filter(event => event.league === league && ufcCardNeedsRepair(event));
+      for (const target of repairTargets) {
+        const repairEventId = ufcRepairEventId(target);
+        if (!repairEventId) continue;
+        try {
+          const response = await fetch(`/api/espn-events?league=UFC&eventId=${encodeURIComponent(repairEventId)}&date=${encodeURIComponent(date.replace(/-/g, ""))}&fresh=${Date.now()}`, {
+            cache: "no-store",
+            headers: { "Cache-Control": "no-cache" }
+          });
+          const data = await response.json();
+          if (response.ok && Array.isArray(data.events)) incomingEvents = [...incomingEvents, ...data.events];
+        } catch {
+          // Date-based UFC refresh remains available if the targeted repair call fails.
+        }
+      }
       fetched += incomingEvents.length;
 
       for (const incoming of incomingEvents) {
@@ -4968,6 +5007,13 @@ async function syncLiveScoreEvents(options = {}) {
           leaderboardSource: refresh.leaderboardSource || existing.leaderboardSource || "",
           updatedAt: serverTimestamp()
         };
+
+        if (incoming?.type === EVENT_TYPES.FIGHT_CARD || existing?.type === EVENT_TYPES.FIGHT_CARD) {
+          approvedRefresh.fights = refresh.fights || existing.fights || [];
+          approvedRefresh.fightResults = refresh.fightResults || existing.fightResults || {};
+          approvedRefresh.externalIds = refresh.externalIds || existing.externalIds || {};
+          approvedRefresh.intel = refresh.intel || existing.intel || "";
+        }
 
         batch.set(doc(db, "events", existingId), approvedRefresh, { merge: true });
         state.events[existingId] = {

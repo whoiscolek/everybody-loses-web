@@ -1,16 +1,25 @@
 # Everybody Loses
 
-## v10.73
+## v10.74
 
-### Complete UFC main-card import
+### Guaranteed repair for incomplete UFC cards
 
-- UFC discovery still begins with ESPN's date scoreboard.
-- Each discovered UFC event is then enriched from ESPN FightCenter's `cards.main.competitions` collection.
-- The detailed main card replaces the incomplete scoreboard competition list when available.
-- Cards are no longer assumed to contain five fights. Special seven-fight cards remain seven fights.
-- ESPN's headline-first ordering is converted into broadcast order so the co-main and main event appear at the end.
-- Existing fight IDs are preserved by the v10.72 merge logic, protecting previously placed bets while missing fights are appended.
-- Scoreboard data remains a fallback when FightCenter is temporarily unavailable.
+v10.73 could still leave the existing card at five fights because it depended on a successful ESPN FightCenter response, and its ordinary browser refresh omitted the `fights` field. A final event could also fall outside the current-date sync window.
+
+v10.74 fixes all three paths:
+
+- compares ESPN Scoreboard, FightCenter, and Core Event competition data
+- recursively recognizes changed FightCenter card shapes
+- tries alternate ESPN event IDs found in links, UIDs, GUIDs, and competition metadata
+- adds a targeted `/api/espn-events?league=UFC&eventId=...` repair mode that does not depend on today's date
+- includes UFC fights and fight results in foreground refresh writes
+- keeps incomplete recent/final UFC cards eligible for repair
+- makes server maintenance issue a targeted event-ID refresh for known incomplete cards
+- preserves existing fight IDs by fighter-pair matching so existing bets remain attached
+- includes source diagnostics on the event
+- includes a narrowly scoped verified fallback for ESPN event `600058854` when ESPN still returns fewer than the confirmed seven fights
+
+No Firebase rules change is required.
 
 ## Previous release notes
 ## v10.72
