@@ -175,3 +175,11 @@ APP_URL
 - Team and country matchups now display full names instead of abbreviations whenever imported source data provides them.
 - Refreshing an existing team event updates its display names even when bet structure is protected.
 
+
+
+## v10.66 changes
+
+- Moved Matchup repair to an authenticated Vercel server endpoint using Firebase Admin.
+- Admins can now create bets for either selected user without browser Firestore rules rejecting the batch.
+- Added visible progress, success, validation, authorization, and server-error feedback to Repair/create match.
+- The button disables while the repair is running to prevent duplicate submissions.

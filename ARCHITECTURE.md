@@ -66,3 +66,7 @@ Each sport keeps its preferred source. The maintenance layer consumes the normal
 ## Scheduling
 
 The included GitHub Actions workflow calls `/api/maintenance?mode=auto` every five minutes. Opening the app also requests a quick server refresh, but browser activity is no longer the primary scheduler.
+
+## Admin matchup repair (v10.66)
+
+`POST /api/repair-matchup` performs matchup repair with the Firebase Admin SDK. The client supplies a fresh Firebase ID token; the endpoint verifies that the signed-in user's Firestore profile is approved and administrative before writing. This avoids client Firestore create-rule conflicts when an admin needs to create or reuse bets owned by other users.

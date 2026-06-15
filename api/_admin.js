@@ -1,5 +1,6 @@
 import { cert, getApps, initializeApp } from "firebase-admin/app";
 import { FieldValue, Timestamp, getFirestore } from "firebase-admin/firestore";
+import { getAuth } from "firebase-admin/auth";
 
 function parseServiceAccount() {
   const json = process.env.FIREBASE_SERVICE_ACCOUNT_JSON;
@@ -36,6 +37,7 @@ export function getAdminServices() {
 
   return {
     db: getFirestore(),
+    auth: getAuth(),
     FieldValue,
     Timestamp
   };

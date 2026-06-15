@@ -173,6 +173,9 @@ let loading = true;
 let dataReady = false;
 let passiveRenderPending = false;
 let passiveRenderTimer = null;
+let repairMatchupRunning = false;
+let repairMatchupMessage = "";
+let repairMatchupMessageType = "";
 
 let state = {
   currentUserId: null,
@@ -2740,7 +2743,8 @@ function renderAdmin() {
         </div>
         <label>Amount</label>
         <input id="repairAmount" type="number" min="1" step="1" value="1" />
-        <button class="primary" data-action="repair-matchup">Repair/create match</button>
+        <button class="primary" type="button" data-action="repair-matchup" ${repairMatchupRunning ? "disabled" : ""}>${repairMatchupRunning ? "Repairing match…" : "Repair/create match"}</button>
+        <p id="repairMatchupStatus" class="repair-matchup-status ${escapeHtml(repairMatchupMessageType)}" role="status" aria-live="polite">${escapeHtml(repairMatchupMessage)}</p>
         <p class="footer-note small">For team games use away/home. For UFC use fighterA/fighterB and provide the fight number or fight ID.</p>
       </div>
 
@@ -5073,134 +5077,78 @@ async function settleEventFromAdmin() {
 
 
 async function repairAdminMatchup() {
-  if (!isAdmin()) return;
+  if (repairMatchupRunning) return;
 
-  const eventInput = document.querySelector("#repairEventId")?.value.trim();
-  const event = findEventByIdOrCode(eventInput);
-  const userA = document.querySelector("#repairUserA")?.value;
-  const userB = document.querySelector("#repairUserB")?.value;
-  const rawPickA = document.querySelector("#repairPickA")?.value.trim();
-  const rawPickB = document.querySelector("#repairPickB")?.value.trim();
-  const amount = Number(document.querySelector("#repairAmount")?.value);
-  const rawFightId = document.querySelector("#repairFightId")?.value.trim();
-
-  if (!event) return alert("Event not found.");
-  if (!userA || !userB || userA === userB) return alert("Pick two different users.");
-  if (!Number.isFinite(amount) || amount <= 0) return alert("Enter a valid amount.");
-  if (!rawPickA || !rawPickB || rawPickA === rawPickB) return alert("Enter opposite picks.");
-
-  let fightId = "";
-  let pickA = rawPickA;
-  let pickB = rawPickB;
-
-  if (event.type === EVENT_TYPES.TEAM) {
-    pickA = rawPickA.toLowerCase();
-    pickB = rawPickB.toLowerCase();
-    if (!["away", "home"].includes(pickA) || !["away", "home"].includes(pickB)) return alert("Team picks must be away/home.");
-  } else if (event.type === EVENT_TYPES.FIGHT_CARD) {
-    const fight = (event.fights || []).find(item => item.id === rawFightId || String(item.order) === rawFightId || item.label === rawFightId);
-    if (!fight) return alert("UFC repair needs a valid fight ID or fight number.");
-    fightId = fight.id;
-    pickA = rawPickA.toLowerCase();
-    pickB = rawPickB.toLowerCase();
-    if (!["fightera", "fighterb"].includes(pickA) || !["fightera", "fighterb"].includes(pickB)) return alert("UFC picks must be fighterA/fighterB.");
-    pickA = pickA === "fightera" ? "fighterA" : "fighterB";
-    pickB = pickB === "fightera" ? "fighterA" : "fighterB";
-  } else {
-    return alert("Matchup repair currently supports team games and UFC fight cards.");
-  }
-
-  const affectedUsers = new Set([userA, userB]);
-  const batch = writeBatch(db);
-
-  for (const match of Object.values(state.matches)) {
-    if (match.eventId !== event.id || match.status === "settled") continue;
-    if (event.type === EVENT_TYPES.FIGHT_CARD && match.fightId !== fightId) continue;
-    if (!affectedUsers.has(match.userA) && !affectedUsers.has(match.userB)) continue;
-
-    if (state.bets[match.betA]) batch.update(doc(db, "bets", match.betA), { status: "open", updatedAt: serverTimestamp() });
-    if (state.bets[match.betB]) batch.update(doc(db, "bets", match.betB), { status: "open", updatedAt: serverTimestamp() });
-    batch.delete(doc(db, "matches", match.firestoreId || match.id));
-  }
-
-  const existingBetA = Object.values(state.bets).find(bet =>
-    bet.eventId === event.id &&
-    bet.userId === userA &&
-    (event.type !== EVENT_TYPES.FIGHT_CARD || bet.fightId === fightId) &&
-    bet.side === pickA &&
-    Number(bet.amount) === amount
-  );
-
-  const existingBetB = Object.values(state.bets).find(bet =>
-    bet.eventId === event.id &&
-    bet.userId === userB &&
-    (event.type !== EVENT_TYPES.FIGHT_CARD || bet.fightId === fightId) &&
-    bet.side === pickB &&
-    Number(bet.amount) === amount
-  );
-
-  const betARef = existingBetA ? doc(db, "bets", existingBetA.firestoreId || existingBetA.id) : doc(collection(db, "bets"));
-  const betBRef = existingBetB ? doc(db, "bets", existingBetB.firestoreId || existingBetB.id) : doc(collection(db, "bets"));
-
-  const commonBetFields = {
-    eventId: event.id,
-    amount,
-    doubleUp: { requestedBy: [], applied: false, originalAmount: Number(amount) },
-    status: "matched",
-    adminRepaired: true,
-    updatedAt: serverTimestamp()
+  const statusNode = document.querySelector("#repairMatchupStatus");
+  const button = document.querySelector("[data-action='repair-matchup']");
+  const setStatus = (message, type = "") => {
+    repairMatchupMessage = message;
+    repairMatchupMessageType = type;
+    if (statusNode) {
+      statusNode.textContent = message;
+      statusNode.className = `repair-matchup-status ${type}`.trim();
+    }
   };
 
-  if (existingBetA) {
-    batch.update(betARef, { ...commonBetFields, side: pickA });
-  } else {
-    batch.set(betARef, {
-      id: betARef.id,
-      ...commonBetFields,
-      type: event.type,
-      userId: userA,
-      side: pickA,
-      fightId,
-      createdAt: serverTimestamp()
-    });
+  if (!isAdmin()) {
+    setStatus("Your account is not currently authorized as an admin. Refresh your sign-in or unlock Admin again.", "error");
+    return;
   }
 
-  if (existingBetB) {
-    batch.update(betBRef, { ...commonBetFields, side: pickB });
-  } else {
-    batch.set(betBRef, {
-      id: betBRef.id,
-      ...commonBetFields,
-      type: event.type,
-      userId: userB,
-      side: pickB,
-      fightId,
-      createdAt: serverTimestamp()
-    });
+  const eventId = document.querySelector("#repairEventId")?.value.trim();
+  const userA = document.querySelector("#repairUserA")?.value;
+  const userB = document.querySelector("#repairUserB")?.value;
+  const pickA = document.querySelector("#repairPickA")?.value.trim();
+  const pickB = document.querySelector("#repairPickB")?.value.trim();
+  const amount = Number(document.querySelector("#repairAmount")?.value);
+  const fightId = document.querySelector("#repairFightId")?.value.trim();
+
+  if (!eventId) return setStatus("Enter an event ID or display code.", "error");
+  if (!userA || !userB || userA === userB) return setStatus("Choose two different users.", "error");
+  if (!pickA || !pickB) return setStatus("Enter both users’ picks.", "error");
+  if (!Number.isFinite(amount) || amount <= 0) return setStatus("Enter a valid amount greater than zero.", "error");
+  if (!authUser) return setStatus("Your sign-in session is missing. Sign out and back in, then retry.", "error");
+
+  repairMatchupRunning = true;
+  if (button) {
+    button.disabled = true;
+    button.textContent = "Repairing match…";
   }
+  setStatus("Checking the event and writing the repaired matchup…", "working");
 
-  const matchRef = doc(collection(db, "matches"));
-  batch.set(matchRef, {
-    id: matchRef.id,
-    type: event.type,
-    eventId: event.id,
-    fightId,
-    betA: betARef.id,
-    betB: betBRef.id,
-    userA,
-    userB,
-    sideA: pickA,
-    sideB: pickB,
-    amount,
-    doubleUp: { requestedBy: [], applied: false, originalAmount: Number(amount) },
-    status: "matched",
-    adminRepaired: true,
-    createdAt: serverTimestamp(),
-    updatedAt: serverTimestamp()
-  });
+  try {
+    const token = await authUser.getIdToken(true);
+    const response = await fetch("/api/repair-matchup", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${token}`
+      },
+      body: JSON.stringify({ eventId, userA, userB, pickA, pickB, amount, fightId })
+    });
 
-  await batch.commit();
-  alert("Matchup repaired.");
+    let payload = {};
+    try {
+      payload = await response.json();
+    } catch {
+      payload = {};
+    }
+
+    if (!response.ok) {
+      throw new Error(payload.error || `Repair request failed with status ${response.status}.`);
+    }
+
+    setStatus(payload.message || "Match repaired successfully.", "success");
+  } catch (error) {
+    console.error("Matchup repair failed", error);
+    setStatus(error.message || "Matchup repair failed. Check the browser console and try again.", "error");
+  } finally {
+    repairMatchupRunning = false;
+    if (button) {
+      button.disabled = false;
+      button.textContent = "Repair/create match";
+    }
+  }
 }
 
 async function manualLedgerAdd() {

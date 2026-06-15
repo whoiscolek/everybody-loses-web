@@ -4622,3 +4622,28 @@ label {
 .fight-bet-row .muted.tiny {
   line-height: 1.25;
 }
+
+/* v10.66 reliable server-side matchup repair feedback */
+.repair-matchup-status {
+  min-height: 1.35em;
+  margin: 10px 0 0;
+  font-size: .82rem;
+  line-height: 1.4;
+  font-weight: 700;
+}
+
+.repair-matchup-status:empty {
+  display: none;
+}
+
+.repair-matchup-status.working {
+  color: #9a6700;
+}
+
+.repair-matchup-status.success {
+  color: #147a4b;
+}
+
+.repair-matchup-status.error {
+  color: #b42318;
+}
