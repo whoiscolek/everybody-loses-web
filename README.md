@@ -1,50 +1,40 @@
-# Everybody Loses v10.68
+# Everybody Loses v10.69
 
 Head-to-head sports betting battles for friends.
 
-## What v10.68 fixes
+## What v10.69 fixes
 
-### 1. Vercel repair and maintenance crashes
+### Final events that reached History without settling
 
-v10.67 installed `firebase-admin` 14 while still pinning the project to Node 20. Firebase Admin 14 requires Node 22 or newer, so Vercel could terminate `/api/repair-matchup` and `/api/maintenance` before either handler returned its own diagnostic JSON.
+The old settlement path only understood a match when `sideA`, `sideB`, `userA`, `userB`, `betA`, `betB`, and `amount` were all present in the newest schema. Older or repaired matches could instead keep the pick/user/amount on their linked bet documents or use team codes/names. The event would move to History, but the match could be skipped silently and remain `matched`.
 
-v10.68:
+v10.69 now:
 
-- pins the repository and Vercel functions to Node `22.x`
-- includes `.nvmrc` with Node 22
-- keeps `firebase-admin` 14
-- reports the runtime version in maintenance and repair responses
-- retains the browser-side admin repair path as a fallback
+- resolves home/away from literal sides, country/team codes, full names, IDs, and linked bet records
+- recovers missing users, bet IDs, and wager amounts from the matched bet documents
+- backfills the canonical match fields while settling
+- writes the deterministic ledger entry and closes both bets in the same batch
+- marks genuinely unrepairable matches as `partial` with a visible reason instead of silently skipping them
+- reports legacy repairs and unresolved settlements in the Admin maintenance card
 
-A game being live does not prevent an administrator from repairing its matchup.
+### Draw/void history wording
 
-### 2. Completed World Cup games remaining in Now
+A drawn team game correctly creates no ledger debt. The old History summary treated every non-`settled` match as unfinished, so a correctly voided draw appeared as `not settled yet`.
 
-v10.68 strengthens the entire finalization path:
+History now distinguishes:
 
-- recognizes ESPN `Full Time`, `FT`, `completed`, `state: post`, common final status, and soccer status ID 28
-- bypasses browser and CDN caches on score requests
-- refreshes the current deployment rather than trusting a potentially stale `APP_URL`
-- matches legacy events by league, scheduled date/time, and both teams when source IDs differ
-- checks adjacent dates for live events and events with unsettled matches
-- moves a verified final event to History immediately
-- settles win/loss matchups idempotently
-- voids both the match and its matched bet records when a game ends in a draw
-- expires unmatched bets after the final result
+- settled win/loss with the amount owed
+- voided draw with `no money owed`
+- cancelled matches
+- genuinely unresolved settlement records with the exact repair reason
 
-### 3. World Cup weather
-
-ESPN soccer venues sometimes provide locations as one field such as `Arlington, Texas`, or provide a city and country without a US state. v10.68 separates city/state and uses country-aware Open-Meteo geocoding. When weather genuinely cannot be resolved, the card now says `Weather unavailable for this venue` instead of telling the user to sync repeatedly.
-
-### 4. Matchup repair
-
-The Admin repair action first writes directly through the signed-in administrator. It can reuse existing bets or create a missing bet record under the included v10.68 Firestore rules. The secure Vercel endpoint remains available as a fallback and now runs under the compatible Node runtime.
+The automatic browser fallback also stops repeatedly retrying already-voided matches.
 
 ## Required deployment steps
 
 ### 1. Replace the repository files and push to GitHub
 
-Use the complete v10.68 package, including:
+Use the complete v10.69 package, including:
 
 - `package.json`
 - `package-lock.json`

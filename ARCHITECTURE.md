@@ -1,4 +1,4 @@
-# Everybody Loses v10.68 Architecture
+# Everybody Loses v10.69 Architecture
 
 ## Client
 
@@ -73,3 +73,7 @@ GitHub Actions:
 Firebase:
 
 - publish the included `firestore.rules`
+
+## Settlement compatibility layer
+
+Team settlement normalizes legacy match data before deciding the winner. It can derive each side and bettor from the match itself or its linked bet documents, accepts home/away aliases plus team names/codes/IDs, and derives the wager from legacy amount fields or the two bet amounts. Unresolvable matches are explicitly marked partial with `settlementIssue`; they are never silently treated as complete. Draws use `status: void`, create no ledger entry, and are displayed as voided rather than pending.

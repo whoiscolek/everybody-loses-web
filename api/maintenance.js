@@ -18,7 +18,7 @@ const LEASE_MS = 75 * 1000;
 const NOW_LOOKAHEAD_MS = 48 * 60 * 60 * 1000;
 const PREGAME_LOOKBACK_MS = 4 * 60 * 60 * 1000;
 const HISTORY_RETENTION_MS = 5 * 24 * 60 * 60 * 1000;
-const MAINTENANCE_VERSION = "10.68";
+const MAINTENANCE_VERSION = "10.69";
 
 function json(res, status, body) {
   res.statusCode = status;
@@ -226,14 +226,85 @@ function staleThresholdMs(event) {
   return 8 * 60 * 60 * 1000;
 }
 
-function effectiveAmount(match = {}) {
+function effectiveAmount(match = {}, betA = null, betB = null) {
   const doubled = Boolean(match.doubleUp?.applied || match.doubledUp);
-  const explicit = Number(match.doubleUpAmount);
+  const explicit = Number(match.doubleUpAmount || match.doubledAmount);
   if (doubled && Number.isFinite(explicit) && explicit > 0) return explicit;
-  const amount = Number(match.amount || match.exposure || match.doubleUp?.originalAmount || 0);
-  if (!Number.isFinite(amount) || amount <= 0) return 0;
-  if (doubled && !match.amount && match.doubleUp?.originalAmount) return amount * 2;
+
+  const candidates = [
+    match.amount,
+    match.exposure,
+    match.matchedAmount,
+    match.wagerAmount,
+    match.stake,
+    match.doubleUp?.originalAmount
+  ].map(Number).filter(value => Number.isFinite(value) && value > 0);
+
+  const betAmounts = [betA?.amount, betA?.exposure, betB?.amount, betB?.exposure]
+    .map(Number)
+    .filter(value => Number.isFinite(value) && value > 0);
+
+  let amount = candidates[0] || (betAmounts.length ? Math.min(...betAmounts) : 0);
+  if (doubled && !match.amount && !match.exposure && match.doubleUp?.originalAmount && !explicit) amount *= 2;
   return amount;
+}
+
+function teamSelectionAliases(team = {}) {
+  return new Set([
+    team.side,
+    team.id,
+    team.teamId,
+    team.uid,
+    team.code,
+    team.abbreviation,
+    team.name,
+    team.displayName,
+    team.shortDisplayName,
+    team.location,
+    [team.location, team.name].filter(Boolean).join(" ")
+  ].map(normalizeTeamToken).filter(Boolean));
+}
+
+function normalizeTeamSide(value, event = {}) {
+  const raw = String(value ?? "").trim().toLowerCase();
+  if (["home", "h", "host"].includes(raw)) return "home";
+  if (["away", "a", "visitor", "road"].includes(raw)) return "away";
+
+  const token = normalizeTeamToken(value);
+  if (!token) return "";
+  if (teamSelectionAliases(event.home).has(token)) return "home";
+  if (teamSelectionAliases(event.away).has(token)) return "away";
+  return "";
+}
+
+function matchBet(betsById, eventBets, match, slot) {
+  const betId = String(slot === "A" ? (match.betA || match.bet1 || "") : (match.betB || match.bet2 || ""));
+  if (betId && betsById.has(betId)) return betsById.get(betId);
+
+  const userId = String(slot === "A"
+    ? (match.userA || match.bettorA || match.playerA || "")
+    : (match.userB || match.bettorB || match.playerB || ""));
+  if (!userId) return null;
+  return eventBets.find(bet => String(bet.userId || bet.user || bet.bettorId || "") === userId) || null;
+}
+
+function resolvedMatchFields(match, event, eventBets, betsById) {
+  const betA = matchBet(betsById, eventBets, match, "A");
+  const betB = matchBet(betsById, eventBets, match, "B");
+  const sideA = normalizeTeamSide(
+    match.sideA || match.pickA || match.selectionA || match.teamA || match.awayOrHomeA || betA?.side || betA?.pick || betA?.selection || betA?.team,
+    event
+  );
+  const sideB = normalizeTeamSide(
+    match.sideB || match.pickB || match.selectionB || match.teamB || match.awayOrHomeB || betB?.side || betB?.pick || betB?.selection || betB?.team,
+    event
+  );
+  const userA = String(match.userA || match.bettorA || match.playerA || betA?.userId || betA?.user || betA?.bettorId || "");
+  const userB = String(match.userB || match.bettorB || match.playerB || betB?.userId || betB?.user || betB?.bettorId || "");
+  const betAId = String(match.betA || match.bet1 || betA?.firestoreId || betA?.id || "");
+  const betBId = String(match.betB || match.bet2 || betB?.firestoreId || betB?.id || "");
+  const amount = effectiveAmount(match, betA, betB);
+  return { betA, betB, betAId, betBId, sideA, sideB, userA, userB, amount };
 }
 
 function ledgerId(eventId, matchId) {
@@ -411,8 +482,12 @@ async function acquireLease(db, FieldValue, requestedMode) {
 }
 
 async function settleFinalEvents(db, FieldValue, events, bets, matches, ledgerEntries) {
-  const summary = { events: 0, matches: 0, ledgerWrites: 0, betsClosed: 0, tiesVoided: 0, deferred: 0 };
+  const summary = { events: 0, matches: 0, ledgerWrites: 0, betsClosed: 0, tiesVoided: 0, deferred: 0, repairedLegacyMatches: 0, unresolved: [] };
   const ledgerByMatch = new Map();
+  const betsById = new Map();
+  for (const bet of bets) {
+    for (const id of [bet.firestoreId, bet.id].map(value => String(value || "")).filter(Boolean)) betsById.set(id, bet);
+  }
   for (const entry of ledgerEntries) {
     if (entry.matchId) ledgerByMatch.set(String(entry.matchId), entry);
   }
@@ -436,16 +511,24 @@ async function settleFinalEvents(db, FieldValue, events, bets, matches, ledgerEn
       const winningSide = home > away ? "home" : away > home ? "away" : null;
 
       for (const match of eventMatches) {
-        if (match.status === "cancelled") continue;
+        if (["cancelled"].includes(String(match.status || "").toLowerCase())) continue;
         const matchId = match.firestoreId || match.id;
         if (!matchId) continue;
-        const amount = effectiveAmount(match);
+        const resolved = resolvedMatchFields(match, event, eventBets, betsById);
+        const { sideA, sideB, userA, userB, betAId, betBId, amount } = resolved;
 
         if (!winningSide) {
           batch.set(db.collection("matches").doc(matchId), {
             eventId,
+            betA: betAId || match.betA || null,
+            betB: betBId || match.betB || null,
+            userA: userA || match.userA || null,
+            userB: userB || match.userB || null,
+            sideA: sideA || match.sideA || null,
+            sideB: sideB || match.sideB || null,
             status: "void",
             result: "draw",
+            settlementIssue: null,
             settledAmount: 0,
             winner: null,
             loser: null,
@@ -460,13 +543,44 @@ async function settleFinalEvents(db, FieldValue, events, bets, matches, ledgerEn
           }
           summary.tiesVoided += 1;
         } else {
-          const winner = match.sideA === winningSide
-            ? match.userA
-            : match.sideB === winningSide
-              ? match.userB
-              : null;
-          const loser = winner === match.userA ? match.userB : winner === match.userB ? match.userA : null;
-          if (!winner || !loser || amount <= 0) continue;
+          const winner = sideA === winningSide
+            ? userA
+            : sideB === winningSide
+              ? userB
+              : String(match.winner || "");
+          const loser = winner === userA ? userB : winner === userB ? userA : String(match.loser || "");
+          const unresolved = [];
+          if (!userA || !userB) unresolved.push("missing users");
+          if (!winner || !loser) {
+            if (!sideA || !sideB || (sideA !== winningSide && sideB !== winningSide)) unresolved.push("missing or unrecognized winning pick");
+            unresolved.push("winner could not be mapped to a bettor");
+          }
+          if (!Number.isFinite(amount) || amount <= 0) unresolved.push("missing wager amount");
+
+          if (unresolved.length) {
+            const issue = unresolved.join(", ");
+            batch.set(db.collection("matches").doc(matchId), {
+              eventId,
+              betA: betAId || match.betA || null,
+              betB: betBId || match.betB || null,
+              userA: userA || match.userA || null,
+              userB: userB || match.userB || null,
+              sideA: sideA || match.sideA || null,
+              sideB: sideB || match.sideB || null,
+              settlementIssue: issue,
+              settlementCheckedAt: FieldValue.serverTimestamp(),
+              updatedAt: FieldValue.serverTimestamp()
+            }, { merge: true });
+            summary.deferred += 1;
+            eventDeferred += 1;
+            summary.unresolved.push({ eventId, matchId: String(matchId), issue });
+            changed = true;
+            continue;
+          }
+
+          const legacyRepaired = sideA !== match.sideA || sideB !== match.sideB || userA !== match.userA || userB !== match.userB || betAId !== String(match.betA || "") || betBId !== String(match.betB || "") || Number(match.amount || 0) !== amount;
+          if (legacyRepaired) summary.repairedLegacyMatches += 1;
+
           const existingLedger = ledgerByMatch.get(matchId) || ledgerEntries.find(entry =>
             recordBelongs(entry, event)
             && entry.fromUser === loser
@@ -492,7 +606,16 @@ async function settleFinalEvents(db, FieldValue, events, bets, matches, ledgerEn
           }, { merge: true });
           batch.set(db.collection("matches").doc(matchId), {
             eventId,
+            betA: betAId,
+            betB: betBId,
+            userA,
+            userB,
+            sideA,
+            sideB,
+            amount,
             status: "settled",
+            result: winningSide,
+            settlementIssue: null,
             settledAmount: amount,
             winner,
             loser,
@@ -502,7 +625,7 @@ async function settleFinalEvents(db, FieldValue, events, bets, matches, ledgerEn
           summary.ledgerWrites += 1;
         }
 
-        for (const betId of [match.betA, match.betB].filter(Boolean)) {
+        for (const betId of [betAId, betBId].filter(Boolean)) {
           batch.set(db.collection("bets").doc(String(betId)), {
             eventId,
             status: winningSide ? "settled" : "void",
@@ -606,11 +729,14 @@ async function settleFinalEvents(db, FieldValue, events, bets, matches, ledgerEn
     }
 
     if (changed) {
+      const eventIssues = summary.unresolved.filter(item => item.eventId === String(eventId));
       batch.set(db.collection("events").doc(eventId), {
         boardState: "history",
         hiddenFromNow: true,
         settlementStatus: eventDeferred ? "partial" : "complete",
-        settledAt: FieldValue.serverTimestamp(),
+        settlementIssue: eventDeferred ? eventIssues.map(item => item.issue).join(" | ") : null,
+        settlementCheckedAt: FieldValue.serverTimestamp(),
+        ...(eventDeferred ? {} : { settledAt: FieldValue.serverTimestamp() }),
         updatedAt: FieldValue.serverTimestamp()
       }, { merge: true });
       await batch.commit();
