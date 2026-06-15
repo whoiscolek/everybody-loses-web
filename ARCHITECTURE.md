@@ -1,25 +1,15 @@
-# Everybody Loses v10.75 Architecture
+# Everybody Loses v10.76 Architecture
 
-## Settlement pipeline
+## UFC source pipeline
 
-Final-event settlement is intentionally independent from sports discovery.
+`api/espn-events.js` discovers UFC events through ESPN scoreboard data, then requests detailed FightCenter/Core event data. Known incomplete cards can be repaired without changing existing fight IDs. Detailed refresh remains active for live cards even after the expected fight count has been reached.
 
-### Scheduled maintenance
+Card status and bout status are separate. A completed early bout does not mark the whole event final. Each fight stores its own `status` and `winner`, while the event remains `live` until the card-level source or all bouts indicate completion.
 
-`api/maintenance.js` performs a pre-discovery settlement pass, refreshes sports data, then performs a fresh post-discovery settlement pass. Financial collections are reloaded between passes so the second pass is idempotent and sees writes from the first pass.
+## UFC settlement pipeline
 
-### Targeted settlement
+`api/maintenance.js` processes a UFC event whenever at least one fight has a winner, even if the card is still live. It settles only matches associated with completed fights and expires only unmatched bets tied to those completed fights. Later-fight bets remain untouched.
 
-`api/settle-event.js` is a short authenticated Vercel function for one final event. It verifies a Firebase ID token and the administrator profile, then invokes the shared settlement engine.
+`api/settle-event.js` provides the same targeted behavior for an authenticated administrator. Ledger IDs are deterministic from event ID and match ID, making repeated settlement requests idempotent.
 
-### Browser fallback
-
-The admin client detects final events with unresolved matches. It tries the dedicated endpoint first, then falls back to direct administrator Firestore writes. Snapshot-driven settlement checks are debounced and guarded against concurrent execution.
-
-### Idempotency
-
-Ledger IDs are deterministic from event ID and match ID. A settled match with a valid ledger row is skipped. A settled match missing its ledger row is repaired.
-
-### Legacy records
-
-Team matches can be reconstructed from linked bet records even when old match documents omit type, sides, users, amount, or canonical bet IDs.
+The browser fallback mirrors this behavior and can settle completed fights without requiring the entire card to be final.

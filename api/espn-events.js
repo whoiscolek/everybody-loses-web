@@ -459,13 +459,13 @@ const UFC_CARD_OVERRIDES = {
     minimumFightCount: 7,
     noPrelims: true,
     fights: [
-      { fighterA: "Diego Lopes", fighterB: "Steve Garcia", winner: "Diego Lopes" },
-      { fighterA: "Bo Nickal", fighterB: "Kyle Daukaus", winner: "Bo Nickal" },
-      { fighterA: "Mauricio Ruffy", fighterB: "Michael Chandler", winner: "Mauricio Ruffy" },
-      { fighterA: "Josh Hokit", fighterB: "Derrick Lewis", winner: "Josh Hokit" },
-      { fighterA: "Sean O'Malley", fighterB: "Aiemann Zahabi", winner: "Sean O'Malley" },
-      { fighterA: "Alex Pereira", fighterB: "Ciryl Gane", winner: "Ciryl Gane", cardRole: "co-main" },
-      { fighterA: "Ilia Topuria", fighterB: "Justin Gaethje", winner: "Ilia Topuria", cardRole: "main-event" }
+      { fighterA: "Diego Lopes", fighterB: "Steve Garcia", winner: "Diego Lopes", verifiedFinal: true },
+      { fighterA: "Bo Nickal", fighterB: "Kyle Daukaus", winner: "Bo Nickal", verifiedFinal: true },
+      { fighterA: "Mauricio Ruffy", fighterB: "Michael Chandler", winner: "Mauricio Ruffy", verifiedFinal: true },
+      { fighterA: "Josh Hokit", fighterB: "Derrick Lewis", winner: "Josh Hokit", verifiedFinal: true },
+      { fighterA: "Sean O'Malley", fighterB: "Aiemann Zahabi", winner: "Sean O'Malley", verifiedFinal: true },
+      { fighterA: "Alex Pereira", fighterB: "Ciryl Gane", winner: "Ciryl Gane", verifiedFinal: true, cardRole: "co-main" },
+      { fighterA: "Ilia Topuria", fighterB: "Justin Gaethje", winner: "", verifiedFinal: false, cardRole: "main-event" }
     ]
   }
 };
@@ -506,11 +506,11 @@ function normalizedFightPairKey(fighterA, fighterB) {
 function applyUfcCardOverride(event = {}, fights = []) {
   const eventId = ufcEventIdCandidates(event).find(id => UFC_CARD_OVERRIDES[id]);
   const override = eventId ? UFC_CARD_OVERRIDES[eventId] : null;
-  if (!override || fights.length >= override.minimumFightCount) {
+  if (!override) {
     return { fights, overrideApplied: false, overrideEventId: eventId || "" };
   }
 
-  const eventStatus = getStatus(event);
+  const eventStatus = getUfcCardStatus(event);
   const dynamicByPair = new Map(fights.map(fight => [normalizedFightPairKey(fight.fighterA, fight.fighterB), fight]));
   const merged = override.fights.map((known, index) => {
     const pair = normalizedFightPairKey(known.fighterA, known.fighterB);
@@ -525,8 +525,10 @@ function applyUfcCardOverride(event = {}, fights = []) {
       fighterA: known.fighterA,
       fighterB: known.fighterB,
       label: `${known.fighterA} vs ${known.fighterB}`,
-      status: dynamic?.status || (eventStatus === "final" ? "final" : "pregame"),
-      winner: dynamic?.winner || (eventStatus === "final" ? known.winner || "" : ""),
+      status: dynamic?.winner || known.verifiedFinal
+        ? "final"
+        : dynamic?.status || (eventStatus === "final" ? "final" : "pregame"),
+      winner: dynamic?.winner || (known.verifiedFinal ? known.winner || "" : eventStatus === "final" ? known.winner || "" : ""),
       detail: dynamic?.detail || "",
       cardSection: dynamic?.cardSection || "main-card",
       cardRole: dynamic?.cardRole || role
@@ -550,16 +552,74 @@ function ufcFighterName(competitor) {
     || "";
 }
 
-function ufcFightStatus(competition, event) {
-  const type = competition?.status?.type || event?.status?.type || {};
-  if (type.completed) return "final";
-  if (type.state === "in") return "live";
+function ufcWinnerFromCompetition(competition = {}) {
+  const competitors = Array.isArray(competition?.competitors) ? competition.competitors : [];
+  const winner = competitors.find(item => {
+    const resultText = [
+      item?.result?.type,
+      item?.result?.name,
+      item?.result?.displayName,
+      item?.result,
+      item?.outcome,
+      item?.status
+    ].filter(Boolean).join(" ").toLowerCase();
+    return item?.winner === true || item?.isWinner === true || /(^|\s)(win|winner|w)(\s|$)/.test(resultText);
+  });
+  if (winner) return ufcFighterName(winner);
+
+  const directWinner = competition?.winner
+    || competition?.result?.winner
+    || competition?.status?.winner
+    || competition?.winnerAthlete;
+  if (typeof directWinner === "string") return directWinner;
+  if (directWinner && typeof directWinner === "object") return ufcFighterName(directWinner) || ufcFighterName(directWinner?.competitor);
+
+  const winnerId = String(competition?.winnerId || competition?.result?.winnerId || "");
+  if (winnerId) {
+    const byId = competitors.find(item => [item?.id, item?.athlete?.id, item?.uid].map(String).includes(winnerId));
+    if (byId) return ufcFighterName(byId);
+  }
+  return "";
+}
+
+function ufcFightStatus(competition = {}, event = {}) {
+  if (ufcWinnerFromCompetition(competition)) return "final";
+
+  const type = competition?.status?.type || {};
+  const statusText = [
+    type?.name,
+    type?.description,
+    type?.detail,
+    type?.shortDetail,
+    type?.state,
+    competition?.status?.name,
+    competition?.status?.description,
+    competition?.status?.detail,
+    competition?.status?.shortDetail,
+    competition?.state,
+    competition?.statusText,
+    competition?.result?.status
+  ].filter(Boolean).join(" ").toLowerCase();
+
+  if (type?.completed === true || competition?.completed === true || /(^|\s)(final|complete|completed|ended|closed)(\s|$)/.test(statusText)) return "final";
+  if (type?.state === "in" || competition?.state === "in" || /live|in[ -]?progress|active/.test(statusText)) return "live";
+
+  const eventType = event?.status?.type || {};
+  if (eventType?.completed === true && competition?.status?.type?.state !== "pre") return "final";
   return "pregame";
 }
 
-function ufcWinnerFromCompetition(competition) {
-  const winner = (competition?.competitors || []).find(item => item.winner === true || item.result?.type === "win");
-  return ufcFighterName(winner);
+function getUfcCardStatus(event = {}) {
+  const type = event?.status?.type || {};
+  const text = [type.name, type.description, type.detail, type.shortDetail, type.state]
+    .filter(Boolean).join(" ").toLowerCase();
+  if (type.completed === true || String(type.state || "").toLowerCase() === "post" || /(^|\s)(final|complete|completed)(\s|$)/.test(text)) return "final";
+  if (String(type.state || "").toLowerCase() === "in" || /live|in[ -]?progress|active/.test(text)) return "live";
+
+  const fightStatuses = (event.competitions || []).map(competition => ufcFightStatus(competition, {}));
+  if (fightStatuses.includes("live")) return "live";
+  if (fightStatuses.length && fightStatuses.every(status => status === "final")) return "final";
+  return "pregame";
 }
 
 function ufcCardSection(competition = {}) {
@@ -650,7 +710,7 @@ function mapUfcFightCards(rawEvents, config, date) {
     const mainCard = fights.map((fight, index) => ({ ...fight, order: index + 1 }));
     const startTime = event.date || event.competitions?.[0]?.date || new Date().toISOString();
     const statuses = mainCard.map(fight => fight.status);
-    const status = statuses.includes("live") ? "live" : statuses.length && statuses.every(item => item === "final") ? "final" : getStatus(event);
+    const status = statuses.includes("live") ? "live" : statuses.length && statuses.every(item => item === "final") ? "final" : getUfcCardStatus(event);
     const fightResults = Object.fromEntries(mainCard.filter(fight => fight.winner).map(fight => [fight.id, fight.winner]));
     const venue = event.competitions?.[0]?.venue?.fullName || event.venue?.fullName || "";
 

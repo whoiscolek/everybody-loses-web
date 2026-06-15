@@ -18,7 +18,7 @@ const LEASE_MS = 75 * 1000;
 const NOW_LOOKAHEAD_MS = 48 * 60 * 60 * 1000;
 const PREGAME_LOOKBACK_MS = 4 * 60 * 60 * 1000;
 const HISTORY_RETENTION_MS = 5 * 24 * 60 * 60 * 1000;
-const MAINTENANCE_VERSION = "10.75";
+const MAINTENANCE_VERSION = "10.76";
 const UFC_EXPECTED_MAIN_CARD_COUNTS = { "600058854": 7 };
 
 function json(res, status, body) {
@@ -371,7 +371,7 @@ async function fetchSource(origin, league, dateISO) {
       signal: controller.signal,
       cache: "no-store",
       headers: {
-        "User-Agent": "Everyone-Loses-Maintenance/10.75",
+        "User-Agent": "Everyone-Loses-Maintenance/10.76",
         "Cache-Control": "no-cache, no-store, max-age=0",
         Pragma: "no-cache"
       }
@@ -393,7 +393,7 @@ async function fetchTargetedUfcSource(origin, eventId, dateISO) {
       signal: controller.signal,
       cache: "no-store",
       headers: {
-        "User-Agent": "Everyone-Loses-Maintenance/10.75",
+        "User-Agent": "Everyone-Loses-Maintenance/10.76",
         "Cache-Control": "no-cache, no-store, max-age=0",
         Pragma: "no-cache"
       }
@@ -516,6 +516,32 @@ function ufcCardNeedsRepair(event = {}) {
   return Boolean(expected && (event.fights || []).length < expected);
 }
 
+function ufcFightHasResult(event = {}, fight = {}) {
+  return Boolean(event?.fightResults?.[fight?.id] || fight?.winner);
+}
+
+function ufcNeedsTargetedRefresh(event = {}, matches = []) {
+  if (event?.type !== EVENT_TYPES.FIGHT_CARD && event?.league !== "UFC") return false;
+  if (!ufcRepairEventId(event)) return false;
+
+  const hasUnresolvedFight = (event.fights || []).some(fight => {
+    const status = String(fight?.status || "").toLowerCase();
+    return !ufcFightHasResult(event, fight)
+      && !["final", "complete", "completed", "closed", "settled", "cancelled", "canceled"].includes(status);
+  });
+  const hasUnsettledMatch = matches.some(match =>
+    recordBelongs(match, event)
+    && !["settled", "void", "cancelled"].includes(String(match.status || "").toLowerCase())
+  );
+  const start = dateMs(event.startTime);
+  const recent = Boolean(start && Date.now() - start < 48 * 60 * 60 * 1000);
+
+  return ufcCardNeedsRepair(event)
+    || event.status === "live"
+    || (recent && hasUnresolvedFight)
+    || (hasUnsettledMatch && hasUnresolvedFight);
+}
+
 function buildFetchPlan(events, matches, fullDiscovery) {
   const plan = new Map();
   const add = (league, dateISO) => {
@@ -581,9 +607,17 @@ export async function settleFinalEvents(db, FieldValue, events, bets, matches, l
     if (entry.matchId) ledgerByMatch.set(String(entry.matchId), entry);
   }
 
-  for (const event of events.filter(e => e.status === "final")) {
+  const settlementReadyEvents = events.filter(event => {
+    if (event.status === "final") return true;
+    const eventType = event.type || (Array.isArray(event.fights) ? EVENT_TYPES.FIGHT_CARD : "");
+    return eventType === EVENT_TYPES.FIGHT_CARD
+      && (event.fights || []).some(fight => ufcFightHasResult(event, fight));
+  });
+
+  for (const event of settlementReadyEvents) {
     const eventId = event.firestoreId || event.id;
     const eventType = event.type || (event.away && event.home ? EVENT_TYPES.TEAM : (Array.isArray(event.fights) ? EVENT_TYPES.FIGHT_CARD : ""));
+    const eventIsFinal = event.status === "final";
     if (!eventId) continue;
     const eventMatches = matches.filter(match => recordBelongs(match, event));
     const eventBets = bets.filter(bet => recordBelongs(bet, event));
@@ -732,16 +766,28 @@ export async function settleFinalEvents(db, FieldValue, events, bets, matches, l
     } else if (eventType === EVENT_TYPES.FIGHT_CARD) {
       const resultMap = event.fightResults || Object.fromEntries((event.fights || []).map(f => [f.id, f.winner]).filter(([, winner]) => winner));
       for (const match of eventMatches) {
-        if (match.status === "cancelled" || match.status === "void") continue;
+        const matchStatus = String(match.status || "").toLowerCase();
+        if (["cancelled", "void"].includes(matchStatus)) continue;
+        const matchId = match.firestoreId || match.id;
+        if (!matchId) continue;
+        if (matchStatus === "settled" && ledgerByMatch.has(String(matchId))) continue;
+
         const fight = (event.fights || []).find(f => String(f.id) === String(match.fightId));
-        const winnerName = String(resultMap[match.fightId] || "").toLowerCase();
-        if (!fight || !winnerName) { summary.deferred += 1; eventDeferred += 1; continue; }
+        const winnerName = String(resultMap[match.fightId] || fight?.winner || "").toLowerCase();
+        if (!fight) { summary.deferred += 1; eventDeferred += 1; continue; }
+        if (!winnerName) {
+          const fightStatus = String(fight.status || "").toLowerCase();
+          if (["final", "complete", "completed", "closed", "settled"].includes(fightStatus)) {
+            summary.deferred += 1;
+            eventDeferred += 1;
+          }
+          continue;
+        }
         const sideAName = String(match.sideA === "fighterA" ? fight.fighterA : fight.fighterB).toLowerCase();
         const sideBName = String(match.sideB === "fighterA" ? fight.fighterA : fight.fighterB).toLowerCase();
         const winner = winnerName === sideAName ? match.userA : winnerName === sideBName ? match.userB : null;
         if (!winner) { summary.deferred += 1; eventDeferred += 1; continue; }
         const loser = winner === match.userA ? match.userB : match.userA;
-        const matchId = match.firestoreId || match.id;
         const amount = effectiveAmount(match);
         const existingLedger = ledgerByMatch.get(matchId) || ledgerEntries.find(entry =>
           recordBelongs(entry, event)
@@ -809,9 +855,15 @@ export async function settleFinalEvents(db, FieldValue, events, bets, matches, l
     }
 
     const matchedBetIds = new Set(eventMatches.flatMap(m => [m.betA, m.betB]).filter(Boolean).map(String));
+    const completedFightIds = new Set(
+      eventType === EVENT_TYPES.FIGHT_CARD
+        ? (event.fights || []).filter(fight => ufcFightHasResult(event, fight)).map(fight => String(fight.id || "")).filter(Boolean)
+        : []
+    );
     for (const bet of eventBets) {
       const betId = String(bet.firestoreId || bet.id || "");
-      if (!betId || matchedBetIds.has(betId) || ["settled", "expired", "void", "cancelled"].includes(bet.status)) continue;
+      if (!betId || matchedBetIds.has(betId) || ["settled", "expired", "void", "cancelled"].includes(String(bet.status || "").toLowerCase())) continue;
+      if (eventType === EVENT_TYPES.FIGHT_CARD && !eventIsFinal && !completedFightIds.has(String(bet.fightId || ""))) continue;
       batch.set(db.collection("bets").doc(betId), {
         eventId,
         status: "expired",
@@ -823,13 +875,22 @@ export async function settleFinalEvents(db, FieldValue, events, bets, matches, l
 
     if (changed) {
       const eventIssues = summary.unresolved.filter(item => item.eventId === String(eventId));
+      const eventPatch = eventIsFinal
+        ? {
+            boardState: "history",
+            hiddenFromNow: true,
+            settlementStatus: eventDeferred ? "partial" : "complete",
+            settlementIssue: eventDeferred ? eventIssues.map(item => item.issue).join(" | ") : null,
+            settlementCheckedAt: FieldValue.serverTimestamp(),
+            ...(eventDeferred ? {} : { settledAt: FieldValue.serverTimestamp() })
+          }
+        : {
+            settlementStatus: eventDeferred ? "in-progress-with-issues" : "in-progress",
+            settlementIssue: eventDeferred ? eventIssues.map(item => item.issue).join(" | ") : null,
+            settlementCheckedAt: FieldValue.serverTimestamp()
+          };
       batch.set(db.collection("events").doc(eventId), {
-        boardState: "history",
-        hiddenFromNow: true,
-        settlementStatus: eventDeferred ? "partial" : "complete",
-        settlementIssue: eventDeferred ? eventIssues.map(item => item.issue).join(" | ") : null,
-        settlementCheckedAt: FieldValue.serverTimestamp(),
-        ...(eventDeferred ? {} : { settledAt: FieldValue.serverTimestamp() }),
+        ...eventPatch,
         updatedAt: FieldValue.serverTimestamp()
       }, { merge: true });
       await batch.commit();
@@ -911,7 +972,7 @@ async function runMaintenance(req, mode) {
     let sourceResults = await mapLimit(plan, 12, async item => fetchSource(origin, item.league, item.dateISO));
 
     const targetedUfcRepairs = events
-      .filter(ufcCardNeedsRepair)
+      .filter(event => ufcNeedsTargetedRefresh(event, matches))
       .map(event => ({
         eventId: ufcRepairEventId(event),
         dateISO: dateForEvent(event)

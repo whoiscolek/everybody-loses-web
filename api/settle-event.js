@@ -51,12 +51,16 @@ export default async function handler(req, res) {
     const eventId = String(body.eventId || "").trim();
     if (!eventId) return json(res, 400, { error: "eventId is required", code: "EVENT_ID_REQUIRED" });
 
-    stage = "loading final event";
+    stage = "loading event";
     const eventSnap = await services.db.collection("events").doc(eventId).get();
     if (!eventSnap.exists) return json(res, 404, { error: "Event not found", code: "EVENT_NOT_FOUND", eventId });
     const event = { firestoreId: eventSnap.id, ...eventSnap.data() };
-    if (String(event.status || "").toLowerCase() !== "final") {
-      return json(res, 409, { error: "Event is not final yet.", code: "EVENT_NOT_FINAL", eventId, status: event.status || "unknown" });
+    const isFightCard = event.type === "FIGHT_CARD" || event.league === "UFC" || Array.isArray(event.fights);
+    const hasCompletedFight = isFightCard && (event.fights || []).some(fight =>
+      Boolean(event?.fightResults?.[fight?.id] || fight?.winner)
+    );
+    if (String(event.status || "").toLowerCase() !== "final" && !hasCompletedFight) {
+      return json(res, 409, { error: "Event has no completed result available for settlement yet.", code: "EVENT_NOT_SETTLEMENT_READY", eventId, status: event.status || "unknown" });
     }
 
     stage = "loading event financial records";
@@ -67,7 +71,7 @@ export default async function handler(req, res) {
     ]);
     const rows = snap => snap.docs.map(doc => ({ firestoreId: doc.id, ...doc.data() }));
 
-    stage = "settling final event";
+    stage = "settling available results";
     const settlement = await settleFinalEvents(
       services.db,
       services.FieldValue,
@@ -83,16 +87,16 @@ export default async function handler(req, res) {
       adminUid,
       settlement,
       runtime: process.version,
-      version: "10.70"
+      version: "10.76"
     });
   } catch (error) {
     console.error("settle-event failed", { stage, error });
     return json(res, Number(error.status) || 500, {
-      error: error.message || "Final-event settlement failed.",
+      error: error.message || "Event settlement failed.",
       code: error.code || "SETTLE_EVENT_FAILED",
       stage,
       runtime: process.version,
-      version: "10.70"
+      version: "10.76"
     });
   }
 }

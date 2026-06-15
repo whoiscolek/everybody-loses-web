@@ -148,7 +148,7 @@ const EVENT_TYPES = {
   FIGHT_CARD: "FIGHT_CARD"
 };
 
-// v10.75: verified one-off repair data for UFC Freedom 250. This is used only
+// v10.76: verified one-off repair data for UFC Freedom 250. This is used only
 // when the saved Firestore event is still missing part of the seven-fight card.
 // Existing fight IDs are preserved so any already-created bets remain linked.
 const UFC_KNOWN_CARD_REPAIRS = {
@@ -156,13 +156,13 @@ const UFC_KNOWN_CARD_REPAIRS = {
     titlePattern: /ufc\s+freedom\s+250/i,
     minimumFightCount: 7,
     fights: [
-      { fighterA: "Diego Lopes", fighterB: "Steve Garcia", winner: "Diego Lopes" },
-      { fighterA: "Bo Nickal", fighterB: "Kyle Daukaus", winner: "Bo Nickal" },
-      { fighterA: "Mauricio Ruffy", fighterB: "Michael Chandler", winner: "Mauricio Ruffy" },
-      { fighterA: "Josh Hokit", fighterB: "Derrick Lewis", winner: "Josh Hokit" },
-      { fighterA: "Sean O'Malley", fighterB: "Aiemann Zahabi", winner: "Sean O'Malley" },
-      { fighterA: "Alex Pereira", fighterB: "Ciryl Gane", winner: "Ciryl Gane", cardRole: "co-main" },
-      { fighterA: "Ilia Topuria", fighterB: "Justin Gaethje", winner: "Ilia Topuria", cardRole: "main-event" }
+      { fighterA: "Diego Lopes", fighterB: "Steve Garcia", winner: "Diego Lopes", verifiedFinal: true },
+      { fighterA: "Bo Nickal", fighterB: "Kyle Daukaus", winner: "Bo Nickal", verifiedFinal: true },
+      { fighterA: "Mauricio Ruffy", fighterB: "Michael Chandler", winner: "Mauricio Ruffy", verifiedFinal: true },
+      { fighterA: "Josh Hokit", fighterB: "Derrick Lewis", winner: "Josh Hokit", verifiedFinal: true },
+      { fighterA: "Sean O'Malley", fighterB: "Aiemann Zahabi", winner: "Sean O'Malley", verifiedFinal: true },
+      { fighterA: "Alex Pereira", fighterB: "Ciryl Gane", winner: "Ciryl Gane", verifiedFinal: true, cardRole: "co-main" },
+      { fighterA: "Ilia Topuria", fighterB: "Justin Gaethje", winner: "", verifiedFinal: false, cardRole: "main-event" }
     ]
   }
 };
@@ -860,19 +860,23 @@ function knownUfcCardFights(event = {}) {
   if (!repair) return existing;
 
   const cardIsFinal = String(event?.status || "").toLowerCase() === "final";
-  const incoming = repair.fights.map((fight, index) => ({
-    id: normalizeFightId(`${repairId}-${fight.fighterA}-${fight.fighterB}`, `fight-${index + 1}`),
-    order: index + 1,
-    sourceOrder: index + 1,
-    fighterA: fight.fighterA,
-    fighterB: fight.fighterB,
-    label: `${fight.fighterA} vs ${fight.fighterB}`,
-    status: cardIsFinal ? "final" : "pregame",
-    winner: cardIsFinal ? fight.winner || "" : "",
-    detail: "",
-    cardSection: "main-card",
-    cardRole: fight.cardRole || (index === repair.fights.length - 2 ? "co-main" : index === repair.fights.length - 1 ? "main-event" : "main-card")
-  }));
+  const existingByPair = new Map(existing.map(fight => [fightIdentityKey(fight), fight]));
+  const incoming = repair.fights.map((fight, index) => {
+    const prior = existingByPair.get(fightIdentityKey(fight)) || null;
+    return {
+      id: prior?.id || normalizeFightId(`${repairId}-${fight.fighterA}-${fight.fighterB}`, `fight-${index + 1}`),
+      order: index + 1,
+      sourceOrder: prior?.sourceOrder || index + 1,
+      fighterA: fight.fighterA,
+      fighterB: fight.fighterB,
+      label: `${fight.fighterA} vs ${fight.fighterB}`,
+      status: fight.verifiedFinal ? "final" : prior?.status || (cardIsFinal ? "final" : "pregame"),
+      winner: fight.verifiedFinal ? fight.winner || "" : prior?.winner || (cardIsFinal ? fight.winner || "" : ""),
+      detail: prior?.detail || "",
+      cardSection: prior?.cardSection || "main-card",
+      cardRole: fight.cardRole || prior?.cardRole || (index === repair.fights.length - 2 ? "co-main" : index === repair.fights.length - 1 ? "main-event" : "main-card")
+    };
+  });
 
   return mergeImportedUfcFights(existing, incoming).map((fight, index) => ({
     ...fight,
@@ -904,7 +908,14 @@ async function repairKnownUfcCardsInFirestore() {
     if (event?.type !== EVENT_TYPES.FIGHT_CARD) return false;
     const repairId = knownUfcRepairId(event);
     const repair = repairId ? UFC_KNOWN_CARD_REPAIRS[repairId] : null;
-    return Boolean(repair && (event.fights || []).length < repair.minimumFightCount);
+    if (!repair) return false;
+    const existingByPair = new Map((event.fights || []).map(fight => [fightIdentityKey(fight), fight]));
+    const missingVerifiedResult = repair.fights.some(fight => {
+      if (!fight.verifiedFinal || !fight.winner) return false;
+      const existing = existingByPair.get(fightIdentityKey(fight));
+      return !existing?.winner && !event?.fightResults?.[existing?.id];
+    });
+    return (event.fights || []).length < repair.minimumFightCount || missingVerifiedResult;
   });
 
   if (!targets.length) return { repaired: 0 };
@@ -918,7 +929,8 @@ async function repairKnownUfcCardsInFirestore() {
       const repair = UFC_KNOWN_CARD_REPAIRS[repairId];
       if (!docId || !repair) continue;
 
-      const attemptKey = `${docId}:${(event.fights || []).length}:${event.status || ""}`;
+      const verifiedResultCount = (event.fights || []).filter(fight => fight?.winner || event?.fightResults?.[fight?.id]).length;
+      const attemptKey = `${docId}:${(event.fights || []).length}:${verifiedResultCount}:${event.status || ""}`;
       if (knownUfcRepairAttempts.has(attemptKey)) continue;
       knownUfcRepairAttempts.add(attemptKey);
 
@@ -946,7 +958,7 @@ async function repairKnownUfcCardsInFirestore() {
           fightResults,
           externalIds,
           expectedMainCardCount: repair.minimumFightCount,
-          ufcCardRepairVersion: "v10.75",
+          ufcCardRepairVersion: "v10.76",
           ufcCardRepairAppliedAt: serverTimestamp(),
           updatedAt: serverTimestamp()
         }, { merge: true });
@@ -957,7 +969,7 @@ async function repairKnownUfcCardsInFirestore() {
           fightResults,
           externalIds,
           expectedMainCardCount: repair.minimumFightCount,
-          ufcCardRepairVersion: "v10.75",
+          ufcCardRepairVersion: "v10.76",
           firestoreId: docId
         };
         repaired += 1;
@@ -3943,7 +3955,12 @@ async function settleEvent(eventId, options = {}) {
   if (!canSettleFinalEvents()) return;
   const event = state.events[eventId] || findEventByIdOrCode(eventId);
   if (!event) { if (!options.silent) alert("Event not found."); return; }
-  if (event.status !== "final") { if (!options.silent) alert("Set event status to final before settling."); return; }
+  const fightCardHasResult = event.type === EVENT_TYPES.FIGHT_CARD
+    && (event.fights || []).some(fight => fightResultWinner(event, fight?.id));
+  if (event.status !== "final" && !fightCardHasResult) {
+    if (!options.silent) alert("This event has no completed result available to settle yet.");
+    return 0;
+  }
   if (event.type === EVENT_TYPES.TEAM) return settleTeamEvent(event, options);
   if (event.type === EVENT_TYPES.RANKED) return settleRankedEvent(event, options);
   if (event.type === EVENT_TYPES.FIGHT_CARD) return settleFightCardEvent(event, options);
@@ -4307,51 +4324,100 @@ async function settleRankedEvent(event, options = {}) {
 
 
 async function settleFightCardEvent(event, options = {}) {
-  const resultMap = event.fightResults || Object.fromEntries((event.fights || []).map(fight => [fight.id, fight.winner]).filter(([, winner]) => winner));
+  const eventId = event.firestoreId || event.id;
+  const resultMap = {
+    ...(event.fightResults || {}),
+    ...Object.fromEntries((event.fights || []).map(fight => [fight.id, fight.winner]).filter(([, winner]) => winner))
+  };
   if (!Object.keys(resultMap).length) {
-    if (!options.silent) alert("UFC fight card needs winners first. Use fightId:winner in Ranked result order, separated by commas.");
-    return;
+    if (!options.silent) alert("UFC fight card has no completed fight results yet.");
+    return 0;
   }
 
+  const matches = Object.values(state.matches || {}).filter(match => {
+    const status = String(match.status || "").toLowerCase();
+    return recordMatchesEvent(match, event)
+      && match.fightId
+      && !["settled", "cancelled", "void"].includes(status);
+  });
+  if (!matches.length) return 0;
+
   const batch = writeBatch(db);
+  let settledCount = 0;
 
-  Object.values(state.matches)
-    .filter(match => match.eventId === event.id && match.type === EVENT_TYPES.FIGHT_CARD && match.status !== "settled")
-    .forEach(match => {
-      const fight = fightById(event, match.fightId);
-      const winnerName = String(resultMap[match.fightId] || "").toLowerCase();
-      if (!fight || !winnerName) return;
+  for (const match of matches) {
+    const matchId = match.firestoreId || match.id;
+    const fight = fightById(event, match.fightId);
+    const winnerName = String(resultMap[match.fightId] || fight?.winner || "").trim().toLowerCase();
+    if (!matchId || !fight || !winnerName) continue;
 
-      const sideAName = fightPickName(fight, match.sideA).toLowerCase();
-      const sideBName = fightPickName(fight, match.sideB).toLowerCase();
-      const winner = winnerName === sideAName ? match.userA : winnerName === sideBName ? match.userB : null;
-      if (!winner) return;
+    const betAId = String(match.betA || "");
+    const betBId = String(match.betB || "");
+    const betA = betAId ? (state.bets[betAId] || Object.values(state.bets || {}).find(bet => String(bet.firestoreId || bet.id || "") === betAId)) : null;
+    const betB = betBId ? (state.bets[betBId] || Object.values(state.bets || {}).find(bet => String(bet.firestoreId || bet.id || "") === betBId)) : null;
+    const sideA = match.sideA || betA?.side || betA?.pick || "";
+    const sideB = match.sideB || betB?.side || betB?.pick || "";
+    const userA = match.userA || betA?.userId || "";
+    const userB = match.userB || betB?.userId || "";
+    const sideAName = String(fightPickName(fight, sideA)).trim().toLowerCase();
+    const sideBName = String(fightPickName(fight, sideB)).trim().toLowerCase();
+    const winner = winnerName === sideAName ? userA : winnerName === sideBName ? userB : "";
+    const loser = winner === userA ? userB : winner === userB ? userA : "";
+    const amount = matchEffectiveAmount(match, betA, betB);
+    if (!winner || !loser || !Number.isFinite(amount) || amount <= 0) continue;
 
-      const loser = winner === match.userA ? match.userB : match.userA;
-      const ledgerRef = doc(collection(db, "ledgerEntries"));
+    const existingLedger = findLedgerForMatch(eventId, matchId, loser, winner);
+    const ledgerRef = existingLedger
+      ? doc(db, "ledgerEntries", existingLedger.firestoreId || existingLedger.id)
+      : doc(db, "ledgerEntries", matchLedgerId(eventId, matchId));
 
-      batch.set(ledgerRef, {
-        id: ledgerRef.id,
-        eventId: event.id,
-        fromUser: loser,
-        toUser: winner,
-        amount: matchEffectiveAmount(match),
-        matchId: match.firestoreId || match.id,
-        originalAmount: Number(match.doubleUp?.originalAmount || match.amount || 0),
-        doubledUp: matchIsDoubled(match),
-        note: `UFC settled: ${event.title} · ${fight.label}${matchIsDoubled(match) ? " · doubled up" : ""}`,
-        settled: false,
-        createdAt: serverTimestamp(),
-        updatedAt: serverTimestamp()
-      });
+    batch.set(ledgerRef, {
+      id: existingLedger?.id || ledgerRef.id,
+      eventId,
+      matchId,
+      fromUser: loser,
+      toUser: winner,
+      amount,
+      originalAmount: Number(match.doubleUp?.originalAmount || match.amount || amount),
+      doubledUp: matchIsDoubled(match),
+      note: `UFC settled: ${event.title} · ${fight.label}${matchIsDoubled(match) ? " · doubled up" : ""}`,
+      settled: Boolean(existingLedger?.settled || false),
+      createdAt: existingLedger?.createdAt || serverTimestamp(),
+      updatedAt: serverTimestamp()
+    }, { merge: true });
 
-      batch.update(doc(db, "matches", match.firestoreId || match.id), {
+    batch.set(doc(db, "matches", matchId), {
+      eventId,
+      betA: betAId || match.betA || null,
+      betB: betBId || match.betB || null,
+      userA,
+      userB,
+      sideA,
+      sideB,
+      amount,
+      status: "settled",
+      result: winnerName,
+      settlementIssue: null,
+      settledAmount: amount,
+      winner,
+      loser,
+      settledAt: serverTimestamp(),
+      updatedAt: serverTimestamp()
+    }, { merge: true });
+
+    for (const betId of [betAId, betBId].filter(Boolean)) {
+      batch.set(doc(db, "bets", betId), {
+        eventId,
         status: "settled",
         updatedAt: serverTimestamp()
-      });
-    });
+      }, { merge: true });
+    }
+    settledCount += 1;
+  }
 
+  if (!settledCount) return 0;
   await batch.commit();
+  return settledCount;
 }
 
 async function settleBalance(otherUserId, amount) {
@@ -5075,6 +5141,29 @@ function ufcCardNeedsRepair(event = {}) {
   return Boolean(expected && (event.fights || []).length < expected);
 }
 
+function ufcNeedsDetailedRefresh(event = {}) {
+  if (event?.type !== EVENT_TYPES.FIGHT_CARD && event?.league !== "UFC") return false;
+  if (!ufcRepairEventId(event)) return false;
+
+  const eventIds = eventIdCandidates(event);
+  const hasUnsettledMatch = Object.values(state.matches || {}).some(match =>
+    eventIds.has(String(match.eventId || ""))
+    && !["settled", "void", "cancelled"].includes(String(match.status || "").toLowerCase())
+  );
+  const hasUnresolvedFight = (event.fights || []).some(fight => {
+    const status = String(fight?.status || "").toLowerCase();
+    return !fightResultWinner(event, fight?.id)
+      && !["final", "complete", "completed", "closed", "settled", "cancelled", "canceled"].includes(status);
+  });
+  const start = new Date(event.startTime || 0).getTime();
+  const recent = Number.isFinite(start) && Date.now() - start < 48 * 60 * 60 * 1000;
+
+  return ufcCardNeedsRepair(event)
+    || event.status === "live"
+    || (recent && hasUnresolvedFight)
+    || (hasUnsettledMatch && hasUnresolvedFight);
+}
+
 function liveRefreshCandidateEvents() {
   const now = Date.now();
   const soonMs = 20 * 60 * 1000;
@@ -5082,7 +5171,7 @@ function liveRefreshCandidateEvents() {
 
   return Object.values(state.events || {}).filter(event => {
     if (!event) return false;
-    if (event.status === "final" && !ufcCardNeedsRepair(event)) return false;
+    if (event.status === "final" && !ufcNeedsDetailedRefresh(event)) return false;
     if (![EVENT_TYPES.TEAM, EVENT_TYPES.RANKED, EVENT_TYPES.FIGHT_CARD].includes(event.type)) return false;
     const start = new Date(event.startTime || 0).getTime();
     if (!Number.isFinite(start)) return event.status === "live";
@@ -5134,8 +5223,8 @@ async function syncLiveScoreEvents(options = {}) {
   for (const { league, date } of leaguesByDate.values()) {
     try {
       let incomingEvents = await fetchApiEventsForLeagueDate(league, date);
-      const repairTargets = candidates.filter(event => event.league === league && ufcCardNeedsRepair(event));
-      for (const target of repairTargets) {
+      const detailedUfcTargets = candidates.filter(event => event.league === league && ufcNeedsDetailedRefresh(event));
+      for (const target of detailedUfcTargets) {
         const repairEventId = ufcRepairEventId(target);
         if (!repairEventId) continue;
         try {
@@ -5421,7 +5510,9 @@ function activeTeamEventsForOdds() {
 
 function finalEventsNeedingSettlement() {
   return Object.values(state.events || {}).filter(event => {
-    if (!eventIsComplete(event)) return false;
+    const fightCardHasResult = event.type === EVENT_TYPES.FIGHT_CARD
+      && (event.fights || []).some(fight => fightResultWinner(event, fight?.id));
+    if (!eventIsComplete(event) && !fightCardHasResult) return false;
     const ids = eventIdCandidates(event);
     return Object.values(state.matches || {}).some(match => {
       if (!ids.has(String(match.eventId || ""))) return false;
