@@ -171,6 +171,8 @@ let settlementSyncMessage = "";
 let authUser = null;
 let loading = true;
 let dataReady = false;
+let passiveRenderPending = false;
+let passiveRenderTimer = null;
 
 let state = {
   currentUserId: null,
@@ -185,7 +187,38 @@ let state = {
 
 let unsubscribeAll = [];
 
+function isEditableElement(element = document.activeElement) {
+  if (!element || !(element instanceof HTMLElement)) return false;
+  return element.matches("input, select, textarea, [contenteditable='true']");
+}
+
+function requestPassiveRender() {
+  if (isEditableElement()) {
+    passiveRenderPending = true;
+    return;
+  }
+
+  passiveRenderPending = false;
+  renderApp();
+}
+
+function flushPassiveRenderWhenIdle() {
+  if (!passiveRenderPending) return;
+  clearTimeout(passiveRenderTimer);
+  passiveRenderTimer = setTimeout(() => {
+    if (passiveRenderPending && !isEditableElement()) {
+      passiveRenderPending = false;
+      renderApp();
+    }
+  }, 0);
+}
+
+function installInteractionGuards() {
+  document.addEventListener("focusout", flushPassiveRenderWhenIdle);
+}
+
 function startApp() {
+  installInteractionGuards();
   if (!hasFirebaseConfig) {
     loading = false;
     renderApp();
@@ -266,7 +299,7 @@ function subscribeToUserScopedCollection(collectionName, stateKey) {
 
   function mergeAndRender() {
     state[stateKey] = { ...fromMap, ...toMap };
-    renderApp();
+    requestPassiveRender();
   }
 
   const fromUnsub = onSnapshot(
@@ -304,7 +337,7 @@ function subscribeLedgerLikeCollection(collectionName, stateKey) {
     snapshot => {
       if (fellBack) return;
       state[stateKey] = snapToMap(snapshot);
-      renderApp();
+      requestPassiveRender();
     },
     () => {
       // Non-admin users are not allowed to list every ledger/settlement doc.
@@ -324,25 +357,25 @@ function subscribeToData() {
     onSnapshot(collection(db, "users"), snapshot => {
       state.users = snapToMap(snapshot);
       dataReady = true;
-      renderApp();
+      requestPassiveRender();
     }),
     onSnapshot(collection(db, "events"), snapshot => {
       state.events = snapToMap(snapshot);
-      renderApp();
+      requestPassiveRender();
     }),
     onSnapshot(collection(db, "bets"), snapshot => {
       state.bets = snapToMap(snapshot);
-      renderApp();
+      requestPassiveRender();
     }),
     onSnapshot(collection(db, "matches"), snapshot => {
       state.matches = snapToMap(snapshot);
-      renderApp();
+      requestPassiveRender();
     }),
     subscribeLedgerLikeCollection("ledgerEntries", "ledgerEntries"),
     subscribeLedgerLikeCollection("settlements", "settlements"),
     onSnapshot(doc(db, "system", "maintenance"), snapshot => {
       state.maintenance = snapshot.exists() ? snapshot.data() : {};
-      renderApp();
+      requestPassiveRender();
     }, () => {
       // Maintenance health is supplemental; the board still renders without it.
     })
@@ -1050,6 +1083,32 @@ function eventIsLocked(event) {
   return event.status !== "pregame" || (!Number.isNaN(start.getTime()) && Date.now() >= start.getTime());
 }
 
+function fightResultText(event, fight) {
+  return fightResultWinner(event, fight?.id) || fight?.winner || "";
+}
+
+function fightStatusText(event, fight) {
+  const raw = String(fight?.status || "").trim().toLowerCase();
+  if (fightResultText(event, fight)) return "Final";
+  if (["final", "complete", "completed", "closed", "settled"].includes(raw)) return "Final";
+  if (["live", "in_progress", "in progress", "active"].includes(raw)) return "Live";
+  if (event?.status === "final") return "Final";
+  if (event?.status === "live") return "Open until fight starts/finalizes";
+  return "Open";
+}
+
+function fightIsLocked(event, fight) {
+  if (!event || !fight) return true;
+  if (event.status === "final") return true;
+  const raw = String(fight.status || "").trim().toLowerCase();
+  if (fightResultText(event, fight)) return true;
+  return ["live", "in_progress", "in progress", "final", "complete", "completed", "closed", "settled", "cancelled", "canceled"].includes(raw);
+}
+
+function fightCanTakeBets(event, fight) {
+  return !fightIsLocked(event, fight);
+}
+
 function eventHasBegun(event) {
   const start = new Date(event?.startTime);
   if (!event || event.status === "final") return false;
@@ -1149,17 +1208,27 @@ function hasActiveDoubleUpCountdowns() {
   return Object.values(state.matches || {}).some(match => doubleUpIsPending(match));
 }
 
+function updateDoubleUpCountdownDom() {
+  document.querySelectorAll("[data-double-up-countdown]").forEach(node => {
+    const matchId = node.dataset.doubleUpCountdown;
+    const match = Object.values(state.matches || {}).find(item => (item.firestoreId || item.id) === matchId);
+    if (!match || !doubleUpIsPending(match)) return;
+    node.textContent = formatCountdown(doubleUpTimeLeftMs(match));
+  });
+}
+
 function ensureDoubleUpCountdownTimer() {
   const hasCountdown = hasActiveDoubleUpCountdowns();
   if (hasCountdown && !doubleUpCountdownTimer) {
+    updateDoubleUpCountdownDom();
     doubleUpCountdownTimer = setInterval(() => {
       if (!hasActiveDoubleUpCountdowns()) {
         clearInterval(doubleUpCountdownTimer);
         doubleUpCountdownTimer = null;
-        renderApp();
+        requestPassiveRender();
         return;
       }
-      renderApp();
+      updateDoubleUpCountdownDom();
     }, 1000);
   }
 
@@ -1192,17 +1261,17 @@ function renderDoubleUpControl(event, match) {
     if (involved && user.id === accepterId) {
       return `
         <div class="double-up-challenge">
-          <span class="double-up-status waiting">${escapeHtml(requesterName)} requested double up · ${countdown}</span>
+          <span class="double-up-status waiting">${escapeHtml(requesterName)} requested double up · <span data-double-up-countdown="${escapeHtml(matchId)}">${countdown}</span></span>
           <button class="danger double-up-btn accept" data-double-up="${escapeHtml(matchId)}">Accept double up</button>
         </div>
       `;
     }
 
     if (involved && user.id === requesterId) {
-      return `<span class="double-up-status waiting">Double up requested — waiting for ${escapeHtml(accepterName)} · ${countdown}</span>`;
+      return `<span class="double-up-status waiting">Double up requested — waiting for ${escapeHtml(accepterName)} · <span data-double-up-countdown="${escapeHtml(matchId)}">${countdown}</span></span>`;
     }
 
-    return `<span class="double-up-status waiting">${escapeHtml(requesterName)} challenged ${escapeHtml(accepterName)} to double up · ${countdown}</span>`;
+    return `<span class="double-up-status waiting">${escapeHtml(requesterName)} challenged ${escapeHtml(accepterName)} to double up · <span data-double-up-countdown="${escapeHtml(matchId)}">${countdown}</span></span>`;
   }
 
   if (doubleUpIsExpired(match)) {
@@ -1229,7 +1298,70 @@ function sortNewest(a, b) {
   return toDateValue(b.createdAt) - toDateValue(a.createdAt);
 }
 
+function captureTransientUiState() {
+  const app = document.querySelector("#app");
+  if (!app) return null;
+
+  const fields = {};
+  app.querySelectorAll("input[id], select[id], textarea[id]").forEach(field => {
+    const type = String(field.type || "").toLowerCase();
+    if (type === "file" || type === "password") return;
+    fields[field.id] = {
+      value: field.value,
+      checked: "checked" in field ? field.checked : undefined
+    };
+  });
+
+  const active = document.activeElement;
+  const activeId = active?.id || "";
+  const selection = activeId && typeof active?.selectionStart === "number"
+    ? { start: active.selectionStart, end: active.selectionEnd }
+    : null;
+
+  return {
+    fields,
+    activeId,
+    selection,
+    pageX: window.scrollX,
+    pageY: window.scrollY,
+    navScrollLeft: document.querySelector(".navbar")?.scrollLeft || 0
+  };
+}
+
+function restoreTransientUiState(snapshot) {
+  if (!snapshot) return;
+
+  Object.entries(snapshot.fields || {}).forEach(([id, saved]) => {
+    const field = document.getElementById(id);
+    if (!field) return;
+    const type = String(field.type || "").toLowerCase();
+    if (type === "checkbox" || type === "radio") {
+      field.checked = !!saved.checked;
+    } else {
+      field.value = saved.value;
+    }
+  });
+
+  const nav = document.querySelector(".navbar");
+  if (nav) nav.scrollLeft = snapshot.navScrollLeft;
+
+  const active = snapshot.activeId ? document.getElementById(snapshot.activeId) : null;
+  if (active && !active.disabled) {
+    active.focus({ preventScroll: true });
+    if (snapshot.selection && typeof active.setSelectionRange === "function") {
+      try {
+        active.setSelectionRange(snapshot.selection.start, snapshot.selection.end);
+      } catch {
+        // Some input types do not support text selection.
+      }
+    }
+  }
+
+  requestAnimationFrame(() => window.scrollTo(snapshot.pageX, snapshot.pageY));
+}
+
 function renderApp() {
+  const transientUi = captureTransientUiState();
   document.querySelector("#app").innerHTML = `
     <main class="app-shell">
       ${renderTopbar()}
@@ -1240,6 +1372,7 @@ function renderApp() {
     </main>
   `;
   wireUi();
+  restoreTransientUiState(transientUi);
   keepActiveNavVisible();
   maybeStartAutoMaintenance();
   maybeStartSettlementMaintenance();
@@ -1725,17 +1858,22 @@ function renderScoreLine(event) {
       <div class="score-card fight-card-score">
         <div class="event-center-label">Main card</div>
         <div class="fight-list">
-          ${fights.length ? fights.map(fight => `
-            <div class="fight-row">
+          ${fights.length ? fights.map(fight => {
+            const winner = fightResultText(event, fight);
+            const locked = fightIsLocked(event, fight);
+            return `
+            <div class="fight-row ${locked ? "fight-locked" : "fight-open"}">
               <span class="fight-number">#${escapeHtml(fight.order || "")}</span>
               <strong>${escapeHtml(fight.fighterA)}</strong>
               <span class="score-divider">vs</span>
               <strong>${escapeHtml(fight.fighterB)}</strong>
-              ${fightResultWinner(event, fight.id) ? `<em>Winner: ${escapeHtml(fightResultWinner(event, fight.id))}</em>` : ""}
+              <span class="fight-status-pill ${locked ? "locked" : "open"}">${escapeHtml(fightStatusText(event, fight))}</span>
+              ${winner ? `<em>Winner: ${escapeHtml(winner)}</em>` : ""}
             </div>
-          `).join("") : `<div class="record">No fights listed yet.</div>`}
+          `;
+          }).join("") : `<div class="record">No fights listed yet.</div>`}
         </div>
-        <div class="score-sub odds-line">Odds: ${escapeHtml(eventOddsText(event))}</div>
+        <div class="score-sub odds-line">Fight odds: ${escapeHtml(shouldShowOddsText(event) ? eventOddsText(event) : "Unavailable unless a supported sportsbook feed returns UFC markets")}</div>
       </div>
     `;
   }
@@ -1802,24 +1940,30 @@ function renderTeamBetForm(event, locked) {
 
 function renderFightCardBetForm(event, locked) {
   const fights = event.fights || [];
+  const cardFinal = event.status === "final";
+  const openFightCount = fights.filter(fight => fightCanTakeBets(event, fight)).length;
 
   return `
     ${!canBet() ? `<p class="warning small">Log in with an approved account to place bets.</p>` : ""}
     <div class="fight-bet-list">
-      ${fights.length ? fights.map(fight => `
-        <div class="fight-bet-row">
+      ${fights.length ? fights.map(fight => {
+        const fightLocked = fightIsLocked(event, fight);
+        const winner = fightResultText(event, fight);
+        const disabled = fightLocked || !canBet();
+        return `
+        <div class="fight-bet-row ${fightLocked ? "fight-locked" : "fight-open"}">
           <div>
             <strong>${escapeHtml(fight.label || `${fight.fighterA} vs ${fight.fighterB}`)}</strong>
-            <span class="muted tiny">Fight ${escapeHtml(fight.order || "")}</span>
+            <span class="muted tiny">Fight ${escapeHtml(fight.order || "")} · ${escapeHtml(fightStatusText(event, fight))}${winner ? ` · Winner: ${escapeHtml(winner)}` : ""}</span>
           </div>
-          <input id="amount-${escapeHtml(event.id)}-${escapeHtml(fight.id)}" type="number" min="1" step="1" value="1" ${locked ? "disabled" : ""} />
-          <button class="primary" data-bet-fight="${escapeHtml(event.id)}" data-fight-id="${escapeHtml(fight.id)}" data-side="fighterA" ${locked || !canBet() ? "disabled" : ""}>Pick ${escapeHtml(fighterCode(fight.fighterA))}</button>
-          <button class="primary" data-bet-fight="${escapeHtml(event.id)}" data-fight-id="${escapeHtml(fight.id)}" data-side="fighterB" ${locked || !canBet() ? "disabled" : ""}>Pick ${escapeHtml(fighterCode(fight.fighterB))}</button>
+          <input id="amount-${escapeHtml(event.id)}-${escapeHtml(fight.id)}" type="number" min="1" step="1" value="1" ${disabled ? "disabled" : ""} />
+          <button class="primary" data-bet-fight="${escapeHtml(event.id)}" data-fight-id="${escapeHtml(fight.id)}" data-side="fighterA" ${disabled ? "disabled" : ""}>Pick ${escapeHtml(fighterCode(fight.fighterA))}</button>
+          <button class="primary" data-bet-fight="${escapeHtml(event.id)}" data-fight-id="${escapeHtml(fight.id)}" data-side="fighterB" ${disabled ? "disabled" : ""}>Pick ${escapeHtml(fighterCode(fight.fighterB))}</button>
         </div>
-      `).join("") : `<div class="record">No UFC fights have been added yet.</div>`}
+      `;
+      }).join("") : `<div class="record">No UFC fights have been added yet.</div>`}
     </div>
-    <p class="footer-note small">${locked ? "This fight card is locked." : "Each fight is bet independently inside this one UFC card."}</p>
-    ${canBet() && !locked ? `<div class="bet-actions"><button class="ghost" data-clear-event-bets="${escapeHtml(event.id)}">Clear my bets for this card</button></div>` : ""}
+    <p class="footer-note small">${cardFinal ? "This fight card is final." : openFightCount ? `Card is ${label(event.status)}. ${openFightCount} fight${openFightCount === 1 ? "" : "s"} still open for bets.` : "All listed fights are locked."} UFC locks by individual fight, not by the whole card going live.</p>
   `;
 }
 
@@ -2632,8 +2776,13 @@ function centerActiveNavTab() {
 function wireUi() {
   centerActiveNavTab();
 
-  document.querySelectorAll("[data-tab]").forEach(button => button.addEventListener("click", () => {
-    activeTab = button.dataset.tab;
+  document.querySelectorAll("[data-tab]").forEach(button => button.addEventListener("click", event => {
+    event.preventDefault();
+    event.stopPropagation();
+    const nextTab = button.dataset.tab;
+    if (!nextTab) return;
+    activeTab = nextTab;
+    passiveRenderPending = false;
     renderApp();
     requestAnimationFrame(centerActiveNavTab);
   }));
@@ -3271,7 +3420,7 @@ async function placeFightCardBet(eventId, fightId, side) {
   if (!user?.approved) return alert("Approved login required.");
   if (!event || event.type !== EVENT_TYPES.FIGHT_CARD) return alert("Invalid UFC fight card.");
   if (!fight) return alert("Fight not found on this card.");
-  if (eventIsLocked(event)) return alert("Bets are locked for this fight card.");
+  if (fightIsLocked(event, fight)) return alert("Bets are locked for this fight.");
   if (!Number.isFinite(amount) || amount <= 0) return alert("Enter a valid amount.");
 
   const existingDifferentFightPick = getUserEventBets(eventId, user.id)

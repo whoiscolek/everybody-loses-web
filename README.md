@@ -2,6 +2,13 @@
 
 Head-to-head sports betting battles for friends.
 
+## v10.65 interaction stability
+
+- Stops the Double Up countdown from rebuilding the entire application every second.
+- Preserves active form values, focus, text selection, page position, and navigation scroll during unavoidable live-data renders.
+- Defers passive Firestore renders while a user is actively editing a field, then applies them when editing ends.
+- Hardens navigation tab clicks so Admin and other tabs respond consistently during live updates.
+
 ## What changed in v10.60
 
 v10.60 replaces the browser-dependent refresh/settlement system with one server-side maintenance pipeline.
