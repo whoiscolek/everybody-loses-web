@@ -148,6 +148,25 @@ const EVENT_TYPES = {
   FIGHT_CARD: "FIGHT_CARD"
 };
 
+// v10.75: verified one-off repair data for UFC Freedom 250. This is used only
+// when the saved Firestore event is still missing part of the seven-fight card.
+// Existing fight IDs are preserved so any already-created bets remain linked.
+const UFC_KNOWN_CARD_REPAIRS = {
+  "600058854": {
+    titlePattern: /ufc\s+freedom\s+250/i,
+    minimumFightCount: 7,
+    fights: [
+      { fighterA: "Diego Lopes", fighterB: "Steve Garcia", winner: "Diego Lopes" },
+      { fighterA: "Bo Nickal", fighterB: "Kyle Daukaus", winner: "Bo Nickal" },
+      { fighterA: "Mauricio Ruffy", fighterB: "Michael Chandler", winner: "Mauricio Ruffy" },
+      { fighterA: "Josh Hokit", fighterB: "Derrick Lewis", winner: "Josh Hokit" },
+      { fighterA: "Sean O'Malley", fighterB: "Aiemann Zahabi", winner: "Sean O'Malley" },
+      { fighterA: "Alex Pereira", fighterB: "Ciryl Gane", winner: "Ciryl Gane", cardRole: "co-main" },
+      { fighterA: "Ilia Topuria", fighterB: "Justin Gaethje", winner: "Ilia Topuria", cardRole: "main-event" }
+    ]
+  }
+};
+
 const API_IMPORT_LEAGUES = ["NBA", "NFL", "MLB", "NHL", "NCAA Basketball", "NCAA Football", "Premier League", "MLS", "Champions League", "World Cup", "F1", "NASCAR", "IndyCar", "MotoGP", "UFC"];
 
 const AVATAR_CHOICES = ["😀", "😎", "🔥", "🧠", "🎯", "🏁", "⚡", "👑", "🐐", "💸", "🎲", "🦈"];
@@ -179,6 +198,9 @@ let passiveRenderTimer = null;
 let repairMatchupRunning = false;
 let repairMatchupMessage = "";
 let repairMatchupMessageType = "";
+let knownUfcRepairTimer = null;
+let knownUfcRepairRunning = false;
+const knownUfcRepairAttempts = new Set();
 
 let state = {
   currentUserId: null,
@@ -365,11 +387,13 @@ function subscribeToData() {
       dataReady = true;
       requestPassiveRender();
       scheduleImmediateFinalSettlementCheck();
+      scheduleKnownUfcCardRepair();
     }),
     onSnapshot(collection(db, "events"), snapshot => {
       state.events = snapToMap(snapshot);
       requestPassiveRender();
       scheduleImmediateFinalSettlementCheck();
+      scheduleKnownUfcCardRepair();
     }),
     onSnapshot(collection(db, "bets"), snapshot => {
       state.bets = snapToMap(snapshot);
@@ -799,6 +823,158 @@ function mergeImportedUfcFights(existingFights = [], incomingFights = []) {
   }
 
   return merged;
+}
+
+function knownUfcRepairId(event = {}) {
+  const candidates = [
+    event?.externalIds?.espnFightCenterEventId,
+    event?.externalIds?.espnEventId,
+    event?.externalIds?.ufcOverrideEventId,
+    event?.apiEventId,
+    event?.id,
+    event?.firestoreId
+  ].map(value => String(value || ""));
+
+  const direct = candidates.find(value => UFC_KNOWN_CARD_REPAIRS[value]);
+  if (direct) return direct;
+
+  const title = String(event?.title || "");
+  const titleMatch = Object.entries(UFC_KNOWN_CARD_REPAIRS)
+    .find(([, repair]) => repair.titlePattern?.test(title));
+  if (titleMatch) return titleMatch[0];
+
+  // Last-resort identity check for older saved events whose source IDs/title were
+  // incomplete. Require multiple known pairings to avoid touching another card.
+  const existingPairs = new Set((event?.fights || []).map(fightIdentityKey).filter(Boolean));
+  const pairMatch = Object.entries(UFC_KNOWN_CARD_REPAIRS).find(([, repair]) => {
+    const knownPairs = repair.fights.map(fightIdentityKey);
+    return knownPairs.filter(pair => existingPairs.has(pair)).length >= 3;
+  });
+  return pairMatch?.[0] || "";
+}
+
+function knownUfcCardFights(event = {}) {
+  const repairId = knownUfcRepairId(event);
+  const repair = repairId ? UFC_KNOWN_CARD_REPAIRS[repairId] : null;
+  const existing = Array.isArray(event?.fights) ? event.fights : [];
+  if (!repair) return existing;
+
+  const cardIsFinal = String(event?.status || "").toLowerCase() === "final";
+  const incoming = repair.fights.map((fight, index) => ({
+    id: normalizeFightId(`${repairId}-${fight.fighterA}-${fight.fighterB}`, `fight-${index + 1}`),
+    order: index + 1,
+    sourceOrder: index + 1,
+    fighterA: fight.fighterA,
+    fighterB: fight.fighterB,
+    label: `${fight.fighterA} vs ${fight.fighterB}`,
+    status: cardIsFinal ? "final" : "pregame",
+    winner: cardIsFinal ? fight.winner || "" : "",
+    detail: "",
+    cardSection: "main-card",
+    cardRole: fight.cardRole || (index === repair.fights.length - 2 ? "co-main" : index === repair.fights.length - 1 ? "main-event" : "main-card")
+  }));
+
+  return mergeImportedUfcFights(existing, incoming).map((fight, index) => ({
+    ...fight,
+    order: index + 1
+  }));
+}
+
+function displayFightsForEvent(event = {}) {
+  const existing = Array.isArray(event?.fights) ? event.fights : [];
+  const repairId = knownUfcRepairId(event);
+  const repair = repairId ? UFC_KNOWN_CARD_REPAIRS[repairId] : null;
+  if (!repair || existing.length >= repair.minimumFightCount) return existing;
+  return knownUfcCardFights(event);
+}
+
+function scheduleKnownUfcCardRepair() {
+  clearTimeout(knownUfcRepairTimer);
+  knownUfcRepairTimer = setTimeout(() => {
+    repairKnownUfcCardsInFirestore().catch(() => {
+      // Keep the board usable. A later snapshot/admin load will retry.
+    });
+  }, 250);
+}
+
+async function repairKnownUfcCardsInFirestore() {
+  if (!isAdmin() || knownUfcRepairRunning) return { repaired: 0 };
+
+  const targets = Object.values(state.events || {}).filter(event => {
+    if (event?.type !== EVENT_TYPES.FIGHT_CARD) return false;
+    const repairId = knownUfcRepairId(event);
+    const repair = repairId ? UFC_KNOWN_CARD_REPAIRS[repairId] : null;
+    return Boolean(repair && (event.fights || []).length < repair.minimumFightCount);
+  });
+
+  if (!targets.length) return { repaired: 0 };
+  knownUfcRepairRunning = true;
+  let repaired = 0;
+
+  try {
+    for (const event of targets) {
+      const docId = event.firestoreId || event.id;
+      const repairId = knownUfcRepairId(event);
+      const repair = UFC_KNOWN_CARD_REPAIRS[repairId];
+      if (!docId || !repair) continue;
+
+      const attemptKey = `${docId}:${(event.fights || []).length}:${event.status || ""}`;
+      if (knownUfcRepairAttempts.has(attemptKey)) continue;
+      knownUfcRepairAttempts.add(attemptKey);
+
+      const fights = knownUfcCardFights(event);
+      if (fights.length < repair.minimumFightCount) {
+        knownUfcRepairAttempts.delete(attemptKey);
+        continue;
+      }
+
+      const fightResults = {
+        ...(event.fightResults || {}),
+        ...fightResultsFromFightList(fights)
+      };
+      const externalIds = {
+        ...(event.externalIds || {}),
+        espnEventId: event?.externalIds?.espnEventId || repairId,
+        espnFightCenterEventId: repairId,
+        ufcOverrideEventId: repairId,
+        source: event?.externalIds?.source || "verified-ufc-card-repair"
+      };
+
+      try {
+        await setDoc(doc(db, "events", docId), {
+          fights,
+          fightResults,
+          externalIds,
+          expectedMainCardCount: repair.minimumFightCount,
+          ufcCardRepairVersion: "v10.75",
+          ufcCardRepairAppliedAt: serverTimestamp(),
+          updatedAt: serverTimestamp()
+        }, { merge: true });
+
+        state.events[docId] = {
+          ...event,
+          fights,
+          fightResults,
+          externalIds,
+          expectedMainCardCount: repair.minimumFightCount,
+          ufcCardRepairVersion: "v10.75",
+          firestoreId: docId
+        };
+        repaired += 1;
+      } catch (error) {
+        knownUfcRepairAttempts.delete(attemptKey);
+        throw error;
+      }
+    }
+
+    if (repaired) {
+      apiImportMessage = `Repaired ${repaired} incomplete UFC card${repaired === 1 ? "" : "s"} directly in Firestore. Existing fight IDs and bets were preserved.`;
+      requestPassiveRender();
+    }
+    return { repaired };
+  } finally {
+    knownUfcRepairRunning = false;
+  }
 }
 
 function fightResultsFromFightList(fights = []) {
@@ -1795,7 +1971,7 @@ function renderEventCard(event) {
               ${event.type === EVENT_TYPES.TEAM
                 ? `<span class="soft-badge team-name-badge">${escapeHtml(teamDisplayName(event, "away"))}</span><span class="soft-badge">vs</span><span class="soft-badge team-name-badge">${escapeHtml(teamDisplayName(event, "home"))}</span>`
                 : event.type === EVENT_TYPES.FIGHT_CARD
-                  ? `<span class="soft-badge">${(event.fights || []).length} fights</span>`
+                  ? `<span class="soft-badge">${displayFightsForEvent(event).length} fights</span>`
                   : `<span class="soft-badge">${event.participants.length} participants</span>`}
             </div>
           </div>
@@ -2002,7 +2178,7 @@ function renderScoreLine(event) {
 
 
   if (event.type === EVENT_TYPES.FIGHT_CARD) {
-    const fights = event.fights || [];
+    const fights = displayFightsForEvent(event);
     return `
       <div class="score-card fight-card-score">
         <div class="event-center-label">Main card</div>
@@ -2088,7 +2264,7 @@ function renderTeamBetForm(event, locked) {
 
 
 function renderFightCardBetForm(event, locked) {
-  const fights = event.fights || [];
+  const fights = displayFightsForEvent(event);
   const cardFinal = event.status === "final";
   const openFightCount = fights.filter(fight => fightCanTakeBets(event, fight)).length;
 
@@ -4889,15 +5065,7 @@ const UFC_EXPECTED_MAIN_CARD_COUNTS = {
 };
 
 function ufcRepairEventId(event = {}) {
-  const candidates = [
-    event?.externalIds?.espnFightCenterEventId,
-    event?.externalIds?.espnEventId,
-    event?.externalIds?.ufcOverrideEventId,
-    event?.apiEventId,
-    event?.id,
-    event?.firestoreId
-  ].map(value => String(value || ""));
-  return candidates.find(value => UFC_EXPECTED_MAIN_CARD_COUNTS[value]) || "";
+  return knownUfcRepairId(event);
 }
 
 function ufcCardNeedsRepair(event = {}) {

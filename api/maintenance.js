@@ -18,7 +18,7 @@ const LEASE_MS = 75 * 1000;
 const NOW_LOOKAHEAD_MS = 48 * 60 * 60 * 1000;
 const PREGAME_LOOKBACK_MS = 4 * 60 * 60 * 1000;
 const HISTORY_RETENTION_MS = 5 * 24 * 60 * 60 * 1000;
-const MAINTENANCE_VERSION = "10.74";
+const MAINTENANCE_VERSION = "10.75";
 const UFC_EXPECTED_MAIN_CARD_COUNTS = { "600058854": 7 };
 
 function json(res, status, body) {
@@ -371,7 +371,7 @@ async function fetchSource(origin, league, dateISO) {
       signal: controller.signal,
       cache: "no-store",
       headers: {
-        "User-Agent": "Everyone-Loses-Maintenance/10.74",
+        "User-Agent": "Everyone-Loses-Maintenance/10.75",
         "Cache-Control": "no-cache, no-store, max-age=0",
         Pragma: "no-cache"
       }
@@ -393,7 +393,7 @@ async function fetchTargetedUfcSource(origin, eventId, dateISO) {
       signal: controller.signal,
       cache: "no-store",
       headers: {
-        "User-Agent": "Everyone-Loses-Maintenance/10.74",
+        "User-Agent": "Everyone-Loses-Maintenance/10.75",
         "Cache-Control": "no-cache, no-store, max-age=0",
         Pragma: "no-cache"
       }
@@ -494,8 +494,7 @@ function mergeIncoming(existing, incoming, nowIso) {
   return clean(merged);
 }
 
-function ufcCardNeedsRepair(event = {}) {
-  if (event?.type !== EVENT_TYPES.FIGHT_CARD && event?.league !== "UFC") return false;
+function ufcRepairEventId(event = {}) {
   const candidates = [
     event?.externalIds?.espnFightCenterEventId,
     event?.externalIds?.espnEventId,
@@ -504,7 +503,15 @@ function ufcCardNeedsRepair(event = {}) {
     event?.id,
     event?.firestoreId
   ].map(value => String(value || ""));
-  const eventId = candidates.find(value => UFC_EXPECTED_MAIN_CARD_COUNTS[value]);
+  const direct = candidates.find(value => UFC_EXPECTED_MAIN_CARD_COUNTS[value]);
+  if (direct) return direct;
+  if (/ufc\s+freedom\s+250/i.test(String(event?.title || ""))) return "600058854";
+  return "";
+}
+
+function ufcCardNeedsRepair(event = {}) {
+  if (event?.type !== EVENT_TYPES.FIGHT_CARD && event?.league !== "UFC") return false;
+  const eventId = ufcRepairEventId(event);
   const expected = UFC_EXPECTED_MAIN_CARD_COUNTS[eventId] || 0;
   return Boolean(expected && (event.fights || []).length < expected);
 }
@@ -905,20 +912,10 @@ async function runMaintenance(req, mode) {
 
     const targetedUfcRepairs = events
       .filter(ufcCardNeedsRepair)
-      .map(event => {
-        const candidates = [
-          event?.externalIds?.espnFightCenterEventId,
-          event?.externalIds?.espnEventId,
-          event?.externalIds?.ufcOverrideEventId,
-          event?.apiEventId,
-          event?.id,
-          event?.firestoreId
-        ].map(value => String(value || ""));
-        return {
-          eventId: candidates.find(value => UFC_EXPECTED_MAIN_CARD_COUNTS[value]) || "",
-          dateISO: dateForEvent(event)
-        };
-      })
+      .map(event => ({
+        eventId: ufcRepairEventId(event),
+        dateISO: dateForEvent(event)
+      }))
       .filter(item => item.eventId && item.dateISO);
 
     if (targetedUfcRepairs.length) {

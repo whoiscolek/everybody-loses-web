@@ -1,4 +1,4 @@
-# Everybody Loses v10.74 Architecture
+# Everybody Loses v10.75 Architecture
 
 ## Settlement pipeline
 

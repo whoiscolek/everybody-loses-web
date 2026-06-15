@@ -1,5 +1,9 @@
 # Everybody Loses
 
+## v10.75
+
+v10.75 fixes the incomplete UFC Freedom 250 card at the saved-event layer rather than relying only on another ESPN refresh. The UI renders every stored fight and has no five-fight display cap; if only five fights appear, the Firestore event still contains five. This release identifies the card by ESPN ID, title, or multiple known fighter pairings, immediately renders the verified seven-fight card, and—when an administrator is signed in—writes the merged seven-fight array back to the existing event while preserving fight IDs used by existing bets. Maintenance also recognizes the card by title when old source IDs are missing.
+
 ## v10.74
 
 ### Guaranteed repair for incomplete UFC cards
