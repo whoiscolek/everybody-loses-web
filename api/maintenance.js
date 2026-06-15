@@ -18,7 +18,7 @@ const LEASE_MS = 75 * 1000;
 const NOW_LOOKAHEAD_MS = 48 * 60 * 60 * 1000;
 const PREGAME_LOOKBACK_MS = 4 * 60 * 60 * 1000;
 const HISTORY_RETENTION_MS = 5 * 24 * 60 * 60 * 1000;
-const MAINTENANCE_VERSION = "10.69";
+const MAINTENANCE_VERSION = "10.70";
 
 function json(res, status, body) {
   res.statusCode = status;
@@ -370,7 +370,7 @@ async function fetchSource(origin, league, dateISO) {
       signal: controller.signal,
       cache: "no-store",
       headers: {
-        "User-Agent": "Everyone-Loses-Maintenance/10.68",
+        "User-Agent": "Everyone-Loses-Maintenance/10.70",
         "Cache-Control": "no-cache, no-store, max-age=0",
         Pragma: "no-cache"
       }
@@ -439,9 +439,9 @@ function buildFetchPlan(events, matches, fullDiscovery) {
     const ids = eventIdentityValues(event);
     const hasUnsettled = ids.some(id => unsettledEventIds.has(id));
     const start = dateMs(event.startTime);
-    const relevant = event.status !== "final" && (
-      event.status === "live" || hasUnsettled || !start || start >= Date.now() - 36 * 60 * 60 * 1000
-    );
+    const relevant = hasUnsettled || (event.status !== "final" && (
+      event.status === "live" || !start || start >= Date.now() - 36 * 60 * 60 * 1000
+    ));
     if (!relevant) continue;
     const dateISO = dateForEvent(event);
     add(event.league, dateISO);
@@ -481,7 +481,7 @@ async function acquireLease(db, FieldValue, requestedMode) {
   });
 }
 
-async function settleFinalEvents(db, FieldValue, events, bets, matches, ledgerEntries) {
+export async function settleFinalEvents(db, FieldValue, events, bets, matches, ledgerEntries) {
   const summary = { events: 0, matches: 0, ledgerWrites: 0, betsClosed: 0, tiesVoided: 0, deferred: 0, repairedLegacyMatches: 0, unresolved: [] };
   const ledgerByMatch = new Map();
   const betsById = new Map();
@@ -494,6 +494,7 @@ async function settleFinalEvents(db, FieldValue, events, bets, matches, ledgerEn
 
   for (const event of events.filter(e => e.status === "final")) {
     const eventId = event.firestoreId || event.id;
+    const eventType = event.type || (event.away && event.home ? EVENT_TYPES.TEAM : (Array.isArray(event.fights) ? EVENT_TYPES.FIGHT_CARD : ""));
     if (!eventId) continue;
     const eventMatches = matches.filter(match => recordBelongs(match, event));
     const eventBets = bets.filter(bet => recordBelongs(bet, event));
@@ -501,7 +502,7 @@ async function settleFinalEvents(db, FieldValue, events, bets, matches, ledgerEn
     let eventDeferred = 0;
     const batch = db.batch();
 
-    if (event.type === EVENT_TYPES.TEAM) {
+    if (eventType === EVENT_TYPES.TEAM) {
       if (!hasScore(event.score)) {
         summary.deferred += eventMatches.filter(m => m.status === "matched").length;
         continue;
@@ -511,10 +512,13 @@ async function settleFinalEvents(db, FieldValue, events, bets, matches, ledgerEn
       const winningSide = home > away ? "home" : away > home ? "away" : null;
 
       for (const match of eventMatches) {
-        if (["cancelled"].includes(String(match.status || "").toLowerCase())) continue;
+        const matchStatus = String(match.status || "").toLowerCase();
+        if (["cancelled", "void"].includes(matchStatus)) continue;
         const matchId = match.firestoreId || match.id;
         if (!matchId) continue;
         const resolved = resolvedMatchFields(match, event, eventBets, betsById);
+        const existingMatchLedger = ledgerByMatch.get(String(matchId));
+        if (matchStatus === "settled" && existingMatchLedger && match.winner && match.loser && effectiveAmount(match, resolved.betA, resolved.betB) > 0) continue;
         const { sideA, sideB, userA, userB, betAId, betBId, amount } = resolved;
 
         if (!winningSide) {
@@ -636,7 +640,7 @@ async function settleFinalEvents(db, FieldValue, events, bets, matches, ledgerEn
         summary.matches += 1;
         changed = true;
       }
-    } else if (event.type === EVENT_TYPES.FIGHT_CARD) {
+    } else if (eventType === EVENT_TYPES.FIGHT_CARD) {
       const resultMap = event.fightResults || Object.fromEntries((event.fights || []).map(f => [f.id, f.winner]).filter(([, winner]) => winner));
       for (const match of eventMatches) {
         if (match.status === "cancelled" || match.status === "void") continue;
@@ -769,6 +773,23 @@ async function cleanupHistory(db, FieldValue, events, bets, matches) {
   return removed;
 }
 
+function mergeSettlementSummaries(...items) {
+  const out = { events: 0, matches: 0, ledgerWrites: 0, betsClosed: 0, tiesVoided: 0, deferred: 0, repairedLegacyMatches: 0, unresolved: [] };
+  const unresolvedSeen = new Set();
+  for (const item of items.filter(Boolean)) {
+    for (const key of ["events", "matches", "ledgerWrites", "betsClosed", "tiesVoided", "deferred", "repairedLegacyMatches"]) {
+      out[key] += Number(item[key] || 0);
+    }
+    for (const issue of item.unresolved || []) {
+      const key = `${issue.eventId || ""}|${issue.matchId || ""}|${issue.issue || ""}`;
+      if (unresolvedSeen.has(key)) continue;
+      unresolvedSeen.add(key);
+      out.unresolved.push(issue);
+    }
+  }
+  return out;
+}
+
 async function runMaintenance(req, mode) {
   const { db, FieldValue } = getAdminServices();
   const lease = await acquireLease(db, FieldValue, mode);
@@ -789,6 +810,11 @@ async function runMaintenance(req, mode) {
     const bets = toRows(betsSnap);
     const matches = toRows(matchesSnap);
     const ledgerEntries = toRows(ledgerSnap);
+
+    // Settle already-final events before any network discovery. This guarantees
+    // ledger work is not starved when a long source sweep approaches the
+    // serverless time limit after scores have already been saved.
+    const preSettlement = await settleFinalEvents(db, FieldValue, events, bets, matches, ledgerEntries);
 
     const state = lease.state || {};
     const fullDiscovery = mode === "full" || mode === "auto" && Date.now() - dateMs(state.lastFullDiscoveryAt) >= FULL_DISCOVERY_INTERVAL_MS;
@@ -897,8 +923,19 @@ async function runMaintenance(req, mode) {
 
     await writer.close();
 
-    const settlement = await settleFinalEvents(db, FieldValue, events, bets, matches, ledgerEntries);
-    const historyRemoved = await cleanupHistory(db, FieldValue, events, bets, matches);
+    // Reload financial records after the pre-pass so the second pass is
+    // idempotent and sees any newly-final event written by the source refresh.
+    const [freshBetsSnap, freshMatchesSnap, freshLedgerSnap] = await Promise.all([
+      db.collection("bets").get(),
+      db.collection("matches").get(),
+      db.collection("ledgerEntries").get()
+    ]);
+    const freshBets = toRows(freshBetsSnap);
+    const freshMatches = toRows(freshMatchesSnap);
+    const freshLedger = toRows(freshLedgerSnap);
+    const postSettlement = await settleFinalEvents(db, FieldValue, events, freshBets, freshMatches, freshLedger);
+    const settlement = mergeSettlementSummaries(preSettlement, postSettlement);
+    const historyRemoved = await cleanupHistory(db, FieldValue, events, freshBets, freshMatches);
     const summary = {
       version: MAINTENANCE_VERSION,
       runtime: process.version,

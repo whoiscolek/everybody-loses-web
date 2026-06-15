@@ -15,6 +15,9 @@
     },
     "api/repair-matchup.js": {
       "maxDuration": 30
+    },
+    "api/settle-event.js": {
+      "maxDuration": 30
     }
   }
 }

@@ -168,6 +168,8 @@ let sourceSweepDebug = "";
 let notificationDebug = localStorage.getItem("notificationDebug") || "";
 let doubleUpCountdownTimer = null;
 let settlementSyncMessage = "";
+let settlementRepairRunning = false;
+let immediateSettlementTimer = null;
 let authUser = null;
 let loading = true;
 let dataReady = false;
@@ -361,10 +363,12 @@ function subscribeToData() {
       state.users = snapToMap(snapshot);
       dataReady = true;
       requestPassiveRender();
+      scheduleImmediateFinalSettlementCheck();
     }),
     onSnapshot(collection(db, "events"), snapshot => {
       state.events = snapToMap(snapshot);
       requestPassiveRender();
+      scheduleImmediateFinalSettlementCheck();
     }),
     onSnapshot(collection(db, "bets"), snapshot => {
       state.bets = snapToMap(snapshot);
@@ -373,6 +377,7 @@ function subscribeToData() {
     onSnapshot(collection(db, "matches"), snapshot => {
       state.matches = snapToMap(snapshot);
       requestPassiveRender();
+      scheduleImmediateFinalSettlementCheck();
     }),
     subscribeLedgerLikeCollection("ledgerEntries", "ledgerEntries"),
     subscribeLedgerLikeCollection("settlements", "settlements"),
@@ -3674,7 +3679,7 @@ async function settleTeamEvent(event, options = {}) {
   const awayScore = Number(event.score.away);
   const winningSide = homeScore > awayScore ? "home" : awayScore > homeScore ? "away" : null;
   const matches = Object.values(state.matches)
-    .filter(match => eventIds.has(String(match.eventId || "")) && (match.type === EVENT_TYPES.TEAM || (!match.type && match.sideA && match.sideB)));
+    .filter(match => eventIds.has(String(match.eventId || "")) && !match.fightId);
   const eventBets = Object.values(state.bets || {}).filter(bet => eventIds.has(String(bet.eventId || "")));
   const batch = writeBatch(db);
   const optimisticLedger = {};
@@ -5119,15 +5124,75 @@ function finalEventsNeedingSettlement() {
   });
 }
 
-async function autoSettleFinalEvents() {
+async function requestDedicatedEventSettlement(event) {
+  if (!auth.currentUser) throw new Error("Admin login is required for settlement.");
+  const token = await auth.currentUser.getIdToken();
+  const eventId = event.firestoreId || event.id;
+  const response = await fetch(`/api/settle-event?fresh=${Date.now()}`, {
+    method: "POST",
+    cache: "no-store",
+    headers: {
+      "Authorization": `Bearer ${token}`,
+      "Content-Type": "application/json",
+      "Cache-Control": "no-cache, no-store"
+    },
+    body: JSON.stringify({ eventId })
+  });
+  const raw = await response.text();
+  let data = {};
+  try { data = raw ? JSON.parse(raw) : {}; } catch { data = {}; }
+  if (!response.ok) {
+    const detail = [data.error, data.code, data.stage].filter(Boolean).join(" · ");
+    throw new Error(detail || raw.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim().slice(0, 300) || `Settlement returned ${response.status}`);
+  }
+  return data;
+}
+
+function scheduleImmediateFinalSettlementCheck() {
+  if (!isAdmin() || settlementRepairRunning) return;
+  clearTimeout(immediateSettlementTimer);
+  immediateSettlementTimer = setTimeout(() => {
+    if (isAdmin() && finalEventsNeedingSettlement().length) autoSettleFinalEvents("snapshot");
+  }, 900);
+}
+
+async function autoSettleFinalEvents(reason = "automatic") {
+  if (!isAdmin() || settlementRepairRunning) return 0;
+  settlementRepairRunning = true;
   let settled = 0;
-  for (const event of finalEventsNeedingSettlement()) {
-    try {
-      await settleEvent(event.firestoreId || event.id, { silent: true });
-      settled += 1;
-    } catch (error) {
-      autoMaintenanceMessage = `Settlement repair skipped ${event.title || event.id}: ${error?.message || String(error)}`;
+  try {
+    for (const event of finalEventsNeedingSettlement()) {
+      let serverCompleted = false;
+      let serverError = null;
+      try {
+        const result = await requestDedicatedEventSettlement(event);
+        const summary = result?.settlement || {};
+        const completedWrites = Number(summary.matches || 0) + Number(summary.ledgerWrites || 0) + Number(summary.tiesVoided || 0) + Number(summary.betsClosed || 0);
+        const unresolved = Array.isArray(summary.unresolved) ? summary.unresolved : [];
+        if (unresolved.length) {
+          settlementSyncMessage = `Settlement still needs repair for ${eventDisplayTitle(event)}: ${unresolved.map(item => item.issue).filter(Boolean).join(" | ")}`;
+        }
+        serverCompleted = completedWrites > 0 || Number(summary.events || 0) > 0;
+        if (serverCompleted) settled += 1;
+      } catch (error) {
+        serverError = error;
+      }
+
+      // The signed-in admin fallback is intentionally independent from the
+      // maintenance function. It also handles legacy matches that never stored
+      // a type or side fields by reconstructing them from the linked bets.
+      if (!serverCompleted) {
+        try {
+          const changed = await settleEvent(event.firestoreId || event.id, { silent: true });
+          if (Number(changed || 0) > 0) settled += 1;
+        } catch (fallbackError) {
+          const detail = fallbackError?.message || String(fallbackError);
+          autoMaintenanceMessage = `Settlement repair failed for ${event.title || event.id}: ${detail}${serverError ? ` · Server: ${serverError.message}` : ""}`;
+        }
+      }
     }
+  } finally {
+    settlementRepairRunning = false;
   }
   return settled;
 }
@@ -5447,7 +5512,32 @@ async function settleEventFromAdmin() {
   if (!id) return alert("Enter event ID/code.");
   const event = findEventByIdOrCode(id);
   if (!event) return alert("Event not found.");
-  await settleEvent(event.firestoreId || event.id);
+  if (!eventIsComplete(event)) return alert("This event is not final yet.");
+
+  settlementSyncMessage = `Posting settlement for ${eventDisplayTitle(event)}…`;
+  renderApp();
+  try {
+    const result = await requestDedicatedEventSettlement(event);
+    const summary = result?.settlement || {};
+    const unresolved = Array.isArray(summary.unresolved) ? summary.unresolved : [];
+    if (unresolved.length) {
+      settlementSyncMessage = `Settlement needs repair: ${unresolved.map(item => item.issue).filter(Boolean).join(" | ")}`;
+      renderApp();
+      return alert(settlementSyncMessage);
+    }
+    settlementSyncMessage = `Settlement completed for ${eventDisplayTitle(event)}. Ledger/profile/leaderboard updates are syncing now.`;
+    renderApp();
+    return alert(settlementSyncMessage);
+  } catch (serverError) {
+    try {
+      const changed = await settleEvent(event.firestoreId || event.id);
+      if (!changed) throw serverError;
+    } catch (fallbackError) {
+      settlementSyncMessage = `Settlement failed: ${fallbackError?.message || serverError?.message || String(fallbackError)}`;
+      renderApp();
+      alert(settlementSyncMessage);
+    }
+  }
 }
 
 
@@ -5513,7 +5603,7 @@ async function repairMatchupDirectlyInBrowser({ eventId, userA, userB, pickA, pi
   if (!eventDocId) throw new Error("The event is missing a Firestore document ID.");
 
   // Reuse an existing bet when possible. If one side never created a bet, an
-  // approved admin can create the missing record directly under the v10.68
+  // approved admin can create the missing record directly under the v10.70
   // Firestore rules; older rules will reject this and trigger the server fallback.
   const betARef = betA
     ? doc(db, "bets", betA.firestoreId || betA.id)
