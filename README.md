@@ -1,5 +1,18 @@
 # Everybody Loses
 
+## v10.73
+
+### Complete UFC main-card import
+
+- UFC discovery still begins with ESPN's date scoreboard.
+- Each discovered UFC event is then enriched from ESPN FightCenter's `cards.main.competitions` collection.
+- The detailed main card replaces the incomplete scoreboard competition list when available.
+- Cards are no longer assumed to contain five fights. Special seven-fight cards remain seven fights.
+- ESPN's headline-first ordering is converted into broadcast order so the co-main and main event appear at the end.
+- Existing fight IDs are preserved by the v10.72 merge logic, protecting previously placed bets while missing fights are appended.
+- Scoreboard data remains a fallback when FightCenter is temporarily unavailable.
+
+## Previous release notes
 ## v10.72
 
 UFC cards are no longer truncated to five fights. The importer keeps every fight ESPN identifies as part of the main card, excludes fights explicitly labeled as prelims, and supports special main cards containing six, seven, or more fights.

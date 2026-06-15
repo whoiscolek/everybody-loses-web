@@ -473,6 +473,7 @@ function ufcWinnerFromCompetition(competition) {
 
 function ufcCardSection(competition = {}) {
   const text = [
+    competition?.__cardSection,
     competition?.type?.text,
     competition?.type?.name,
     competition?.note,
@@ -485,13 +486,20 @@ function ufcCardSection(competition = {}) {
   if (/early\s+prelim|prelim/.test(text)) return "prelims";
   if (/co[- ]?main/.test(text)) return "co-main";
   if (/main\s+event/.test(text)) return "main-event";
-  if (/main\s+card/.test(text)) return "main-card";
+  if (/main[-\s]+card/.test(text)) return "main-card";
   return "";
 }
 
 function extractUfcFightsFromEvent(event) {
   const fights = [];
-  const competitions = Array.isArray(event?.competitions) ? event.competitions : [];
+  const rawCompetitions = Array.isArray(event?.competitions) ? event.competitions.filter(Boolean) : [];
+  const firstRole = rawCompetitions.length ? ufcCardSection(rawCompetitions[0]) : "";
+  const lastRole = rawCompetitions.length ? ufcCardSection(rawCompetitions[rawCompetitions.length - 1]) : "";
+  // ESPN fight-center normally lists the headline bout first. The app displays
+  // fights in broadcast order, ending with co-main and main event.
+  const competitions = firstRole === "main-event" && lastRole !== "main-event"
+    ? [...rawCompetitions].reverse()
+    : rawCompetitions;
 
   competitions.forEach((competition, index) => {
     const competitors = Array.isArray(competition?.competitors) ? competition.competitors.filter(Boolean) : [];
@@ -571,12 +579,16 @@ function mapUfcFightCards(rawEvents, config, date) {
         { label: "Venue", value: venue || "Venue pending" }
       ],
       externalIds: {
-        source: "espn",
+        source: event.__fightCenterMainCount ? "espn-fightcenter" : "espn",
         espnEventId: String(event.id || ""),
         espnUid: event.uid || "",
-        espnGuid: event.guid || ""
+        espnGuid: event.guid || "",
+        espnFightCenterEventId: event.__fightCenterEventId || String(event.id || ""),
+        espnFightCenterUrl: event.__fightCenterUrl || ""
       },
-      intel: "UFC fight card imported from ESPN MMA scoreboard data. Main card is treated as one card, with independent bets inside each fight."
+      intel: event.__fightCenterMainCount
+        ? `UFC main card imported from ESPN FightCenter (${event.__fightCenterMainCount} fights), with independent bets inside each fight.`
+        : "UFC fight card imported from ESPN MMA scoreboard data. Main card is treated as one card, with independent bets inside each fight."
     });
   }
 
@@ -608,8 +620,11 @@ function collectEvents(data) {
 
 async function fetchEspnJson(url) {
   const response = await fetch(url, {
+    cache: "no-store",
     headers: {
       "accept": "application/json",
+      "cache-control": "no-cache, no-store, max-age=0",
+      "pragma": "no-cache",
       "user-agent": "Everyone-Loses/1.0"
     }
   });
@@ -622,6 +637,78 @@ async function fetchEspnJson(url) {
   }
 
   return response.json();
+}
+
+function ufcFightCenterMainCompetitions(payload = {}) {
+  const cards = payload?.cards && typeof payload.cards === "object" ? payload.cards : {};
+  const directCandidates = [
+    cards.main,
+    cards.mainCard,
+    cards.maincard,
+    cards.main_card
+  ];
+
+  for (const card of directCandidates) {
+    if (Array.isArray(card?.competitions) && card.competitions.length) return card.competitions;
+  }
+
+  for (const [key, card] of Object.entries(cards)) {
+    const normalizedKey = String(key || "").toLowerCase();
+    const label = [card?.name, card?.displayName, card?.shortName, card?.label]
+      .filter(Boolean)
+      .join(" ")
+      .toLowerCase();
+    const looksLikeMain = /(^|[^a-z])main([^a-z]|$)/.test(normalizedKey) || /main\s+card/.test(label);
+    const looksLikePrelim = /prelim/.test(normalizedKey) || /prelim/.test(label);
+    if (looksLikeMain && !looksLikePrelim && Array.isArray(card?.competitions) && card.competitions.length) {
+      return card.competitions;
+    }
+  }
+
+  return [];
+}
+
+async function enrichUfcEventWithFightCenter(event = {}) {
+  const eventId = String(event?.id || event?.uid || "").trim();
+  if (!eventId) return event;
+
+  const fightCenterUrl = `https://site.web.api.espn.com/apis/common/v3/sports/mma/ufc/fightcenter/${encodeURIComponent(eventId)}?region=us&lang=en&contentorigin=espn&showAirings=buy%2Clive%2Creplay&buyWindow=1m`;
+
+  try {
+    const payload = await fetchEspnJson(fightCenterUrl);
+    const mainCompetitions = ufcFightCenterMainCompetitions(payload);
+    if (!mainCompetitions.length) return event;
+
+    const detailEvent = payload?.event && typeof payload.event === "object" ? payload.event : {};
+    return {
+      ...event,
+      ...detailEvent,
+      id: event.id || detailEvent.id || eventId,
+      uid: event.uid || detailEvent.uid || "",
+      guid: event.guid || detailEvent.guid || "",
+      name: detailEvent.name || event.name,
+      shortName: detailEvent.shortName || event.shortName,
+      date: detailEvent.date || event.date,
+      status: detailEvent.status || event.status,
+      competitions: mainCompetitions.map(competition => ({
+        ...competition,
+        __cardSection: "main-card",
+        __fightCenterEventId: eventId
+      })),
+      __fightCenterEventId: eventId,
+      __fightCenterUrl: fightCenterUrl,
+      __fightCenterMainCount: mainCompetitions.length
+    };
+  } catch {
+    // Keep the scoreboard payload as a fallback if ESPN's detailed fight-center
+    // endpoint is unavailable. The importer must not drop the entire event.
+    return event;
+  }
+}
+
+async function enrichUfcEventsWithFightCenter(rawEvents = []) {
+  const events = Array.isArray(rawEvents) ? rawEvents : [];
+  return Promise.all(events.map(event => enrichUfcEventWithFightCenter(event)));
 }
 
 
@@ -1800,7 +1887,10 @@ async function enrichTeamEvent(mappedEvent, rawEvent, config) {
 }
 
 async function mapEventsWithEnrichment(rawEvents, config, date = "") {
-  if (config.eventType === "FIGHT_CARD") return mapUfcFightCards(rawEvents, config, date);
+  if (config.eventType === "FIGHT_CARD") {
+    const detailedEvents = await enrichUfcEventsWithFightCenter(rawEvents);
+    return mapUfcFightCards(detailedEvents, config, date);
+  }
   const alreadyMapped = config.league === "MLB" && Array.isArray(rawEvents) && rawEvents.every(event => event?.apiSource === "mlb-statsapi");
   const mapped = Array.isArray(rawEvents)
     ? alreadyMapped
@@ -1974,7 +2064,7 @@ export default async function handler(req, res) {
       date,
       count: events.length,
       url,
-      note: config.sport === "racing" ? "Racing imports use verified league-specific result sources when available. F1 uses Jolpica/Ergast when available; NASCAR uses NASCAR.com when available; IndyCar attempts INDYCAR official live timing when available; ESPN is mainly schedule fallback." : config.league === "World Cup" ? "World Cup uses ESPN soccer league key fifa.world. This endpoint returns games only for dates ESPN has scheduled/scoreboard data available." : config.league === "UFC" ? "UFC uses ESPN MMA league key ufc and imports one fight-card event with main-card fights inside it when ESPN exposes fights for the selected date." : "",
+      note: config.sport === "racing" ? "Racing imports use verified league-specific result sources when available. F1 uses Jolpica/Ergast when available; NASCAR uses NASCAR.com when available; IndyCar attempts INDYCAR official live timing when available; ESPN is mainly schedule fallback." : config.league === "World Cup" ? "World Cup uses ESPN soccer league key fifa.world. This endpoint returns games only for dates ESPN has scheduled/scoreboard data available." : config.league === "UFC" ? "UFC uses the ESPN scoreboard to discover the event, then ESPN FightCenter cards.main.competitions as the source of truth for the complete main card. Scoreboard fights remain a fallback only." : "",
       events
     });
   } catch (error) {

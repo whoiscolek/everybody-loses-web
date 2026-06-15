@@ -18,7 +18,7 @@ const LEASE_MS = 75 * 1000;
 const NOW_LOOKAHEAD_MS = 48 * 60 * 60 * 1000;
 const PREGAME_LOOKBACK_MS = 4 * 60 * 60 * 1000;
 const HISTORY_RETENTION_MS = 5 * 24 * 60 * 60 * 1000;
-const MAINTENANCE_VERSION = "10.72";
+const MAINTENANCE_VERSION = "10.73";
 
 function json(res, status, body) {
   res.statusCode = status;
@@ -370,7 +370,7 @@ async function fetchSource(origin, league, dateISO) {
       signal: controller.signal,
       cache: "no-store",
       headers: {
-        "User-Agent": "Everyone-Loses-Maintenance/10.72",
+        "User-Agent": "Everyone-Loses-Maintenance/10.73",
         "Cache-Control": "no-cache, no-store, max-age=0",
         Pragma: "no-cache"
       }
