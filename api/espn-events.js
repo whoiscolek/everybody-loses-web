@@ -235,9 +235,30 @@ function getCompetitor(competition, homeAway) {
 }
 
 function getStatus(event) {
-  const type = event?.status?.type || {};
-  if (type.completed) return "final";
-  if (type.state === "in") return "live";
+  const competition = event?.competitions?.[0] || {};
+  const types = [event?.status?.type || {}, competition?.status?.type || {}];
+  const text = types
+    .flatMap(type => [type.name, type.description, type.detail, type.shortDetail, type.state])
+    .concat([
+      event?.status?.displayClock,
+      competition?.status?.displayClock,
+      competition?.status?.type?.detail,
+      competition?.status?.type?.shortDetail
+    ])
+    .filter(Boolean)
+    .join(" ")
+    .toLowerCase();
+
+  if (
+    types.some(type => type.completed === true || String(type.state || "").toLowerCase() === "post")
+    || /(^|\b)(final|full time|full-time|ft|completed|complete)(\b|$)/i.test(text)
+  ) return "final";
+
+  if (
+    types.some(type => String(type.state || "").toLowerCase() === "in")
+    || /in progress|halftime|half-time|extra time|penalties|live/i.test(text)
+  ) return "live";
+
   return "pregame";
 }
 
@@ -1754,6 +1775,11 @@ async function fetchLeagueData(config, date, params) {
 
 export default async function handler(req, res) {
   res.setHeader("Access-Control-Allow-Origin", "*");
+  res.setHeader("Cache-Control", "no-store, no-cache, must-revalidate, max-age=0");
+  res.setHeader("CDN-Cache-Control", "no-store");
+  res.setHeader("Vercel-CDN-Cache-Control", "no-store");
+  res.setHeader("Pragma", "no-cache");
+  res.setHeader("Expires", "0");
   res.setHeader("Access-Control-Allow-Methods", "GET, OPTIONS");
   res.setHeader("Access-Control-Allow-Headers", "Content-Type");
 

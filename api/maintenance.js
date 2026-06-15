@@ -18,7 +18,7 @@ const LEASE_MS = 75 * 1000;
 const NOW_LOOKAHEAD_MS = 48 * 60 * 60 * 1000;
 const PREGAME_LOOKBACK_MS = 4 * 60 * 60 * 1000;
 const HISTORY_RETENTION_MS = 5 * 24 * 60 * 60 * 1000;
-const MAINTENANCE_VERSION = "10.60";
+const MAINTENANCE_VERSION = "10.67";
 
 function json(res, status, body) {
   res.statusCode = status;
@@ -242,8 +242,16 @@ async function fetchSource(origin, league, dateISO) {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), 22000);
   try {
-    const url = `${origin}/api/espn-events?league=${encodeURIComponent(league)}&date=${dateISO.replace(/-/g, "")}`;
-    const response = await fetch(url, { signal: controller.signal, headers: { "User-Agent": "Everyone-Loses-Maintenance/10.60" } });
+    const url = `${origin}/api/espn-events?league=${encodeURIComponent(league)}&date=${dateISO.replace(/-/g, "")}&fresh=${Date.now()}`;
+    const response = await fetch(url, {
+      signal: controller.signal,
+      cache: "no-store",
+      headers: {
+        "User-Agent": "Everyone-Loses-Maintenance/10.67",
+        "Cache-Control": "no-cache, no-store, max-age=0",
+        Pragma: "no-cache"
+      }
+    });
     const data = await response.json().catch(() => ({}));
     if (!response.ok) throw new Error(data.error || `${league} ${dateISO} source returned ${response.status}`);
     return { league, dateISO, events: Array.isArray(data.events) ? data.events : [], source: data.source || "unknown", note: data.note || "" };

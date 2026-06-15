@@ -70,3 +70,10 @@ The included GitHub Actions workflow calls `/api/maintenance?mode=auto` every fi
 ## Admin matchup repair (v10.66)
 
 `POST /api/repair-matchup` performs matchup repair with the Firebase Admin SDK. The client supplies a fresh Firebase ID token; the endpoint verifies that the signed-in user's Firestore profile is approved and administrative before writing. This avoids client Firestore create-rule conflicts when an admin needs to create or reuse bets owned by other users.
+
+
+## v10.67 resilience layer
+
+The shared maintenance endpoint remains the primary updater. When an authenticated admin has the app open, the client also verifies active and recently started events directly against the normalized sports endpoint and runs idempotent settlement repair. This is a fallback for server credential/scheduler failures, not a second full discovery system.
+
+Matchup repair reuses existing bet documents in a client-side admin batch whenever possible. Only repairs that need a brand-new bet document require the Firebase Admin server endpoint.

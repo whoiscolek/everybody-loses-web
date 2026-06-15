@@ -12,6 +12,9 @@
   "functions": {
     "api/maintenance.js": {
       "maxDuration": 60
+    },
+    "api/repair-matchup.js": {
+      "maxDuration": 30
     }
   }
 }

@@ -4335,7 +4335,10 @@ async function importAllApiEvents() {
 
 async function fetchApiEventsForLeagueDate(league, dateISO) {
   const date = dateISO.replace(/-/g, "");
-  const response = await fetch(`/api/espn-events?league=${encodeURIComponent(league)}&date=${encodeURIComponent(date)}`);
+  const response = await fetch(`/api/espn-events?league=${encodeURIComponent(league)}&date=${encodeURIComponent(date)}&fresh=${Date.now()}`, {
+    cache: "no-store",
+    headers: { "Cache-Control": "no-cache" }
+  });
   const data = await response.json();
   if (!response.ok) throw new Error(data.error || `${league} failed with ${response.status}`);
   return data.events || [];
@@ -4441,7 +4444,7 @@ async function syncApiSchedule(daysFromToday = 0, options = {}) {
 function liveRefreshCandidateEvents() {
   const now = Date.now();
   const soonMs = 20 * 60 * 1000;
-  const recentMs = 7 * 60 * 60 * 1000;
+  const recentMs = 36 * 60 * 60 * 1000;
 
   return Object.values(state.events || {}).filter(event => {
     if (!event || event.status === "final") return false;
@@ -4453,10 +4456,9 @@ function liveRefreshCandidateEvents() {
 }
 
 async function syncLiveScoreEvents(options = {}) {
-  // Existing live/upcoming events may be refreshed by any approved user. Before
-  // v10.59 this was admin-only, which meant final scores/statuses did not reach
-  // Firestore until an admin browser happened to be open.
-  if (!canBet()) return { updated: 0, fetched: 0 };
+  // Firestore event writes are admin-only. This browser path is an explicit
+  // fallback when the shared server maintenance function is unavailable.
+  if (!isAdmin()) return { updated: 0, fetched: 0 };
 
   const candidates = liveRefreshCandidateEvents();
   if (!candidates.length) return { updated: 0, fetched: 0 };
@@ -4855,32 +4857,62 @@ async function runAutoMaintenance(reason = "timer") {
   }
 }
 
+async function runAdminForegroundMaintenanceFallback() {
+  if (!isAdmin()) return { updated: 0, fetched: 0, settled: 0 };
+  const live = await syncLiveScoreEvents({ silent: true });
+  const settled = await autoSettleFinalEvents();
+  return { ...live, settled };
+}
+
 async function triggerServerMaintenance(reason = "foreground") {
   if (!currentUser()?.approved || approvedLiveRefreshRunning) return null;
   approvedLiveRefreshRunning = true;
+  let serverResult = null;
+  let serverError = null;
+  let fallback = { updated: 0, fetched: 0, settled: 0 };
+
   try {
-    const response = await fetch(`/api/maintenance?mode=quick&reason=${encodeURIComponent(reason)}`, {
+    const response = await fetch(`/api/maintenance?mode=quick&reason=${encodeURIComponent(reason)}&fresh=${Date.now()}`, {
       method: "POST",
-      headers: { "Content-Type": "application/json" }
+      cache: "no-store",
+      headers: { "Content-Type": "application/json", "Cache-Control": "no-cache" }
     });
-    const result = await response.json().catch(() => ({}));
-    if (!response.ok && response.status !== 202) throw new Error(result.error || `Maintenance returned ${response.status}`);
-    if (reason === "manual") {
-      apiImportMessage = result.skipped
-        ? "Server maintenance is already running."
-        : `Server refresh complete: ${result.updated || 0} updated, ${result.added || 0} added, ${result.settlement?.ledgerWrites || 0} ledger write(s).`;
-      renderApp();
+    const rawBody = await response.text();
+    try {
+      serverResult = rawBody ? JSON.parse(rawBody) : {};
+    } catch {
+      serverResult = {};
     }
-    return result;
+    if (!response.ok && response.status !== 202) {
+      throw new Error(serverResult.error || rawBody.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim().slice(0, 280) || `Maintenance returned ${response.status}`);
+    }
   } catch (error) {
-    if (reason === "manual") {
-      apiImportMessage = `Server maintenance failed: ${error?.message || String(error)}`;
-      renderApp();
-    }
-    return null;
-  } finally {
-    approvedLiveRefreshRunning = false;
+    serverError = error;
   }
+
+  try {
+    // Admin browsers independently verify active/recent events and settle any
+    // newly final games. This prevents a broken server credential or scheduler
+    // from leaving a completed event stuck on the Now board.
+    fallback = await runAdminForegroundMaintenanceFallback();
+  } catch (fallbackError) {
+    if (!serverError) serverError = fallbackError;
+  }
+
+  if (reason === "manual") {
+    if (serverError && !fallback.updated && !fallback.settled) {
+      apiImportMessage = `Server maintenance failed and browser fallback could not repair it: ${serverError?.message || String(serverError)}`;
+    } else {
+      const serverText = serverResult?.skipped
+        ? "Server maintenance was already running"
+        : `Server: ${serverResult?.updated || 0} updated, ${serverResult?.added || 0} added, ${serverResult?.settlement?.ledgerWrites || 0} ledger write(s)`;
+      apiImportMessage = `${serverText}. Browser verification: ${fallback.updated || 0} event update(s), ${fallback.settled || 0} settlement repair(s).${serverError ? ` Server warning: ${serverError.message}` : ""}`;
+    }
+    renderApp();
+  }
+
+  approvedLiveRefreshRunning = false;
+  return serverResult || (fallback.updated || fallback.settled ? { browserFallback: true, ...fallback } : null);
 }
 
 function maybeStartSettlementMaintenance() {
@@ -5076,6 +5108,146 @@ async function settleEventFromAdmin() {
 }
 
 
+
+function normalizedRepairPick(value, eventType) {
+  const pick = String(value || "").trim().toLowerCase();
+  if (eventType === EVENT_TYPES.TEAM) return ["away", "home"].includes(pick) ? pick : "";
+  if (eventType === EVENT_TYPES.FIGHT_CARD) {
+    if (pick === "fightera") return "fighterA";
+    if (pick === "fighterb") return "fighterB";
+  }
+  return "";
+}
+
+function repairFightForEvent(event, rawFightId) {
+  const needle = String(rawFightId || "").trim();
+  if (!needle) return null;
+  return (event.fights || []).find(fight =>
+    String(fight.id || "") === needle
+    || String(fight.order || "") === needle
+    || String(fight.label || "") === needle
+  ) || null;
+}
+
+function reusableRepairBet(event, userId, fightId = "") {
+  const blocked = new Set(["settled", "void", "cancelled", "expired"]);
+  return Object.values(state.bets || {})
+    .filter(bet => recordMatchesEvent(bet, event))
+    .filter(bet => String(bet.userId || "") === String(userId || ""))
+    .filter(bet => event.type !== EVENT_TYPES.FIGHT_CARD || String(bet.fightId || "") === String(fightId || ""))
+    .filter(bet => !blocked.has(String(bet.status || "")))
+    .sort((a, b) => toDateValue(b.updatedAt || b.createdAt) - toDateValue(a.updatedAt || a.createdAt))[0] || null;
+}
+
+async function repairMatchupDirectlyInBrowser({ eventId, userA, userB, pickA, pickB, amount, fightId }) {
+  if (!isAdmin()) throw new Error("Admin access is required for direct matchup repair.");
+
+  const event = findEventByIdOrCode(String(eventId || "").trim().toUpperCase());
+  if (!event) throw new Error("Event not found. Check the internal event ID or display code.");
+  if (![EVENT_TYPES.TEAM, EVENT_TYPES.FIGHT_CARD].includes(event.type)) {
+    throw new Error("Matchup repair currently supports team games and UFC fights.");
+  }
+
+  let canonicalFightId = "";
+  if (event.type === EVENT_TYPES.FIGHT_CARD) {
+    const fight = repairFightForEvent(event, fightId);
+    if (!fight) throw new Error("Enter a valid UFC fight number or fight ID.");
+    canonicalFightId = String(fight.id || "");
+  }
+
+  const sideA = normalizedRepairPick(pickA, event.type);
+  const sideB = normalizedRepairPick(pickB, event.type);
+  if (!sideA || !sideB) {
+    throw new Error(event.type === EVENT_TYPES.TEAM
+      ? "Team picks must be away and home."
+      : "UFC picks must be fighterA and fighterB.");
+  }
+  if (sideA === sideB) throw new Error("The two users must have opposite picks.");
+
+  const betA = reusableRepairBet(event, userA, canonicalFightId);
+  const betB = reusableRepairBet(event, userB, canonicalFightId);
+  if (!betA || !betB) {
+    const missing = [!betA ? state.users[userA]?.displayName || "User A" : "", !betB ? state.users[userB]?.displayName || "User B" : ""]
+      .filter(Boolean)
+      .join(" and ");
+    const error = new Error(`No reusable existing bet was found for ${missing}. Server repair is required to create a missing bet.`);
+    error.needsServer = true;
+    throw error;
+  }
+
+  const eventDocId = event.firestoreId || event.id;
+  const betAId = betA.firestoreId || betA.id;
+  const betBId = betB.firestoreId || betB.id;
+  if (!eventDocId || !betAId || !betBId) throw new Error("The event or one of its bets is missing a Firestore document ID.");
+
+  const conflicts = Object.values(state.matches || {}).filter(match => {
+    if (!recordMatchesEvent(match, event)) return false;
+    if (["settled", "void", "cancelled"].includes(String(match.status || ""))) return false;
+    if (event.type === EVENT_TYPES.FIGHT_CARD && String(match.fightId || "") !== canonicalFightId) return false;
+    return [match.userA, match.userB].some(id => String(id || "") === String(userA) || String(id || "") === String(userB));
+  });
+
+  const batch = writeBatch(db);
+  const selectedBetIds = new Set([String(betAId), String(betBId)]);
+  const displacedBetIds = new Set();
+
+  for (const match of conflicts) {
+    if (match.betA) displacedBetIds.add(String(match.betA));
+    if (match.betB) displacedBetIds.add(String(match.betB));
+    const matchId = match.firestoreId || match.id;
+    if (matchId) batch.delete(doc(db, "matches", matchId));
+  }
+
+  for (const displacedId of displacedBetIds) {
+    if (selectedBetIds.has(displacedId)) continue;
+    const displaced = state.bets[displacedId] || Object.values(state.bets || {}).find(bet => String(bet.firestoreId || bet.id) === displacedId);
+    if (!displaced) continue;
+    const displacedDocId = displaced.firestoreId || displaced.id;
+    if (displacedDocId) batch.set(doc(db, "bets", displacedDocId), { status: "open", updatedAt: serverTimestamp() }, { merge: true });
+  }
+
+  const sharedBetPatch = {
+    eventId: eventDocId,
+    amount,
+    fightId: canonicalFightId,
+    status: "matched",
+    adminRepaired: true,
+    repairedBy: authUser?.uid || state.currentUserId || "admin",
+    doubleUp: { requestedBy: [], applied: false, originalAmount: amount },
+    updatedAt: serverTimestamp()
+  };
+
+  batch.set(doc(db, "bets", betAId), { ...sharedBetPatch, side: sideA }, { merge: true });
+  batch.set(doc(db, "bets", betBId), { ...sharedBetPatch, side: sideB }, { merge: true });
+
+  const matchRef = doc(collection(db, "matches"));
+  batch.set(matchRef, {
+    id: matchRef.id,
+    type: event.type,
+    eventId: eventDocId,
+    fightId: canonicalFightId,
+    betA: betAId,
+    betB: betBId,
+    userA,
+    userB,
+    sideA,
+    sideB,
+    amount,
+    doubleUp: { requestedBy: [], applied: false, originalAmount: amount },
+    status: "matched",
+    adminRepaired: true,
+    repairedBy: authUser?.uid || state.currentUserId || "admin",
+    createdAt: serverTimestamp(),
+    updatedAt: serverTimestamp()
+  });
+
+  await batch.commit();
+  return {
+    ok: true,
+    message: `Match repaired directly in Firestore. Removed ${conflicts.length} conflicting match${conflicts.length === 1 ? "" : "es"} and created the intended match.`
+  };
+}
+
 async function repairAdminMatchup() {
   if (repairMatchupRunning) return;
 
@@ -5117,25 +5289,45 @@ async function repairAdminMatchup() {
   setStatus("Checking the event and writing the repaired matchup…", "working");
 
   try {
+    const requestBody = { eventId, userA, userB, pickA, pickB, amount, fightId };
+
+    try {
+      const direct = await repairMatchupDirectlyInBrowser(requestBody);
+      setStatus(direct.message || "Match repaired successfully.", "success");
+      return;
+    } catch (directError) {
+      const canUseServerFallback = directError?.needsServer || directError?.code === "permission-denied";
+      if (!canUseServerFallback) throw directError;
+      setStatus(`${directError.message} Trying secure server repair…`, "working");
+    }
+
     const token = await authUser.getIdToken(true);
     const response = await fetch("/api/repair-matchup", {
       method: "POST",
+      cache: "no-store",
       headers: {
         "Content-Type": "application/json",
-        Authorization: `Bearer ${token}`
+        Authorization: `Bearer ${token}`,
+        "Cache-Control": "no-cache"
       },
-      body: JSON.stringify({ eventId, userA, userB, pickA, pickB, amount, fightId })
+      body: JSON.stringify(requestBody)
     });
 
+    const rawBody = await response.text();
     let payload = {};
     try {
-      payload = await response.json();
+      payload = rawBody ? JSON.parse(rawBody) : {};
     } catch {
       payload = {};
     }
 
     if (!response.ok) {
-      throw new Error(payload.error || `Repair request failed with status ${response.status}.`);
+      const serverDetail = payload.error
+        || payload.message
+        || rawBody.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim().slice(0, 280)
+        || "The server returned no diagnostic body.";
+      const stage = payload.stage ? ` Stage: ${payload.stage}.` : "";
+      throw new Error(`Secure repair failed (${response.status}). ${serverDetail}${stage}`);
     }
 
     setStatus(payload.message || "Match repaired successfully.", "success");

@@ -105,6 +105,7 @@ function findFight(event, rawFightId) {
 }
 
 export default async function handler(req, res) {
+  res.setHeader("Cache-Control", "no-store, no-cache, must-revalidate, max-age=0");
   if (req.method === "OPTIONS") {
     res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
     res.setHeader("Access-Control-Allow-Headers", "Authorization, Content-Type");
@@ -113,11 +114,15 @@ export default async function handler(req, res) {
 
   if (req.method !== "POST") return json(res, 405, { error: "Use POST." });
 
+  let stage = "initializing Firebase Admin";
   try {
     const services = getAdminServices();
+    stage = "verifying the signed-in admin";
     const adminUid = await requireAdmin(req, services);
+    stage = "parsing the repair request";
     const body = typeof req.body === "string" ? JSON.parse(req.body || "{}") : (req.body || {});
 
+    stage = "finding the event";
     const eventSnap = await resolveEvent(services.db, body.eventId);
     if (!eventSnap) return json(res, 404, { error: "Event not found. Check the internal event ID or display code." });
 
@@ -134,6 +139,7 @@ export default async function handler(req, res) {
       return json(res, 400, { error: "Enter a valid amount greater than zero." });
     }
 
+    stage = "loading the selected users";
     const [userASnap, userBSnap] = await Promise.all([
       services.db.collection("users").doc(userA).get(),
       services.db.collection("users").doc(userB).get()
@@ -163,6 +169,7 @@ export default async function handler(req, res) {
 
     if (pickA === pickB) return json(res, 400, { error: "The two users must have opposite picks." });
 
+    stage = "loading existing bets and matches";
     const [betsSnap, matchesSnap] = await Promise.all([
       services.db.collection("bets").where("eventId", "==", canonicalEventId).get(),
       services.db.collection("matches").where("eventId", "==", canonicalEventId).get()
@@ -280,6 +287,7 @@ export default async function handler(req, res) {
       updatedAt: timestamp
     });
 
+    stage = "committing the repaired matchup";
     await batch.commit();
 
     return json(res, 200, {
@@ -293,7 +301,9 @@ export default async function handler(req, res) {
   } catch (error) {
     console.error("repair-matchup failed", error);
     return json(res, Number(error.status) || 500, {
-      error: error.message || "Matchup repair failed."
+      error: error.message || "Matchup repair failed.",
+      code: error.code || "REPAIR_MATCHUP_FAILED",
+      stage
     });
   }
 }

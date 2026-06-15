@@ -1,3 +1,13 @@
+# Everybody Loses v10.67
+
+## v10.67 reliability fixes
+
+- World Cup and other ESPN events now recognize additional final-state signals such as `state: post`, full-time, completed, and competition-level status fields.
+- Score refresh requests bypass browser/CDN caches.
+- An admin browser now performs a targeted live/final refresh and settlement fallback when server maintenance is unavailable, so a completed event does not remain stuck on Now.
+- Matchup repair first repairs existing bets directly through the signed-in admin session. The server endpoint is only needed when a selected user has no existing bet document.
+- Secure repair failures now report the exact server stage and credential/configuration error instead of only `status 500`.
+
 # Everyone Loses v10.60
 
 Head-to-head sports betting battles for friends.
