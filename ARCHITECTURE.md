@@ -1,15 +1,25 @@
-# Everybody Loses v10.76 Architecture
+# Everybody Loses v10.77 Architecture
 
-## UFC source pipeline
+## Scoped maintenance pipeline
 
-`api/espn-events.js` discovers UFC events through ESPN scoreboard data, then requests detailed FightCenter/Core event data. Known incomplete cards can be repaired without changing existing fight IDs. Detailed refresh remains active for live cards even after the expected fight count has been reached.
+`api/maintenance.js` now exposes three bounded modes:
 
-Card status and bout status are separate. A completed early bout does not mark the whole event final. Each fight stores its own `status` and `winner`, while the event remains `live` until the card-level source or all bouts indicate completion.
+- `refresh`: refresh existing live, recent, incomplete, or unsettled events.
+- `discover`: import one ET calendar date across every supported league.
+- `settle`: perform no external source calls and only repair completed matches, bets, and ledger entries.
 
-## UFC settlement pipeline
+Each mode uses the same lease and idempotent Firestore writes. Splitting discovery and settlement prevents a large source sweep from consuming the function runtime before ledger work begins.
 
-`api/maintenance.js` processes a UFC event whenever at least one fight has a winner, even if the card is still live. It settles only matches associated with completed fights and expires only unmatched bets tied to those completed fights. Later-fight bets remain untouched.
+## Scheduler
 
-`api/settle-event.js` provides the same targeted behavior for an authenticated administrator. Ledger IDs are deterministic from event ID and match ID, making repeated settlement requests idempotent.
+`.github/workflows/server-maintenance.yml` runs every five minutes. It calls `refresh`, rotates one discovery offset from 0 through 2, and then calls `settle`. Therefore each date in the 48-hour window is rediscovered every fifteen minutes, while existing live and unsettled events are checked every five minutes.
 
-The browser fallback mirrors this behavior and can settle completed fights without requiring the entire card to be final.
+## Browser recovery
+
+The Admin maintenance button uses a Firebase ID token and runs refresh, all three discovery dates, then settlement. Progress and failures are displayed inside the maintenance card.
+
+If the shared server record is stale, an admin browser also enables the direct Firestore fallback. It performs the full-window source sweep, reloads events/bets/matches/ledger state from Firestore, and retries settlement. This path is intentionally throttled and only active while the server pipeline is stale.
+
+## UFC behavior
+
+The v10.76 detailed UFC refresh remains active. Fight-card status and individual bout status are separate, and completed fights can settle before the complete card finishes.

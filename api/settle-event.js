@@ -87,7 +87,7 @@ export default async function handler(req, res) {
       adminUid,
       settlement,
       runtime: process.version,
-      version: "10.76"
+      version: "10.77"
     });
   } catch (error) {
     console.error("settle-event failed", { stage, error });
@@ -96,7 +96,7 @@ export default async function handler(req, res) {
       code: error.code || "SETTLE_EVENT_FAILED",
       stage,
       runtime: process.version,
-      version: "10.76"
+      version: "10.77"
     });
   }
 }

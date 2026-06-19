@@ -1,30 +1,31 @@
 # Everybody Loses
 
-## v10.76
+## v10.77
 
-v10.76 fixes UFC cards that contain all fights but stop receiving fight-by-fight updates after the early bouts.
+v10.77 repairs the unattended maintenance pipeline that imports the Now window, refreshes live events, and settles completed bets.
 
-### UFC live refresh
+### What changed
 
-- A complete seven-fight card remains eligible for the detailed ESPN FightCenter/Core refresh while it is live or still has unresolved fights.
-- UFC card status is determined from the card-level state and all bout states rather than incorrectly treating the first completed bout as the entire card being final.
-- Winner/status parsing accepts additional ESPN result shapes.
-- The verified UFC Freedom 250 fallback now marks the first six confirmed results without falsely finalizing the still-live main event.
-- Browser and server refresh paths merge updated fight statuses and winners into the existing Firestore event while preserving fight IDs used by bets.
-
-### Fight-by-fight settlement
-
-- Completed UFC fights can settle while the overall card is still live.
-- Only bets tied to a completed fight are closed; bets on later fights remain open.
-- Ledger IDs are deterministic, preventing duplicate debts during retries.
-- The dedicated settlement endpoint accepts a live UFC card when at least one fight result is available.
-- The event stays in Now until the card itself is final.
+- Server maintenance is split into short `refresh`, `discover`, and `settle` requests instead of one oversized request that could time out after saving only part of the work.
+- The GitHub Actions workflow runs those phases separately every five minutes and rotates discovery across today, tomorrow, and the following day.
+- Every maintenance route accepts either the scheduler secret or an authenticated approved administrator token.
+- **Run server refresh now** shows immediate progress, disables itself while running, and reports exact warnings instead of appearing unresponsive.
+- A manual run discovers the entire 48-hour Now window and then runs settlement after the newly saved event data is available.
+- When server maintenance is stale or unavailable, an admin browser automatically runs the known-working full-window import, refreshes Firestore state, and attempts settlement.
+- Maintenance health now distinguishes the last successful run from the last request that reached the app and reports the current maintenance version.
+- The existing v10.76 UFC detailed refresh and fight-by-fight settlement changes remain included.
 
 No Firebase rules change is required.
 
 ## Deployment
 
-Replace the repository files, push to GitHub, and deploy on Vercel with Node 22.x. Open the site as admin or run **Admin → Run server refresh now** once to refresh the current UFC card and settle completed-fight matches.
+Replace the repository files, including `.github/workflows/server-maintenance.yml`, then push to GitHub and deploy on Vercel with Node 22.x.
+
+Confirm these secrets still exist:
+
+- Vercel: `MAINTENANCE_SECRET`
+- GitHub Actions: `MAINTENANCE_SECRET`
+- Optional GitHub Actions: `MAINTENANCE_URL=https://everybody-loses.vercel.app`
 
 ## Local checks
 

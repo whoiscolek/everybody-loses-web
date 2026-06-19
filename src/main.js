@@ -49,7 +49,7 @@ const ODDS_AUTO_PREGAME_COOLDOWN_MS = 60 * 60 * 1000;
 const ODDS_AUTO_LIVE_COOLDOWN_MS = 20 * 60 * 1000;
 const ODDS_DAILY_AUTO_REQUEST_LIMIT = 25;
 const AUTO_CLEANUP_INTERVAL_MS = 6 * 60 * 60 * 1000;
-const AUTO_SETTLE_INTERVAL_MS = 10 * 60 * 1000;
+const AUTO_SETTLE_INTERVAL_MS = 2 * 60 * 1000;
 const NOW_WINDOW_SYNC_LABEL = "full 48-hour Now window";
 const NOW_BOARD_LOOKAHEAD_MS = 48 * 60 * 60 * 1000;
 const NOW_BOARD_LOOKBACK_MS = 4 * 60 * 60 * 1000;
@@ -182,6 +182,8 @@ let autoMaintenanceRunning = false;
 let autoMaintenanceTimer = null;
 let settlementMaintenanceTimer = null;
 let approvedLiveRefreshRunning = false;
+let serverMaintenanceMessage = "";
+let serverMaintenanceMessageType = "";
 let autoMaintenanceMessage = "";
 let mlbSyncDebug = "";
 let sourceSweepDebug = "";
@@ -2964,32 +2966,63 @@ function renderAdminUserManagement() {
   }).join("");
 }
 
+function maintenanceAgeMinutes(value) {
+  const ms = toDateValue(value);
+  return ms ? Math.max(0, Math.round((Date.now() - ms) / 60000)) : null;
+}
+
+function serverMaintenanceIsStale() {
+  const age = maintenanceAgeMinutes(state.maintenance?.lastSuccessAt);
+  return age === null || age > 12;
+}
+
 function renderMaintenanceHealth() {
   const maintenance = state.maintenance || {};
   const summary = maintenance.lastSummary || {};
-  const lastSuccessMs = toDateValue(maintenance.lastSuccessAt);
-  const ageMinutes = lastSuccessMs ? Math.max(0, Math.round((Date.now() - lastSuccessMs) / 60000)) : null;
-  const healthy = ageMinutes !== null && ageMinutes <= 12 && !maintenance.lastError;
-  const status = maintenance.running ? "Running now" : healthy ? "Healthy" : ageMinutes === null ? "Not configured" : "Stale / needs attention";
-  const runtimeDetail = [summary.version ? `v${summary.version}` : "", summary.runtime || ""].filter(Boolean).join(" · ");
-  const unresolvedSettlements = Number(summary.settlement?.unresolved?.length || 0);
-  const repairedLegacyMatches = Number(summary.settlement?.repairedLegacyMatches || 0);
+  const sourceSummary = Number(summary.sourceRequests || 0) > 0
+    ? summary
+    : (maintenance.lastRefreshSummary || maintenance.lastDiscoverySummary || summary);
+  const settlementSummary = maintenance.lastSettlementSummary || summary;
+  const ageMinutes = maintenanceAgeMinutes(maintenance.lastSuccessAt);
+  const attemptAge = maintenanceAgeMinutes(maintenance.lastAttemptAt || maintenance.startedAt);
+  const recent = ageMinutes !== null && ageMinutes <= 12;
+  const degraded = recent && Boolean(maintenance.lastError);
+  const healthy = recent && !degraded;
+  const status = approvedLiveRefreshRunning || maintenance.running
+    ? "Running now"
+    : degraded
+      ? "Running with source warnings"
+      : healthy
+        ? "Healthy"
+        : ageMinutes === null
+          ? "Not configured"
+          : "Stale / needs attention";
+  const reportedVersion = summary.version || maintenance.maintenanceVersion || maintenance.lastAttemptVersion || "";
+  const runtimeDetail = [reportedVersion ? `v${reportedVersion}` : "", summary.runtime || ""].filter(Boolean).join(" · ");
+  const unresolvedSettlements = Number(settlementSummary.settlement?.unresolved?.length || 0);
+  const repairedLegacyMatches = Number(settlementSummary.settlement?.repairedLegacyMatches || 0);
   const settlementDetail = [
-    `${summary.settlement?.ledgerWrites || 0} ledger write${summary.settlement?.ledgerWrites === 1 ? "" : "s"}`,
+    `${settlementSummary.settlement?.ledgerWrites || 0} ledger write${settlementSummary.settlement?.ledgerWrites === 1 ? "" : "s"}`,
     repairedLegacyMatches ? `${repairedLegacyMatches} legacy match repair${repairedLegacyMatches === 1 ? "" : "s"}` : "",
     unresolvedSettlements ? `${unresolvedSettlements} unresolved settlement${unresolvedSettlements === 1 ? "" : "s"}` : ""
   ].filter(Boolean).join(" · ");
-  const detail = lastSuccessMs
-    ? `Last successful server run ${ageMinutes} minute${ageMinutes === 1 ? "" : "s"} ago · ${summary.sourceSuccesses || 0}/${summary.sourceRequests || 0} source requests · ${settlementDetail}${runtimeDetail ? ` · ${runtimeDetail}` : ""}`
-    : "No server maintenance run has been recorded yet. Configure the scheduled maintenance workflow before relying on unattended updates.";
+  const detail = ageMinutes !== null
+    ? `Last successful server run ${ageMinutes} minute${ageMinutes === 1 ? "" : "s"} ago · ${sourceSummary.sourceSuccesses || 0}/${sourceSummary.sourceRequests || 0} source requests · ${settlementDetail}${runtimeDetail ? ` · ${runtimeDetail}` : ""}`
+    : "No successful server maintenance run has been recorded yet.";
+  const attemptDetail = attemptAge !== null
+    ? `Last request reached the app ${attemptAge} minute${attemptAge === 1 ? "" : "s"} ago${maintenance.lastAttemptMode ? ` · ${maintenance.lastAttemptMode}` : ""}${maintenance.lastAttemptVersion ? ` · v${maintenance.lastAttemptVersion}` : ""}.`
+    : "No recent scheduler or manual maintenance request has reached the app.";
+  const messageClass = serverMaintenanceMessageType === "error" ? "bad" : serverMaintenanceMessageType === "success" ? "good" : "muted";
+
   return `
     <div class="admin-card maintenance-health ${healthy ? "healthy" : "warning"}">
       <div class="maintenance-health-head">
-        <div><h3>Server maintenance</h3><p class="muted small">One shared pipeline refreshes every sport, removes stale Now cards, settles finished bets, and writes all users’ ledgers.</p></div>
+        <div><h3>Server maintenance</h3><p class="muted small">Scoped refreshes import the 48-hour window, update live results, and settle completed bets without one oversized request timing out.</p></div>
         <span class="status-badge ${healthy ? "live" : "pregame"}">${escapeHtml(status)}</span>
       </div>
-      <div class="record"><strong>${escapeHtml(detail)}</strong>${maintenance.lastError ? `<br><span class="bad small">${escapeHtml(String(maintenance.lastError).slice(0, 800))}</span>` : ""}</div>
-      <button class="ghost" data-action="run-server-maintenance">Run server refresh now</button>
+      <div class="record"><strong>${escapeHtml(detail)}</strong><br><span class="muted small">${escapeHtml(attemptDetail)}</span>${maintenance.lastError ? `<br><span class="bad small">${escapeHtml(String(maintenance.lastError).slice(0, 800))}</span>` : ""}</div>
+      <button class="ghost" data-action="run-server-maintenance" ${approvedLiveRefreshRunning ? "disabled" : ""}>${approvedLiveRefreshRunning ? "Running full refresh…" : "Run server refresh now"}</button>
+      ${serverMaintenanceMessage ? `<div class="record small ${messageClass}">${escapeHtml(serverMaintenanceMessage)}</div>` : ""}
     </div>
   `;
 }
@@ -5446,13 +5479,18 @@ function autoKey(name) {
 
 function shouldRunAutoTask(name, intervalMs) {
   try {
-    const key = autoKey(name);
-    const last = Number(localStorage.getItem(key) || 0);
-    if (Date.now() - last < intervalMs) return false;
-    localStorage.setItem(key, String(Date.now()));
-    return true;
+    const last = Number(localStorage.getItem(autoKey(name)) || 0);
+    return Date.now() - last >= intervalMs;
   } catch {
     return true;
+  }
+}
+
+function markAutoTaskRun(name) {
+  try {
+    localStorage.setItem(autoKey(name), String(Date.now()));
+  } catch {
+    // Local throttling is optional.
   }
 }
 
@@ -5623,124 +5661,208 @@ async function autoRefreshOddsForActiveEvents() {
 }
 
 async function runAutoMaintenance(reason = "timer") {
-  if (!isAdmin() || autoMaintenanceRunning) return;
+  if (!isAdmin() || autoMaintenanceRunning || !serverMaintenanceIsStale()) return;
   autoMaintenanceRunning = true;
 
   const notes = [];
   try {
-    if (shouldRunAutoTask("live-score", LIVE_SCORE_SYNC_INTERVAL_MS)) {
+    const discoveryDue = shouldRunAutoTask("sync-now-window", DISCOVERY_SYNC_INTERVAL_MS);
+    if (discoveryDue) {
+      const nowWindow = await syncNowWindowSchedule({ silent: true });
+      if (!nowWindow.error) markAutoTaskRun("sync-now-window");
+      notes.push(`browser discovery ${nowWindow.fetched || 0} fetched, ${((nowWindow.added || 0) + (nowWindow.updated || 0))} saved`);
+    } else if (shouldRunAutoTask("live-score", LIVE_SCORE_SYNC_INTERVAL_MS)) {
       const live = await syncLiveScoreEvents({ silent: true });
+      markAutoTaskRun("live-score");
       if (live.updated) notes.push(`live refreshed ${live.updated}`);
     }
 
-    if (shouldRunAutoTask("source-sweeps", SPORT_SOURCE_SWEEP_INTERVAL_MS)) {
-      const sweep = await syncSportSourceSweeps({ silent: true });
-      const totals = sweep.results.reduce((acc, item) => {
-        acc.added += item.added || 0;
-        acc.updated += item.updated || 0;
-        acc.fetched += item.fetched || 0;
-        return acc;
-      }, { added: 0, updated: 0, fetched: 0 });
-      if (totals.added || totals.updated) notes.push(`source sweep ${totals.fetched} fetched, +${totals.added}/~${totals.updated}`);
-    }
-
-    if (shouldRunAutoTask("sync-now-window", DISCOVERY_SYNC_INTERVAL_MS)) {
-      const nowWindow = await syncNowWindowSchedule({ silent: true });
-      notes.push(`Now discovery ${nowWindow.fetched || 0} fetched, ${((nowWindow.added || 0) + (nowWindow.updated || 0))} saved`);
+    if (shouldRunAutoTask("settle", AUTO_SETTLE_INTERVAL_MS)) {
+      const settled = await autoSettleFinalEvents("browser-fallback");
+      markAutoTaskRun("settle");
+      notes.push(`settled ${settled}`);
     }
 
     if (shouldRunAutoTask("cleanup", AUTO_CLEANUP_INTERVAL_MS)) {
       const removed = await cleanupDuplicateApiEvents({ silent: true });
       const historyRemoved = await cleanupOldHistoryEvents({ silent: true });
+      markAutoTaskRun("cleanup");
       notes.push(`cleanup removed ${removed || 0} duplicate/stale event(s), ${historyRemoved || 0} old history item(s)`);
-    }
-
-    if (shouldRunAutoTask("settle", AUTO_SETTLE_INTERVAL_MS)) {
-      const settled = await autoSettleFinalEvents();
-      notes.push(`settled ${settled}`);
     }
 
     if (shouldRunAutoTask("odds", AUTO_ODDS_INTERVAL_MS)) {
       const odds = await autoRefreshOddsForActiveEvents();
-      notes.push(`Odds API refreshed ${odds} bet-interest event(s); auto cap ${getAutoOddsRequestCount()}/${ODDS_DAILY_AUTO_REQUEST_LIMIT}`);
+      markAutoTaskRun("odds");
+      if (odds) notes.push(`odds refreshed ${odds}`);
     }
 
-    if (notes.length) {
-      autoMaintenanceMessage = `${formatTime(new Date().toISOString())} ${TIME_ZONE_LABEL}: ${notes.join(" · ")}.`;
-    }
+    if (notes.length) autoMaintenanceMessage = `${formatTime(new Date().toISOString())} ${TIME_ZONE_LABEL}: ${notes.join(" · ")}.`;
+  } catch (error) {
+    autoMaintenanceMessage = `Browser maintenance fallback failed: ${error?.message || String(error)}`;
   } finally {
     autoMaintenanceRunning = false;
   }
 }
 
-async function runAdminForegroundMaintenanceFallback() {
-  if (!isAdmin()) return { updated: 0, fetched: 0, settled: 0 };
+async function refreshCoreMaintenanceState() {
+  const [eventsSnap, betsSnap, matchesSnap, ledgerSnap] = await Promise.all([
+    getDocs(collection(db, "events")),
+    getDocs(collection(db, "bets")),
+    getDocs(collection(db, "matches")),
+    getDocs(collection(db, "ledgerEntries"))
+  ]);
+  state.events = snapToMap(eventsSnap);
+  state.bets = snapToMap(betsSnap);
+  state.matches = snapToMap(matchesSnap);
+  state.ledgerEntries = snapToMap(ledgerSnap);
+}
+
+async function runAdminForegroundMaintenanceFallback(options = {}) {
+  if (!isAdmin()) return { added: 0, updated: 0, fetched: 0, settled: 0 };
+  let discovery = { added: 0, updated: 0, fetched: 0 };
+  if (options.includeDiscovery) discovery = await syncNowWindowSchedule({ silent: true });
   const live = await syncLiveScoreEvents({ silent: true });
-  const settled = await autoSettleFinalEvents();
-  return { ...live, settled };
+  await refreshCoreMaintenanceState();
+  const settled = await autoSettleFinalEvents("foreground-fallback");
+  return {
+    added: discovery.added || 0,
+    updated: (discovery.updated || 0) + (live.updated || 0),
+    fetched: (discovery.fetched || 0) + (live.fetched || 0),
+    settled
+  };
+}
+
+async function callServerMaintenance(mode, extra = {}) {
+  if (!auth.currentUser) throw new Error("Admin login is required.");
+  const token = await auth.currentUser.getIdToken();
+  const params = new URLSearchParams({ mode, fresh: String(Date.now()), ...extra });
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 58000);
+  try {
+    const response = await fetch(`/api/maintenance?${params.toString()}`, {
+      method: "POST",
+      cache: "no-store",
+      signal: controller.signal,
+      headers: {
+        "Authorization": `Bearer ${token}`,
+        "Content-Type": "application/json",
+        "Cache-Control": "no-cache, no-store"
+      }
+    });
+    const rawBody = await response.text();
+    let data = {};
+    try { data = rawBody ? JSON.parse(rawBody) : {}; } catch { data = {}; }
+    if (!response.ok && response.status !== 202) {
+      const detail = [data.error, data.code].filter(Boolean).join(" · ");
+      throw new Error(detail || rawBody.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim().slice(0, 320) || `Maintenance returned ${response.status}`);
+    }
+    return data;
+  } catch (error) {
+    if (error?.name === "AbortError") throw new Error(`${mode} maintenance timed out after 58 seconds`);
+    throw error;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+function summarizeMaintenanceResults(results = []) {
+  return results.reduce((out, result) => {
+    out.added += Number(result?.added || 0);
+    out.updated += Number(result?.updated || 0);
+    out.ledgerWrites += Number(result?.settlement?.ledgerWrites || 0);
+    out.matches += Number(result?.settlement?.matches || 0);
+    out.unresolved += Number(result?.settlement?.unresolved?.length || 0);
+    return out;
+  }, { added: 0, updated: 0, ledgerWrites: 0, matches: 0, unresolved: 0 });
 }
 
 async function triggerServerMaintenance(reason = "foreground") {
-  if (!currentUser()?.approved || approvedLiveRefreshRunning) return null;
-  approvedLiveRefreshRunning = true;
-  let serverResult = null;
-  let serverError = null;
-  let fallback = { updated: 0, fetched: 0, settled: 0 };
-
-  try {
-    const response = await fetch(`/api/maintenance?mode=quick&reason=${encodeURIComponent(reason)}&fresh=${Date.now()}`, {
-      method: "POST",
-      cache: "no-store",
-      headers: { "Content-Type": "application/json", "Cache-Control": "no-cache" }
-    });
-    const rawBody = await response.text();
-    try {
-      serverResult = rawBody ? JSON.parse(rawBody) : {};
-    } catch {
-      serverResult = {};
-    }
-    if (!response.ok && response.status !== 202) {
-      throw new Error(serverResult.error || rawBody.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim().slice(0, 280) || `Maintenance returned ${response.status}`);
-    }
-  } catch (error) {
-    serverError = error;
-  }
-
-  try {
-    // Admin browsers independently verify active/recent events and settle any
-    // newly final games. This prevents a broken server credential or scheduler
-    // from leaving a completed event stuck on the Now board.
-    fallback = await runAdminForegroundMaintenanceFallback();
-  } catch (fallbackError) {
-    if (!serverError) serverError = fallbackError;
-  }
-
-  if (reason === "manual") {
-    if (serverError && !fallback.updated && !fallback.settled) {
-      apiImportMessage = `Server maintenance failed and browser fallback could not repair it: ${serverError?.message || String(serverError)}`;
-    } else {
-      const serverText = serverResult?.skipped
-        ? "Server maintenance was already running"
-        : `Server: ${serverResult?.updated || 0} updated, ${serverResult?.added || 0} added, ${serverResult?.settlement?.ledgerWrites || 0} ledger write(s), ${serverResult?.settlement?.repairedLegacyMatches || 0} legacy match repair(s), ${serverResult?.settlement?.unresolved?.length || 0} unresolved settlement(s)`;
-      apiImportMessage = `${serverText}. Browser verification: ${fallback.updated || 0} event update(s), ${fallback.settled || 0} settlement repair(s).${serverError ? ` Server warning: ${serverError.message}` : ""}`;
-    }
+  if (!isAdmin()) return null;
+  const showProgress = reason === "manual";
+  const showStage = message => {
+    if (!showProgress) return;
+    serverMaintenanceMessage = message;
+    serverMaintenanceMessageType = "info";
     renderApp();
+  };
+  if (approvedLiveRefreshRunning) {
+    serverMaintenanceMessage = "A maintenance run is already in progress.";
+    serverMaintenanceMessageType = "info";
+    renderApp();
+    return null;
   }
 
-  approvedLiveRefreshRunning = false;
-  return serverResult || (fallback.updated || fallback.settled ? { browserFallback: true, ...fallback } : null);
+  approvedLiveRefreshRunning = true;
+  showStage("Starting live refresh, full 48-hour discovery, and settlement…");
+
+  const results = [];
+  const errors = [];
+  let fallback = { added: 0, updated: 0, fetched: 0, settled: 0 };
+  const staleAtStart = serverMaintenanceIsStale();
+
+  try {
+    showStage("Refreshing existing live and unsettled events…");
+    try { results.push(await callServerMaintenance("refresh")); }
+    catch (error) { errors.push(`refresh: ${error.message}`); }
+
+    if (reason === "manual") {
+      for (const offset of [0, 1, 2]) {
+        showStage(`Discovering ${offset === 0 ? "today" : offset === 1 ? "tomorrow" : "the following day"}…`);
+        try { results.push(await callServerMaintenance("discover", { offset: String(offset) })); }
+        catch (error) { errors.push(`discovery +${offset}: ${error.message}`); }
+      }
+    }
+
+    showStage("Settling completed games and fights…");
+    try { results.push(await callServerMaintenance("settle")); }
+    catch (error) { errors.push(`settlement: ${error.message}`); }
+
+    const includeDiscoveryFallback = reason === "manual" && errors.some(message => message.startsWith("discovery"));
+    if (errors.length || staleAtStart) {
+      showStage(includeDiscoveryFallback
+        ? "Server maintenance was incomplete; running the browser full-window fallback…"
+        : "Verifying results and settlement from the admin browser…");
+      try {
+        fallback = await runAdminForegroundMaintenanceFallback({ includeDiscovery: includeDiscoveryFallback || (reason !== "manual" && staleAtStart) });
+      } catch (error) {
+        errors.push(`browser fallback: ${error.message}`);
+      }
+    } else {
+      await refreshCoreMaintenanceState();
+    }
+
+    const totals = summarizeMaintenanceResults(results);
+    const activity = totals.added + totals.updated + totals.ledgerWrites + totals.matches + fallback.added + fallback.updated + fallback.settled;
+    if (showProgress || errors.length) {
+      serverMaintenanceMessageType = errors.length && !activity ? "error" : "success";
+      serverMaintenanceMessage = [
+        `Finished: ${totals.added + fallback.added} added`,
+        `${totals.updated + fallback.updated} updated`,
+        `${totals.ledgerWrites} ledger write(s)`,
+        `${fallback.settled} browser settlement repair(s)`,
+        totals.unresolved ? `${totals.unresolved} unresolved` : "",
+        errors.length ? `Warnings: ${errors.join(" | ")}` : ""
+      ].filter(Boolean).join(" · ");
+    }
+    return results.at(-1) || (activity ? { browserFallback: true, ...fallback } : null);
+  } finally {
+    approvedLiveRefreshRunning = false;
+    if (showProgress) renderApp();
+  }
 }
 
 function maybeStartSettlementMaintenance() {
-  if (!currentUser()?.approved) return;
+  if (!isAdmin()) return;
   if (!settlementMaintenanceTimer) {
-    setTimeout(() => triggerServerMaintenance("startup"), 800);
+    setTimeout(() => triggerServerMaintenance("startup"), 1200);
     settlementMaintenanceTimer = setInterval(() => {
       if (document.visibilityState !== "hidden") triggerServerMaintenance("interval");
     }, 2 * 60 * 1000);
 
     const refreshOnReturn = () => {
-      if (currentUser()?.approved && document.visibilityState !== "hidden") triggerServerMaintenance("foreground");
+      if (isAdmin() && document.visibilityState !== "hidden" && serverMaintenanceIsStale()) {
+        triggerServerMaintenance("foreground");
+      }
     };
     window.addEventListener("focus", refreshOnReturn);
     window.addEventListener("pageshow", refreshOnReturn);
@@ -5749,8 +5871,13 @@ function maybeStartSettlementMaintenance() {
 }
 
 function maybeStartAutoMaintenance() {
-  // Automatic discovery/finalization is server-side in v10.60. Admin browsers
-  // no longer run a second competing maintenance implementation.
+  if (!isAdmin() || autoMaintenanceTimer) return;
+  setTimeout(() => runAutoMaintenance("startup-stale-fallback"), 2200);
+  autoMaintenanceTimer = setInterval(() => {
+    if (document.visibilityState !== "hidden" && serverMaintenanceIsStale()) {
+      runAutoMaintenance("stale-server-fallback");
+    }
+  }, 2 * 60 * 1000);
 }
 
 async function deleteDemoEvents() {

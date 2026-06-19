@@ -18,7 +18,7 @@ const LEASE_MS = 75 * 1000;
 const NOW_LOOKAHEAD_MS = 48 * 60 * 60 * 1000;
 const PREGAME_LOOKBACK_MS = 4 * 60 * 60 * 1000;
 const HISTORY_RETENTION_MS = 5 * 24 * 60 * 60 * 1000;
-const MAINTENANCE_VERSION = "10.76";
+const MAINTENANCE_VERSION = "10.77";
 const UFC_EXPECTED_MAIN_CARD_COUNTS = { "600058854": 7 };
 
 function json(res, status, body) {
@@ -324,11 +324,40 @@ function recordBelongs(record, event) {
   return eventReferences(event).has(String(record?.eventId || ""));
 }
 
-function requestAuthorized(req) {
-  const secret = process.env.MAINTENANCE_SECRET || process.env.CRON_SECRET || "";
-  if (!secret) return false;
+function bearerToken(req) {
   const auth = String(req.headers.authorization || "");
-  return auth === `Bearer ${secret}`;
+  const match = auth.match(/^Bearer\s+(.+)$/i);
+  return match?.[1] || "";
+}
+
+async function authorizeMaintenanceRequest(req, services) {
+  const token = bearerToken(req);
+  const secret = process.env.MAINTENANCE_SECRET || process.env.CRON_SECRET || "";
+  if (secret && token === secret) return { kind: "scheduler" };
+  if (!token) return null;
+
+  try {
+    const decoded = await services.auth.verifyIdToken(token);
+    const profileSnap = await services.db.collection("users").doc(decoded.uid).get();
+    const profile = profileSnap.exists ? profileSnap.data() : {};
+    if (profile.approved === true && profile.isAdmin === true) {
+      return { kind: "admin", uid: decoded.uid };
+    }
+  } catch {
+    // Invalid or expired Firebase token.
+  }
+  return null;
+}
+
+function scopedDiscoveryDate(req) {
+  const explicit = String(req.query?.date || "").trim();
+  if (/^\d{4}-\d{2}-\d{2}$/.test(explicit)) return explicit;
+  if (/^\d{8}$/.test(explicit)) return `${explicit.slice(0, 4)}-${explicit.slice(4, 6)}-${explicit.slice(6, 8)}`;
+
+  const offset = Math.max(-1, Math.min(3, Number.parseInt(String(req.query?.offset ?? "0"), 10) || 0));
+  const base = new Date(`${dateISOInZone()}T12:00:00Z`);
+  base.setUTCDate(base.getUTCDate() + offset);
+  return base.toISOString().slice(0, 10);
 }
 
 function inferOrigin(req) {
@@ -371,7 +400,7 @@ async function fetchSource(origin, league, dateISO) {
       signal: controller.signal,
       cache: "no-store",
       headers: {
-        "User-Agent": "Everyone-Loses-Maintenance/10.76",
+        "User-Agent": "Everyone-Loses-Maintenance/10.77",
         "Cache-Control": "no-cache, no-store, max-age=0",
         Pragma: "no-cache"
       }
@@ -393,7 +422,7 @@ async function fetchTargetedUfcSource(origin, eventId, dateISO) {
       signal: controller.signal,
       cache: "no-store",
       headers: {
-        "User-Agent": "Everyone-Loses-Maintenance/10.76",
+        "User-Agent": "Everyone-Loses-Maintenance/10.77",
         "Cache-Control": "no-cache, no-store, max-age=0",
         Pragma: "no-cache"
       }
@@ -590,6 +619,9 @@ async function acquireLease(db, FieldValue, requestedMode) {
       requestedMode,
       leaseUntil: new Date(now + LEASE_MS),
       startedAt: FieldValue.serverTimestamp(),
+      lastAttemptAt: FieldValue.serverTimestamp(),
+      lastAttemptMode: requestedMode,
+      lastAttemptVersion: MAINTENANCE_VERSION,
       maintenanceVersion: MAINTENANCE_VERSION
     }, { merge: true });
     return { acquired: true, state: data };
@@ -940,8 +972,8 @@ function mergeSettlementSummaries(...items) {
   return out;
 }
 
-async function runMaintenance(req, mode) {
-  const { db, FieldValue } = getAdminServices();
+async function runMaintenance(req, mode, services = getAdminServices()) {
+  const { db, FieldValue } = services;
   const lease = await acquireLease(db, FieldValue, mode);
   if (!lease.acquired) return { skipped: true, reason: "maintenance already running", state: lease.state || {} };
 
@@ -966,18 +998,24 @@ async function runMaintenance(req, mode) {
     // serverless time limit after scores have already been saved.
     const preSettlement = await settleFinalEvents(db, FieldValue, events, bets, matches, ledgerEntries);
 
-    const state = lease.state || {};
-    const fullDiscovery = mode === "full" || mode === "auto" && Date.now() - dateMs(state.lastFullDiscoveryAt) >= FULL_DISCOVERY_INTERVAL_MS;
-    const plan = buildFetchPlan(events, matches, fullDiscovery);
-    let sourceResults = await mapLimit(plan, 12, async item => fetchSource(origin, item.league, item.dateISO));
+    const discoveryDate = mode === "discover" ? scopedDiscoveryDate(req) : "";
+    const fullDiscovery = mode === "discover";
+    const plan = mode === "settle"
+      ? []
+      : mode === "discover"
+        ? SUPPORTED_LEAGUES.map(league => ({ league, dateISO: discoveryDate }))
+        : buildFetchPlan(events, matches, false);
+    let sourceResults = await mapLimit(plan, 15, async item => fetchSource(origin, item.league, item.dateISO));
 
-    const targetedUfcRepairs = events
-      .filter(event => ufcNeedsTargetedRefresh(event, matches))
-      .map(event => ({
-        eventId: ufcRepairEventId(event),
-        dateISO: dateForEvent(event)
-      }))
-      .filter(item => item.eventId && item.dateISO);
+    const targetedUfcRepairs = mode === "settle"
+      ? []
+      : events
+          .filter(event => ufcNeedsTargetedRefresh(event, matches))
+          .map(event => ({
+            eventId: ufcRepairEventId(event),
+            dateISO: dateForEvent(event)
+          }))
+          .filter(item => item.eventId && item.dateISO);
 
     if (targetedUfcRepairs.length) {
       const directResults = await mapLimit(targetedUfcRepairs, 3, item => fetchTargetedUfcSource(origin, item.eventId, item.dateISO));
@@ -1059,6 +1097,7 @@ async function runMaintenance(req, mode) {
     }
 
     for (const event of events) {
+      if (mode === "settle") break;
       if (event.status === "final") continue;
       const eventId = event.firestoreId || event.id;
       if (!eventId || seenEventDocs.has(eventId)) continue;
@@ -1105,8 +1144,9 @@ async function runMaintenance(req, mode) {
       mode,
       fullDiscovery,
       durationMs: Date.now() - started,
-      sourceRequests: plan.length,
+      sourceRequests: sourceResults.length,
       sourceSuccesses: sourceResults.filter(r => r && !r.error).length,
+      discoveryDate: discoveryDate || null,
       added,
       updated,
       archivedStale: events.filter(e => e.boardState === "archived" && e.status !== "final").length,
@@ -1120,8 +1160,14 @@ async function runMaintenance(req, mode) {
       leaseUntil: new Date(0),
       lastRunAt: FieldValue.serverTimestamp(),
       lastSuccessAt: FieldValue.serverTimestamp(),
-      ...(fullDiscovery ? { lastFullDiscoveryAt: FieldValue.serverTimestamp() } : {}),
+      lastAttemptAt: FieldValue.serverTimestamp(),
+      lastAttemptMode: mode,
+      lastAttemptVersion: MAINTENANCE_VERSION,
+      ...(fullDiscovery ? { lastFullDiscoveryAt: FieldValue.serverTimestamp(), lastDiscoveryDate: discoveryDate } : {}),
       lastSummary: summary,
+      ...(mode === "refresh" ? { lastRefreshSummary: summary } : {}),
+      ...(mode === "discover" ? { lastDiscoverySummary: summary } : {}),
+      ...(mode === "settle" ? { lastSettlementSummary: summary } : {}),
       lastError: errors.length ? errors.join(" | ").slice(0, 4000) : "",
       maintenanceVersion: MAINTENANCE_VERSION
     }, { merge: true });
@@ -1131,6 +1177,10 @@ async function runMaintenance(req, mode) {
       running: false,
       leaseUntil: new Date(0),
       lastRunAt: FieldValue.serverTimestamp(),
+      lastFailureAt: FieldValue.serverTimestamp(),
+      lastAttemptAt: FieldValue.serverTimestamp(),
+      lastAttemptMode: mode,
+      lastAttemptVersion: MAINTENANCE_VERSION,
       lastError: error?.stack || error?.message || String(error),
       maintenanceVersion: MAINTENANCE_VERSION
     }, { merge: true }).catch(() => {});
@@ -1145,14 +1195,28 @@ export default async function handler(req, res) {
   if (req.method === "OPTIONS") return json(res, 204, {});
   if (!["GET", "POST"].includes(req.method)) return json(res, 405, { error: "Method not allowed" });
 
-  const mode = String(req.query.mode || "quick").toLowerCase();
-  const protectedMode = mode === "auto" || mode === "full";
-  if (protectedMode && !requestAuthorized(req)) return json(res, 401, { error: "Maintenance authorization required" });
+  const requestedMode = String(req.query.mode || "refresh").toLowerCase();
+  const normalizedMode = requestedMode === "quick" || requestedMode === "auto" || requestedMode === "full"
+    ? "refresh"
+    : requestedMode;
+  if (!["refresh", "discover", "settle"].includes(normalizedMode)) {
+    return json(res, 400, { error: "Unsupported maintenance mode", mode: requestedMode });
+  }
 
   try {
-    const result = await runMaintenance(req, ["quick", "auto", "full"].includes(mode) ? mode : "quick");
-    return json(res, result.skipped ? 202 : 200, result);
+    const services = getAdminServices();
+    const authorization = await authorizeMaintenanceRequest(req, services);
+    if (!authorization) return json(res, 401, { error: "Maintenance authorization required" });
+
+    const result = await runMaintenance(req, normalizedMode, services);
+    return json(res, result.skipped ? 202 : 200, { ...result, authorizedAs: authorization.kind });
   } catch (error) {
-    return json(res, 500, { error: error?.message || String(error), stack: process.env.NODE_ENV === "development" ? error?.stack : undefined });
+    return json(res, 500, {
+      error: error?.message || String(error),
+      code: error?.code || "MAINTENANCE_FAILED",
+      runtime: process.version,
+      version: MAINTENANCE_VERSION,
+      stack: process.env.NODE_ENV === "development" ? error?.stack : undefined
+    });
   }
 }
