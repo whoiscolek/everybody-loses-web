@@ -1,19 +1,10 @@
 import { getAdminServices } from "./_admin.js";
-import { settleFinalEvents } from "./maintenance.js";
+import { settleFinalEvents } from "./_settlement.js";
+import { bearerToken, requestBody, sendJson as json } from "./_http.js";
+import { APP_VERSION } from "./_version.js";
 
 export const maxDuration = 30;
 
-function json(res, status, body) {
-  res.statusCode = status;
-  res.setHeader("Content-Type", "application/json");
-  res.setHeader("Cache-Control", "no-store");
-  res.end(JSON.stringify(body));
-}
-
-function bearerToken(req) {
-  const auth = String(req.headers.authorization || "");
-  return auth.startsWith("Bearer ") ? auth.slice(7).trim() : "";
-}
 
 async function requireAdmin(req, services) {
   const token = bearerToken(req);
@@ -47,7 +38,7 @@ export default async function handler(req, res) {
     const services = getAdminServices();
     stage = "verifying administrator";
     const adminUid = await requireAdmin(req, services);
-    const body = typeof req.body === "string" ? JSON.parse(req.body || "{}") : (req.body || {});
+    const body = requestBody(req);
     const eventId = String(body.eventId || "").trim();
     if (!eventId) return json(res, 400, { error: "eventId is required", code: "EVENT_ID_REQUIRED" });
 
@@ -87,7 +78,7 @@ export default async function handler(req, res) {
       adminUid,
       settlement,
       runtime: process.version,
-      version: "10.77"
+      version: APP_VERSION
     });
   } catch (error) {
     console.error("settle-event failed", { stage, error });
@@ -96,7 +87,7 @@ export default async function handler(req, res) {
       code: error.code || "SETTLE_EVENT_FAILED",
       stage,
       runtime: process.version,
-      version: "10.77"
+      version: APP_VERSION
     });
   }
 }

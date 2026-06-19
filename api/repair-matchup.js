@@ -1,4 +1,6 @@
 import { getAdminServices } from "./_admin.js";
+import { bearerToken, requestBody, sendJson as json } from "./_http.js";
+import { APP_VERSION } from "./_version.js";
 
 export const maxDuration = 30;
 
@@ -7,18 +9,6 @@ const EVENT_TYPES = {
   FIGHT_CARD: "FIGHT_CARD"
 };
 
-function json(res, status, body) {
-  res.statusCode = status;
-  res.setHeader("Content-Type", "application/json");
-  res.setHeader("Cache-Control", "no-store");
-  res.end(JSON.stringify(body));
-}
-
-function bearerToken(req) {
-  const header = String(req.headers.authorization || "");
-  const match = header.match(/^Bearer\s+(.+)$/i);
-  return match?.[1] || "";
-}
 
 function clean(value) {
   return String(value || "").trim();
@@ -104,7 +94,8 @@ function findFight(event, rawFightId) {
   ) || null;
 }
 
-export default async function handler(req, res) {
+export function createRepairMatchupHandler(serviceFactory = getAdminServices) {
+  return async function handler(req, res) {
   res.setHeader("Cache-Control", "no-store, no-cache, must-revalidate, max-age=0");
   if (req.method === "OPTIONS") {
     res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
@@ -112,15 +103,15 @@ export default async function handler(req, res) {
     return json(res, 204, {});
   }
 
-  if (req.method !== "POST") return json(res, 405, { error: "Use POST." });
+  if (req.method !== "POST") return json(res, 405, { error: "Use POST.", version: APP_VERSION });
 
   let stage = "initializing Firebase Admin";
   try {
-    const services = getAdminServices();
+    const services = serviceFactory();
     stage = "verifying the signed-in admin";
     const adminUid = await requireAdmin(req, services);
     stage = "parsing the repair request";
-    const body = typeof req.body === "string" ? JSON.parse(req.body || "{}") : (req.body || {});
+    const body = requestBody(req);
 
     stage = "finding the event";
     const eventSnap = await resolveEvent(services.db, body.eventId);
@@ -297,7 +288,8 @@ export default async function handler(req, res) {
       matchId: matchRef.id,
       betAId: betARef.id,
       betBId: betBRef.id,
-      runtime: process.version
+      runtime: process.version,
+      version: APP_VERSION
     });
   } catch (error) {
     console.error("repair-matchup failed", error);
@@ -305,7 +297,11 @@ export default async function handler(req, res) {
       error: error.message || "Matchup repair failed.",
       code: error.code || "REPAIR_MATCHUP_FAILED",
       stage,
-      runtime: process.version
+      runtime: process.version,
+      version: APP_VERSION
     });
   }
+  };
 }
+
+export default createRepairMatchupHandler();

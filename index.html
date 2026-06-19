@@ -1,18 +1,13 @@
-# Existing optional integrations
-ODDS_API_KEY=
-RESEND_API_KEY=
-NOTIFICATION_FROM_EMAIL=Everyone Loses <onboarding@resend.dev>
-# Optional fallback only. Maintenance normally derives the current deployment host.
-APP_URL=https://your-production-domain.example
-
-# Required for unattended score refresh, settlement, and secure matchup repair.
-# Recommended: paste the entire Firebase service-account JSON as one Vercel secret.
-FIREBASE_SERVICE_ACCOUNT_JSON={"type":"service_account","project_id":"everyone-loses",...}
-
-# Alternative to FIREBASE_SERVICE_ACCOUNT_JSON:
-FIREBASE_PROJECT_ID=everyone-loses
-FIREBASE_CLIENT_EMAIL=
-FIREBASE_PRIVATE_KEY=
-
-# Use the same random secret in Vercel and GitHub Actions.
-MAINTENANCE_SECRET=
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <title>Everyone Loses</title>
+  </head>
+  <body>
+    <div id="app"></div>
+    <script type="module" src="/src/main.js"></script>
+  </body>
+</html>

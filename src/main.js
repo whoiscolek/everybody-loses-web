@@ -16,7 +16,6 @@ import {
   getDoc,
   getDocs,
   onSnapshot,
-  orderBy,
   query,
   where,
   serverTimestamp,
@@ -32,16 +31,12 @@ import {
 } from "firebase/storage";
 
 import { auth, db, storage, hasFirebaseConfig } from "./firebase.js";
-
-const ADMIN_UNLOCK_CODE = "bitch";
-const ADMIN_UNLOCK_PASSWORD = "allmyhomiespackin";
+import { UFC_CARD_REPAIRS } from "../shared/ufc-repairs.js";
 
 const DISPLAY_TIME_ZONE = "America/New_York";
 const TIME_ZONE_LABEL = "ET";
 const BETTING_DAY_RESET_HOUR = 3;
-const AUTO_SYNC_INTERVAL_MS = 10 * 60 * 1000;
 const DISCOVERY_SYNC_INTERVAL_MS = 2 * 60 * 1000;
-const SPORT_SOURCE_SWEEP_INTERVAL_MS = 60 * 1000;
 const LIVE_SCORE_SYNC_INTERVAL_MS = 30 * 1000;
 const DOUBLE_UP_ACCEPT_WINDOW_MS = 5 * 60 * 1000;
 const AUTO_ODDS_INTERVAL_MS = 15 * 60 * 1000;
@@ -53,7 +48,6 @@ const AUTO_SETTLE_INTERVAL_MS = 2 * 60 * 1000;
 const NOW_WINDOW_SYNC_LABEL = "full 48-hour Now window";
 const NOW_BOARD_LOOKAHEAD_MS = 48 * 60 * 60 * 1000;
 const NOW_BOARD_LOOKBACK_MS = 4 * 60 * 60 * 1000;
-const HISTORY_RETENTION_MS = 5 * 24 * 60 * 60 * 1000;
 
 const SPORT_GROUPS = {
   basketball: ["NBA", "NCAA Basketball"],
@@ -148,24 +142,6 @@ const EVENT_TYPES = {
   FIGHT_CARD: "FIGHT_CARD"
 };
 
-// v10.76: verified one-off repair data for UFC Freedom 250. This is used only
-// when the saved Firestore event is still missing part of the seven-fight card.
-// Existing fight IDs are preserved so any already-created bets remain linked.
-const UFC_KNOWN_CARD_REPAIRS = {
-  "600058854": {
-    titlePattern: /ufc\s+freedom\s+250/i,
-    minimumFightCount: 7,
-    fights: [
-      { fighterA: "Diego Lopes", fighterB: "Steve Garcia", winner: "Diego Lopes", verifiedFinal: true },
-      { fighterA: "Bo Nickal", fighterB: "Kyle Daukaus", winner: "Bo Nickal", verifiedFinal: true },
-      { fighterA: "Mauricio Ruffy", fighterB: "Michael Chandler", winner: "Mauricio Ruffy", verifiedFinal: true },
-      { fighterA: "Josh Hokit", fighterB: "Derrick Lewis", winner: "Josh Hokit", verifiedFinal: true },
-      { fighterA: "Sean O'Malley", fighterB: "Aiemann Zahabi", winner: "Sean O'Malley", verifiedFinal: true },
-      { fighterA: "Alex Pereira", fighterB: "Ciryl Gane", winner: "Ciryl Gane", verifiedFinal: true, cardRole: "co-main" },
-      { fighterA: "Ilia Topuria", fighterB: "Justin Gaethje", winner: "", verifiedFinal: false, cardRole: "main-event" }
-    ]
-  }
-};
 
 const API_IMPORT_LEAGUES = ["NBA", "NFL", "MLB", "NHL", "NCAA Basketball", "NCAA Football", "Premier League", "MLS", "Champions League", "World Cup", "F1", "NASCAR", "IndyCar", "MotoGP", "UFC"];
 
@@ -184,6 +160,8 @@ let settlementMaintenanceTimer = null;
 let approvedLiveRefreshRunning = false;
 let serverMaintenanceMessage = "";
 let serverMaintenanceMessageType = "";
+let deploymentHealth = null;
+let deploymentHealthLoading = false;
 let autoMaintenanceMessage = "";
 let mlbSyncDebug = "";
 let sourceSweepDebug = "";
@@ -194,7 +172,6 @@ let settlementRepairRunning = false;
 let immediateSettlementTimer = null;
 let authUser = null;
 let loading = true;
-let dataReady = false;
 let passiveRenderPending = false;
 let passiveRenderTimer = null;
 let repairMatchupRunning = false;
@@ -274,7 +251,6 @@ function startApp() {
         settlements: {},
         maintenance: {}
       };
-      dataReady = false;
     }
 
     loading = false;
@@ -386,7 +362,6 @@ function subscribeToData() {
   const subscriptions = [
     onSnapshot(collection(db, "users"), snapshot => {
       state.users = snapToMap(snapshot);
-      dataReady = true;
       requestPassiveRender();
       scheduleImmediateFinalSettlementCheck();
       scheduleKnownUfcCardRepair();
@@ -481,6 +456,10 @@ function eventIdCandidates(eventOrId) {
   ].map(value => String(value || "").trim()).filter(Boolean));
 }
 
+function eventIdentityValues(eventOrId) {
+  return [...eventIdCandidates(eventOrId)];
+}
+
 function recordMatchesEvent(record, eventOrId) {
   const ids = eventIdCandidates(eventOrId);
   return ids.has(String(record?.eventId || ""));
@@ -524,38 +503,8 @@ function eventIsComplete(event) {
   return event?.status === "final";
 }
 
-function eventHistoryAgeMs(event) {
-  const start = new Date(event?.startTime || 0).getTime();
-  if (!Number.isFinite(start)) return 0;
-  return Date.now() - start;
-}
-
-function eventIsExpiredHistory(event) {
-  return event?.status === "final" && eventHistoryAgeMs(event) > HISTORY_RETENTION_MS;
-}
-
 function eventIsWithinHistoryWindow(event) {
-  return event?.status === "final" && !eventIsExpiredHistory(event);
-}
-
-function functionSafeEventId(event) {
-  return event?.firestoreId || event?.id || "";
-}
-
-function eventCanBeHistoryCleaned(event) {
-  if (!eventIsExpiredHistory(event)) return false;
-  const eventId = functionSafeEventId(event);
-  if (!eventId) return false;
-
-  const unsettledMatches = Object.values(state.matches || {}).some(match =>
-    match.eventId === eventId && match.status !== "settled"
-  );
-
-  return !unsettledMatches;
-}
-
-function functionHistoryCleanupCandidateCount() {
-  return Object.values(state.events || {}).filter(eventCanBeHistoryCleaned).length;
+  return event?.status === "final";
 }
 
 function maxLiveAgeMs(event) {
@@ -627,11 +576,6 @@ function nowWindowDateISOs() {
   return Array.from(dates).sort();
 }
 
-function eventHasActiveBetInterest(eventId) {
-  const event = state.events[eventId] || findEventByIdOrCode(eventId) || eventId;
-  return Object.values(state.bets || {}).some(bet => recordMatchesEvent(bet, event) && bet.status !== "settled")
-    || Object.values(state.matches || {}).some(match => recordMatchesEvent(match, event) && match.status !== "settled");
-}
 
 function eventWeatherText(event) {
   const text = event?.weather?.summary || event?.weatherText || "";
@@ -837,18 +781,18 @@ function knownUfcRepairId(event = {}) {
     event?.firestoreId
   ].map(value => String(value || ""));
 
-  const direct = candidates.find(value => UFC_KNOWN_CARD_REPAIRS[value]);
+  const direct = candidates.find(value => UFC_CARD_REPAIRS[value]);
   if (direct) return direct;
 
   const title = String(event?.title || "");
-  const titleMatch = Object.entries(UFC_KNOWN_CARD_REPAIRS)
+  const titleMatch = Object.entries(UFC_CARD_REPAIRS)
     .find(([, repair]) => repair.titlePattern?.test(title));
   if (titleMatch) return titleMatch[0];
 
   // Last-resort identity check for older saved events whose source IDs/title were
   // incomplete. Require multiple known pairings to avoid touching another card.
   const existingPairs = new Set((event?.fights || []).map(fightIdentityKey).filter(Boolean));
-  const pairMatch = Object.entries(UFC_KNOWN_CARD_REPAIRS).find(([, repair]) => {
+  const pairMatch = Object.entries(UFC_CARD_REPAIRS).find(([, repair]) => {
     const knownPairs = repair.fights.map(fightIdentityKey);
     return knownPairs.filter(pair => existingPairs.has(pair)).length >= 3;
   });
@@ -857,7 +801,7 @@ function knownUfcRepairId(event = {}) {
 
 function knownUfcCardFights(event = {}) {
   const repairId = knownUfcRepairId(event);
-  const repair = repairId ? UFC_KNOWN_CARD_REPAIRS[repairId] : null;
+  const repair = repairId ? UFC_CARD_REPAIRS[repairId] : null;
   const existing = Array.isArray(event?.fights) ? event.fights : [];
   if (!repair) return existing;
 
@@ -889,7 +833,7 @@ function knownUfcCardFights(event = {}) {
 function displayFightsForEvent(event = {}) {
   const existing = Array.isArray(event?.fights) ? event.fights : [];
   const repairId = knownUfcRepairId(event);
-  const repair = repairId ? UFC_KNOWN_CARD_REPAIRS[repairId] : null;
+  const repair = repairId ? UFC_CARD_REPAIRS[repairId] : null;
   if (!repair || existing.length >= repair.minimumFightCount) return existing;
   return knownUfcCardFights(event);
 }
@@ -909,7 +853,7 @@ async function repairKnownUfcCardsInFirestore() {
   const targets = Object.values(state.events || {}).filter(event => {
     if (event?.type !== EVENT_TYPES.FIGHT_CARD) return false;
     const repairId = knownUfcRepairId(event);
-    const repair = repairId ? UFC_KNOWN_CARD_REPAIRS[repairId] : null;
+    const repair = repairId ? UFC_CARD_REPAIRS[repairId] : null;
     if (!repair) return false;
     const existingByPair = new Map((event.fights || []).map(fight => [fightIdentityKey(fight), fight]));
     const missingVerifiedResult = repair.fights.some(fight => {
@@ -928,7 +872,7 @@ async function repairKnownUfcCardsInFirestore() {
     for (const event of targets) {
       const docId = event.firestoreId || event.id;
       const repairId = knownUfcRepairId(event);
-      const repair = UFC_KNOWN_CARD_REPAIRS[repairId];
+      const repair = UFC_CARD_REPAIRS[repairId];
       if (!docId || !repair) continue;
 
       const verifiedResultCount = (event.fights || []).filter(fight => fight?.winner || event?.fightResults?.[fight?.id]).length;
@@ -960,7 +904,7 @@ async function repairKnownUfcCardsInFirestore() {
           fightResults,
           externalIds,
           expectedMainCardCount: repair.minimumFightCount,
-          ufcCardRepairVersion: "v10.76",
+          ufcCardRepairVersion: "v10.79",
           ufcCardRepairAppliedAt: serverTimestamp(),
           updatedAt: serverTimestamp()
         }, { merge: true });
@@ -971,7 +915,7 @@ async function repairKnownUfcCardsInFirestore() {
           fightResults,
           externalIds,
           expectedMainCardCount: repair.minimumFightCount,
-          ufcCardRepairVersion: "v10.76",
+          ufcCardRepairVersion: "v10.79",
           firestoreId: docId
         };
         repaired += 1;
@@ -1103,7 +1047,7 @@ function canBet() {
 }
 
 function canSettleFinalEvents() {
-  // Routine settlement is server-side in v10.60. Keep this permission only for
+  // Routine settlement is server-side. Keep this permission only for
   // explicit admin repair tools.
   return isAdmin();
 }
@@ -1391,9 +1335,6 @@ function doubleUpRequestedBy(match) {
   return Array.isArray(requested) ? requested.filter(Boolean) : [];
 }
 
-function matchUserRequestedDouble(match, userId) {
-  return doubleUpRequestedBy(match).includes(userId);
-}
 
 function matchIsDoubled(match) {
   return Boolean(match?.doubleUp?.applied || match?.doubledUp);
@@ -1967,8 +1908,6 @@ function renderEventCardSafe(event) {
 
 function renderEventCard(event) {
   const locked = eventIsLocked(event);
-  const externalRefs = formatExternalRefs(event.externalIds);
-
   return `
     <article class="event-card">
       <div class="event-top">
@@ -1995,7 +1934,7 @@ function renderEventCard(event) {
       ${renderScoreLine(event)}
       <div class="bet-box compact-bet-box">
         <h4>Quick bet</h4>
-        ${event.type === EVENT_TYPES.TEAM ? renderTeamBetForm(event, locked) : event.type === EVENT_TYPES.FIGHT_CARD ? renderFightCardBetForm(event, locked) : renderRankedBetForm(event, locked)}
+        ${event.type === EVENT_TYPES.TEAM ? renderTeamBetForm(event, locked) : event.type === EVENT_TYPES.FIGHT_CARD ? renderFightCardBetForm(event) : renderRankedBetForm(event, locked)}
       </div>
       ${renderEventQueues(event)}
     </article>
@@ -2277,7 +2216,7 @@ function renderTeamBetForm(event, locked) {
 }
 
 
-function renderFightCardBetForm(event, locked) {
+function renderFightCardBetForm(event) {
   const fights = displayFightsForEvent(event);
   const cardFinal = event.status === "final";
   const openFightCount = fights.filter(fight => fightCanTakeBets(event, fight)).length;
@@ -2566,7 +2505,7 @@ function renderHistory() {
       </div>
     </div>
     <div class="history-list compact-history-list">
-      ${events.length ? events.map(renderHistoryEventCard).join("") : `<div class="panel empty-state">No final event history matches these filters from the last 5 days.</div>`}
+      ${events.length ? events.map(renderHistoryEventCard).join("") : `<div class="panel empty-state">No final event history matches these filters.</div>`}
     </div>
   `;
 }
@@ -2860,48 +2799,13 @@ function renderAdminStats() {
 }
 
 
-function renderAdminUnlock() {
+function renderAdminAccessRequired() {
   return `
     <div class="panel">
-      <h3>Admin unlock</h3>
-      <p class="muted">
-        Sign in with your normal user account first, then unlock admin tools with the separate owner code.
-      </p>
-      <label>Admin code</label>
-      <input id="adminUnlockCode" placeholder="Admin code" />
-      <label>Admin password</label>
-      <input id="adminUnlockPassword" type="password" placeholder="Admin password" />
-      <button class="primary" data-action="admin-unlock">Unlock admin tools</button>
-      <p class="footer-note small">
-        Prototype note: this is a client-side owner unlock. Before public deployment, move admin control to Firebase custom claims or a Cloud Function.
-      </p>
+      <h3>Admin access required</h3>
+      <p class="muted">This account does not have administrator access. Administrator roles are assigned outside the browser and cannot be unlocked from this page.</p>
     </div>
   `;
-}
-
-async function adminUnlock() {
-  const user = currentUser();
-
-  if (!authUser || !user) {
-    alert("Sign in with your normal account first.");
-    return;
-  }
-
-  const code = document.querySelector("#adminUnlockCode")?.value.trim();
-  const password = document.querySelector("#adminUnlockPassword")?.value;
-
-  if (code !== ADMIN_UNLOCK_CODE || password !== ADMIN_UNLOCK_PASSWORD) {
-    alert("Admin unlock failed.");
-    return;
-  }
-
-  await setDoc(doc(db, "users", authUser.uid), {
-    approved: true,
-    isAdmin: true,
-    updatedAt: serverTimestamp()
-  }, { merge: true });
-
-  alert("Admin unlocked for this account.");
 }
 
 
@@ -2966,6 +2870,33 @@ function renderAdminUserManagement() {
   }).join("");
 }
 
+async function refreshDeploymentHealth() {
+  if (deploymentHealthLoading) return deploymentHealth;
+  deploymentHealthLoading = true;
+  try {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 8000);
+    try {
+      const response = await fetch(`/api/health?fresh=${Date.now()}`, { cache: "no-store", signal: controller.signal });
+      const body = await response.json().catch(() => ({}));
+      if (!response.ok || !body?.ok) throw new Error(body?.error || `Health check returned ${response.status}`);
+      deploymentHealth = { ...body, checkedAt: new Date().toISOString(), error: "" };
+    } finally {
+      clearTimeout(timer);
+    }
+  } catch (error) {
+    deploymentHealth = {
+      ok: false,
+      error: error?.name === "AbortError" ? "Health check timed out" : (error?.message || String(error)),
+      checkedAt: new Date().toISOString()
+    };
+  } finally {
+    deploymentHealthLoading = false;
+    requestPassiveRender();
+  }
+  return deploymentHealth;
+}
+
 function maintenanceAgeMinutes(value) {
   const ms = toDateValue(value);
   return ms ? Math.max(0, Math.round((Date.now() - ms) / 60000)) : null;
@@ -3012,6 +2943,16 @@ function renderMaintenanceHealth() {
   const attemptDetail = attemptAge !== null
     ? `Last request reached the app ${attemptAge} minute${attemptAge === 1 ? "" : "s"} ago${maintenance.lastAttemptMode ? ` · ${maintenance.lastAttemptMode}` : ""}${maintenance.lastAttemptVersion ? ` · v${maintenance.lastAttemptVersion}` : ""}.`
     : "No recent scheduler or manual maintenance request has reached the app.";
+  const deployedVersion = deploymentHealth?.version || "";
+  const recordedVersion = reportedVersion || "";
+  const versionMismatch = Boolean(deployedVersion && recordedVersion && deployedVersion !== recordedVersion);
+  const deploymentDetail = deploymentHealthLoading
+    ? "Checking deployed API version…"
+    : deploymentHealth?.ok
+      ? `Deployed API v${deployedVersion} · ${deploymentHealth.runtime || "runtime unknown"}${versionMismatch ? ` · maintenance record still reports v${recordedVersion}` : ""}`
+      : deploymentHealth?.error
+        ? `Deployment health check failed: ${deploymentHealth.error}`
+        : "Deployment health has not been checked yet.";
   const messageClass = serverMaintenanceMessageType === "error" ? "bad" : serverMaintenanceMessageType === "success" ? "good" : "muted";
 
   return `
@@ -3020,7 +2961,7 @@ function renderMaintenanceHealth() {
         <div><h3>Server maintenance</h3><p class="muted small">Scoped refreshes import the 48-hour window, update live results, and settle completed bets without one oversized request timing out.</p></div>
         <span class="status-badge ${healthy ? "live" : "pregame"}">${escapeHtml(status)}</span>
       </div>
-      <div class="record"><strong>${escapeHtml(detail)}</strong><br><span class="muted small">${escapeHtml(attemptDetail)}</span>${maintenance.lastError ? `<br><span class="bad small">${escapeHtml(String(maintenance.lastError).slice(0, 800))}</span>` : ""}</div>
+      <div class="record"><strong>${escapeHtml(detail)}</strong><br><span class="muted small">${escapeHtml(attemptDetail)}</span><br><span class="${deploymentHealth?.ok && !versionMismatch ? "muted" : "bad"} small">${escapeHtml(deploymentDetail)}</span>${maintenance.lastError ? `<br><span class="bad small">${escapeHtml(String(maintenance.lastError).slice(0, 800))}</span>` : ""}</div>
       <button class="ghost" data-action="run-server-maintenance" ${approvedLiveRefreshRunning ? "disabled" : ""}>${approvedLiveRefreshRunning ? "Running full refresh…" : "Run server refresh now"}</button>
       ${serverMaintenanceMessage ? `<div class="record small ${messageClass}">${escapeHtml(serverMaintenanceMessage)}</div>` : ""}
     </div>
@@ -3028,7 +2969,7 @@ function renderMaintenanceHealth() {
 }
 
 function renderAdmin() {
-  if (!isAdmin()) return renderAdminUnlock();
+  if (!isAdmin()) return renderAdminAccessRequired();
 
   const pendingUsers = Object.values(state.users).filter(user => !user.approved);
   const approvedUsers = Object.values(state.users).filter(user => user.approved);
@@ -3071,7 +3012,6 @@ function renderAdmin() {
           <button class="ghost" data-action="sync-api-tomorrow" ${apiSyncRunning ? "disabled" : ""}>Sync tomorrow only</button>
           <button class="ghost" data-action="delete-demo-events">Delete old demo events</button>
           <button class="ghost" data-action="cleanup-api-events">Clean duplicate API events</button>
-          <button class="ghost" data-action="cleanup-history-events">Clean history older than 5 days${functionHistoryCleanupCandidateCount() ? ` (${functionHistoryCleanupCandidateCount()})` : ""}</button>
         </div>
         <p class="footer-note small">Automatic event refresh and settlement now run through the server maintenance pipeline rather than whichever browser happens to be open. These buttons are diagnostics/manual backup controls. ESPN/imported odds remain the default display until someone actually bets. Backup buttons stay here as manual controls.</p>
         ${hiddenFutureImportedEventCount() ? `<div class="record admin-window-note"><strong>Now window</strong><span>Hiding ${hiddenFutureImportedEventCount()} far-future imported event${hiddenFutureImportedEventCount() === 1 ? "" : "s"}. The public Now board only shows live/active events through the next 48 hours.</span></div>` : ""}
@@ -3234,10 +3174,9 @@ function wireUi() {
   document.querySelectorAll("[data-approve]").forEach(button => button.addEventListener("click", () => approveUser(button.dataset.approve)));
   document.querySelectorAll("[data-delete-user]").forEach(button => button.addEventListener("click", () => deleteUserProfile(button.dataset.deleteUser)));
   document.querySelector("[data-action='test-notification']")?.addEventListener("click", sendTestNotification);
-  document.querySelector("[data-action=\'run-server-maintenance\']")?.addEventListener("click", () => triggerServerMaintenance("manual"));
+  document.querySelector("[data-action='run-server-maintenance']")?.addEventListener("click", () => triggerServerMaintenance("manual"));
   document.querySelector("[data-action='save-profile']")?.addEventListener("click", saveProfile);
   document.querySelector("#profileImageUpload")?.addEventListener("change", updateProfileUploadTile);
-  document.querySelector("[data-action='admin-unlock']")?.addEventListener("click", adminUnlock);
   document.querySelector("[data-action='fetch-api-events']")?.addEventListener("click", fetchApiEvents);
   document.querySelector("[data-action='sync-api-now-window']")?.addEventListener("click", () => syncNowWindowSchedule());
   document.querySelector("[data-action='force-mlb-sync']")?.addEventListener("click", () => forceSyncMlbNowWindow());
@@ -3245,7 +3184,6 @@ function wireUi() {
   document.querySelector("[data-action='sync-api-tomorrow']")?.addEventListener("click", () => syncApiSchedule(1));
   document.querySelector("[data-action='delete-demo-events']")?.addEventListener("click", deleteDemoEvents);
   document.querySelector("[data-action='cleanup-api-events']")?.addEventListener("click", cleanupDuplicateApiEvents);
-  document.querySelector("[data-action='cleanup-history-events']")?.addEventListener("click", () => cleanupOldHistoryEvents());
   document.querySelector("[data-action='import-all-api-events']")?.addEventListener("click", importAllApiEvents);
   document.querySelectorAll("[data-import-api-event]").forEach(button => button.addEventListener("click", () => importApiEvent(button.dataset.importApiEvent)));
   document.querySelectorAll("[data-delete-api-event]").forEach(button => button.addEventListener("click", () => deleteApiEvent(button.dataset.deleteApiEvent)));
@@ -3538,7 +3476,6 @@ async function requestDoubleUp(matchId) {
 
   const nowIso = new Date().toISOString();
   const pending = doubleUpIsPending(match);
-  const expired = doubleUpIsExpired(match);
   const requesterId = doubleUpRequesterId(match);
 
   if (pending && requesterId === user.id) {
@@ -4714,7 +4651,6 @@ function renderApiImportResults() {
   }
 
   return apiImportResults.map(event => {
-    const docId = apiEventDocId(event);
     const existing = findExistingApiEvent(event);
     const scoreText = event.type === EVENT_TYPES.RANKED
       ? `${(event.participants || []).slice(0, 6).join(", ")}${(event.participants || []).length > 6 ? "..." : ""}`
@@ -4735,73 +4671,6 @@ function renderApiImportResults() {
 }
 
 
-
-async function cleanupOldHistoryEvents(options = {}) {
-  if (!isAdmin()) return 0;
-
-  const candidates = Object.values(state.events || {}).filter(eventCanBeHistoryCleaned);
-  const protectedCount = Object.values(state.events || {}).filter(event =>
-    eventIsExpiredHistory(event) && !eventCanBeHistoryCleaned(event)
-  ).length;
-
-  if (!candidates.length) {
-    if (!options.silent) {
-      apiImportMessage = protectedCount
-        ? `No old history could be cleaned. ${protectedCount} old final event${protectedCount === 1 ? "" : "s"} still have unsettled matches and were protected.`
-        : "No history older than 5 days found.";
-      renderApp();
-    }
-    return 0;
-  }
-
-  if (!options.silent) {
-    const ok = confirm(`Delete ${candidates.length} final history event${candidates.length === 1 ? "" : "s"} older than 5 days from Firebase? Ledger entries and settlements are preserved.`);
-    if (!ok) return 0;
-  }
-
-  const batch = writeBatch(db);
-  let deleted = 0;
-  const ids = new Set(candidates.map(event => functionSafeEventId(event)).filter(Boolean));
-
-  for (const bet of Object.values(state.bets || {})) {
-    if (ids.has(bet.eventId)) {
-      const betId = bet.firestoreId || bet.id;
-      if (betId) {
-        batch.delete(doc(db, "bets", betId));
-        delete state.bets[betId];
-        deleted += 1;
-      }
-    }
-  }
-
-  for (const match of Object.values(state.matches || {})) {
-    if (ids.has(match.eventId)) {
-      const matchId = match.firestoreId || match.id;
-      if (matchId) {
-        batch.delete(doc(db, "matches", matchId));
-        delete state.matches[matchId];
-        deleted += 1;
-      }
-    }
-  }
-
-  for (const event of candidates) {
-    const eventId = functionSafeEventId(event);
-    if (!eventId) continue;
-    batch.delete(doc(db, "events", eventId));
-    delete state.events[eventId];
-    deleted += 1;
-  }
-
-  await batch.commit();
-
-  if (!options.silent) {
-    apiImportMessage = `Cleaned ${candidates.length} history event${candidates.length === 1 ? "" : "s"} older than 5 days from Firebase. Ledger/profile/leaderboard records were preserved.`;
-    renderApp();
-  }
-
-  return candidates.length;
-}
 
 async function cleanupDuplicateApiEvents(options = {}) {
   if (!isAdmin()) return;
@@ -5212,7 +5081,7 @@ function liveRefreshCandidateEvents() {
   });
 }
 
-async function syncLiveScoreEvents(options = {}) {
+async function syncLiveScoreEvents(_options = {}) {
   // Firestore event writes are admin-only. This browser path is an explicit
   // fallback when the shared server maintenance function is unavailable.
   if (!isAdmin()) return { updated: 0, fetched: 0 };
@@ -5466,12 +5335,6 @@ async function forceSyncMlbNowWindow(options = {}) {
   return { added, updated, fetched, skipped, errors };
 }
 
-async function syncMlbLiveSweep(options = {}) {
-  // Use the same dedicated MLB path for automatic refreshes and manual repair.
-  // This avoids the old candidate-only refresh problem where missing MLB games
-  // could not update because they were never on the board.
-  return forceSyncMlbNowWindow({ silent: true, ...options });
-}
 
 function autoKey(name) {
   return `everyoneLoses:auto:${name}`;
@@ -5498,13 +5361,6 @@ function oddsAutoDailyKey() {
   return autoKey(`odds-daily:${getBettingDayISO()}`);
 }
 
-function getAutoOddsRequestCount() {
-  try {
-    return Number(localStorage.getItem(oddsAutoDailyKey()) || 0);
-  } catch {
-    return 0;
-  }
-}
 
 function reserveAutoOddsRequestSlot() {
   try {
@@ -5602,7 +5458,7 @@ function scheduleImmediateFinalSettlementCheck() {
   }, 900);
 }
 
-async function autoSettleFinalEvents(reason = "automatic") {
+async function autoSettleFinalEvents(_reason = "automatic") {
   if (!isAdmin() || settlementRepairRunning) return 0;
   settlementRepairRunning = true;
   let settled = 0;
@@ -5660,7 +5516,7 @@ async function autoRefreshOddsForActiveEvents() {
   return refreshed;
 }
 
-async function runAutoMaintenance(reason = "timer") {
+async function runAutoMaintenance(_reason = "timer") {
   if (!isAdmin() || autoMaintenanceRunning || !serverMaintenanceIsStale()) return;
   autoMaintenanceRunning = true;
 
@@ -5685,9 +5541,8 @@ async function runAutoMaintenance(reason = "timer") {
 
     if (shouldRunAutoTask("cleanup", AUTO_CLEANUP_INTERVAL_MS)) {
       const removed = await cleanupDuplicateApiEvents({ silent: true });
-      const historyRemoved = await cleanupOldHistoryEvents({ silent: true });
       markAutoTaskRun("cleanup");
-      notes.push(`cleanup removed ${removed || 0} duplicate/stale event(s), ${historyRemoved || 0} old history item(s)`);
+      notes.push(`cleanup removed ${removed || 0} duplicate/stale event(s)`);
     }
 
     if (shouldRunAutoTask("odds", AUTO_ODDS_INTERVAL_MS)) {
@@ -5778,6 +5633,7 @@ function summarizeMaintenanceResults(results = []) {
 
 async function triggerServerMaintenance(reason = "foreground") {
   if (!isAdmin()) return null;
+  await refreshDeploymentHealth();
   const showProgress = reason === "manual";
   const showStage = message => {
     if (!showProgress) return;
@@ -5871,7 +5727,9 @@ function maybeStartSettlementMaintenance() {
 }
 
 function maybeStartAutoMaintenance() {
-  if (!isAdmin() || autoMaintenanceTimer) return;
+  if (!isAdmin()) return;
+  if (!deploymentHealth && !deploymentHealthLoading) refreshDeploymentHealth();
+  if (autoMaintenanceTimer) return;
   setTimeout(() => runAutoMaintenance("startup-stale-fallback"), 2200);
   autoMaintenanceTimer = setInterval(() => {
     if (document.visibilityState !== "hidden" && serverMaintenanceIsStale()) {
@@ -5902,25 +5760,21 @@ async function deleteDemoEvents() {
 
   const demoIds = new Set(demoEvents.map(event => event.firestoreId || event.id));
   const batch = writeBatch(db);
-  let deleted = 0;
 
   for (const match of Object.values(state.matches)) {
     if (demoIds.has(match.eventId)) {
       batch.delete(doc(db, "matches", match.firestoreId || match.id));
-      deleted += 1;
     }
   }
 
   for (const bet of Object.values(state.bets)) {
     if (demoIds.has(bet.eventId)) {
       batch.delete(doc(db, "bets", bet.firestoreId || bet.id));
-      deleted += 1;
     }
   }
 
   for (const event of demoEvents) {
     batch.delete(doc(db, "events", event.firestoreId || event.id));
-    deleted += 1;
   }
 
   await batch.commit();

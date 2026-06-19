@@ -1,3 +1,7 @@
+import { UFC_CARD_REPAIRS } from "../shared/ufc-repairs.js";
+import { requestQuery } from "./_http.js";
+import { APP_VERSION } from "./_version.js";
+
 const LEAGUE_MAP = {
   NBA: { sport: "basketball", league: "NBA", espnPath: "basketball/nba", appSport: "basketball", eventType: "TEAM_HEAD_TO_HEAD" },
   NFL: { sport: "football", league: "NFL", espnPath: "football/nfl", appSport: "football", eventType: "TEAM_HEAD_TO_HEAD" },
@@ -27,10 +31,8 @@ const TEAM_LOCATION_FALLBACKS = {
   GB: ["Green Bay", "WI"], JAX: ["Jacksonville", "FL"], KC: ["Kansas City", "MO"], LV: ["Las Vegas", "NV"], NE: ["Foxborough", "MA"],
   NO: ["New Orleans", "LA"], PIT: ["Pittsburgh", "PA"], SEA: ["Seattle", "WA"], SF: ["San Francisco", "CA"], TB: ["Tampa", "FL"], TEN: ["Nashville", "TN"],
   CHC: ["Chicago", "IL"], CWS: ["Chicago", "IL"], NYY: ["New York", "NY"], NYM: ["New York", "NY"], LAD: ["Los Angeles", "CA"], LAA: ["Anaheim", "CA"],
-  SD: ["San Diego", "CA"], COL: ["Denver", "CO"], OAK: ["West Sacramento", "CA"], ATH: ["West Sacramento", "CA"], TEX: ["Arlington", "TX"], HOU: ["Houston", "TX"],
-  STL: ["St. Louis", "MO"], MIN: ["Minneapolis", "MN"], DET: ["Detroit", "MI"], CLE: ["Cleveland", "OH"], TOR: ["Toronto", "ON"], PHI: ["Philadelphia", "PA"],
-  WSH: ["Washington", "DC"], MIA: ["Miami", "FL"], MIL: ["Milwaukee", "WI"], ARI: ["Phoenix", "AZ"], SEA: ["Seattle", "WA"], CIN: ["Cincinnati", "OH"],
-  KC: ["Kansas City", "MO"], BAL: ["Baltimore", "MD"], BOS: ["Boston", "MA"], ATL: ["Atlanta", "GA"], PIT: ["Pittsburgh", "PA"]
+  SD: ["San Diego", "CA"], COL: ["Denver", "CO"], OAK: ["West Sacramento", "CA"], ATH: ["West Sacramento", "CA"], TEX: ["Arlington", "TX"],
+  STL: ["St. Louis", "MO"], WSH: ["Washington", "DC"]
 };
 
 
@@ -327,13 +329,6 @@ function extractRaceLeaderboard(event, config) {
     .slice(0, 30);
 }
 
-function extractRaceParticipants(event, config) {
-  return extractRaceLeaderboard(event, config).map(row => row.name);
-}
-
-function extractRaceResultOrder(event, config) {
-  return extractRaceLeaderboard(event, config).map(row => row.name);
-}
 
 function mapRacingEvent(event, config) {
   const competition = event.competitions?.[0] || {};
@@ -427,6 +422,7 @@ function mapTeamEvent(event, config) {
     score,
     liveContext,
     liveStats,
+    venue,
     weather: weather ? { summary: String(weather) } : null,
     odds: typeof odds === "number" ? `O/U ${odds}` : String(odds),
     externalIds: {
@@ -450,25 +446,6 @@ function normalizeFightId(value, fallback = "fight") {
 }
 
 
-// Verified one-off card corrections are only used when ESPN's live feeds return
-// an incomplete card. Dynamic ESPN data always wins when the same fight exists.
-// UFC Freedom 250 was a seven-fight, no-prelims card, while ESPN's scoreboard
-// intermittently exposed only five bouts.
-const UFC_CARD_OVERRIDES = {
-  "600058854": {
-    minimumFightCount: 7,
-    noPrelims: true,
-    fights: [
-      { fighterA: "Diego Lopes", fighterB: "Steve Garcia", winner: "Diego Lopes", verifiedFinal: true },
-      { fighterA: "Bo Nickal", fighterB: "Kyle Daukaus", winner: "Bo Nickal", verifiedFinal: true },
-      { fighterA: "Mauricio Ruffy", fighterB: "Michael Chandler", winner: "Mauricio Ruffy", verifiedFinal: true },
-      { fighterA: "Josh Hokit", fighterB: "Derrick Lewis", winner: "Josh Hokit", verifiedFinal: true },
-      { fighterA: "Sean O'Malley", fighterB: "Aiemann Zahabi", winner: "Sean O'Malley", verifiedFinal: true },
-      { fighterA: "Alex Pereira", fighterB: "Ciryl Gane", winner: "Ciryl Gane", verifiedFinal: true, cardRole: "co-main" },
-      { fighterA: "Ilia Topuria", fighterB: "Justin Gaethje", winner: "", verifiedFinal: false, cardRole: "main-event" }
-    ]
-  }
-};
 
 function numericIdFromValue(value) {
   const text = String(value || "");
@@ -503,9 +480,9 @@ function normalizedFightPairKey(fighterA, fighterB) {
     .join("::");
 }
 
-function applyUfcCardOverride(event = {}, fights = []) {
-  const eventId = ufcEventIdCandidates(event).find(id => UFC_CARD_OVERRIDES[id]);
-  const override = eventId ? UFC_CARD_OVERRIDES[eventId] : null;
+export function applyUfcCardOverride(event = {}, fights = []) {
+  const eventId = ufcEventIdCandidates(event).find(id => UFC_CARD_REPAIRS[id]);
+  const override = eventId ? UFC_CARD_REPAIRS[eventId] : null;
   if (!override) {
     return { fights, overrideApplied: false, overrideEventId: eventId || "" };
   }
@@ -552,7 +529,7 @@ function ufcFighterName(competitor) {
     || "";
 }
 
-function ufcWinnerFromCompetition(competition = {}) {
+export function ufcWinnerFromCompetition(competition = {}) {
   const competitors = Array.isArray(competition?.competitors) ? competition.competitors : [];
   const winner = competitors.find(item => {
     const resultText = [
@@ -582,7 +559,7 @@ function ufcWinnerFromCompetition(competition = {}) {
   return "";
 }
 
-function ufcFightStatus(competition = {}, event = {}) {
+export function ufcFightStatus(competition = {}, event = {}) {
   if (ufcWinnerFromCompetition(competition)) return "final";
 
   const type = competition?.status?.type || {};
@@ -641,7 +618,7 @@ function ufcCardSection(competition = {}) {
   return "";
 }
 
-function extractUfcFightsFromEvent(event) {
+export function extractUfcFightsFromEvent(event) {
   const fights = [];
   const rawCompetitions = Array.isArray(event?.competitions) ? event.competitions.filter(Boolean) : [];
   const firstRole = rawCompetitions.length ? ufcCardSection(rawCompetitions[0]) : "";
@@ -699,7 +676,7 @@ function extractUfcFightsFromEvent(event) {
   return overridden.fights;
 }
 
-function mapUfcFightCards(rawEvents, config, date) {
+export function mapUfcFightCards(rawEvents, config, date) {
   const events = Array.isArray(rawEvents) ? rawEvents : [];
   const cards = [];
 
@@ -1263,21 +1240,20 @@ function stripHtmlToLines(html) {
     .filter(Boolean);
 }
 
-function rowsFromIndyCarText(html) {
+export function rowsFromIndyCarText(html) {
   const text = stripHtmlToLines(html).join("\n");
   if (/no track activity|browser not compatible/i.test(text) && !/\b1\b.+\b(Palou|Dixon|O'Ward|Newgarden|McLaughlin|Herta|Kirkwood|Ericsson|Power|Rosenqvist)\b/i.test(text)) return [];
 
   const lines = stripHtmlToLines(html);
   const rows = [];
   const seen = new Set();
-  const driverNamePattern = "([A-Z][A-Za-z.'’\-]+(?:\s+[A-Z][A-Za-z.'’\-]+){0,3})";
-  const detailPattern = "((?:#?\d{1,2}|Lap\s*\d+|Laps?\s*\d+|[+\-]?\d+(?:\.\d+)?s?|Pits?\s*\d+|Running|Out|Pit|Stopped|Retired|[A-Z]{2,})[^\n]*)?";
+  const driverNamePattern = "([A-Z][A-Za-z.'’-]+(?:\\s+(?!(?:Lap|Laps|Pit|Pits|Running|Out|Stopped|Retired)\\b)[A-Z][A-Za-z.'’-]+){0,3})";
+  const detailPattern = "((?:#?\\d{1,2}|Lap\\s*\\d+|Laps?\\s*\\d+|[+-]?\\d+(?:\\.\\d+)?s?|Pits?\\s*\\d+|Running|Out|Pit|Stopped|Retired|[A-Z]{2,})[^\\n]*)?";
   const patterns = [
-    new RegExp(`^\s*(\d{1,2})\s+(?:#\s*\d{1,2}\s+)?${driverNamePattern}\s*${detailPattern}$`, "i"),
-    new RegExp(`^\s*(?:P|Pos|Position)\s*(\d{1,2})\s+${driverNamePattern}\s*${detailPattern}$`, "i"),
-    new RegExp(`^\s*${driverNamePattern}\s+(?:P|Pos|Position)?\s*(\d{1,2})\s*${detailPattern}$`, "i")
+    new RegExp(`^\\s*(\\d{1,2})\\s+(?:#\\s*\\d{1,2}\\s+)?${driverNamePattern}\\s*${detailPattern}$`, "i"),
+    new RegExp(`^\\s*(?:P|Pos|Position)\\s*(\\d{1,2})\\s+${driverNamePattern}\\s*${detailPattern}$`, "i"),
+    new RegExp(`^\\s*${driverNamePattern}\\s+(?:P|Pos|Position)?\\s*(\\d{1,2})\\s*${detailPattern}$`, "i")
   ];
-
   for (const line of lines) {
     if (/^(pos|position|driver|car|lap|time|gap|interval|rank|leaderboard|live timing|privacy|terms|schedule|results|standings)$/i.test(line)) continue;
     if (line.length > 160) continue;
@@ -1710,12 +1686,6 @@ function addStatRow(rows, label, value, max = 12, meta = {}) {
   return true;
 }
 
-function formatPeriodLine(teamCode, competitor) {
-  const lines = competitor?.linescores || [];
-  if (!teamCode || !Array.isArray(lines) || !lines.length) return "";
-  const values = lines.map(item => item?.displayValue ?? item?.value).filter(value => value !== undefined && value !== null && value !== "");
-  return values.length ? `${teamCode} by period: ${values.join("-")}` : "";
-}
 
 function teamCodeFromBlock(teamBlock) {
   return cleanCode(teamBlock?.team?.abbreviation || teamBlock?.team?.shortDisplayName || teamBlock?.team?.displayName || "", "");
@@ -1729,7 +1699,7 @@ function statKey(label) {
   return String(label || "").toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
 }
 
-function statMeaningScore(label, value, league = "") {
+function statMeaningScore(label, value) {
   const key = statKey(label);
   const val = String(value || "").trim();
   if (!key || !val) return -999;
@@ -1755,7 +1725,7 @@ function statMeaningScore(label, value, league = "") {
   return 25;
 }
 
-function getTeamStatCandidates(summary, mappedEvent, rawEvent) {
+function getTeamStatCandidates(summary, mappedEvent) {
   const boxscoreTeams = summary?.boxscore?.teams || [];
   const desiredCodes = [mappedEvent?.away?.code, mappedEvent?.home?.code].map(code => cleanCode(code, "")).filter(Boolean);
   const blocksByCode = new Map();
@@ -1784,7 +1754,7 @@ function getTeamStatCandidates(summary, mappedEvent, rawEvent) {
         label: `${code} ${label}`,
         value,
         teamCode: code,
-        score: statMeaningScore(label, value, mappedEvent?.league)
+        score: statMeaningScore(label, value)
       });
     }
     result.set(code, rows.sort((a, b) => b.score - a.score));
@@ -2003,7 +1973,7 @@ function mergeStatRows(primary = [], secondary = [], max = 4) {
 
 function pickUsefulTeamStats(summary, mappedEvent, rawEvent) {
   const rows = [];
-  const { result: teamStats, teamCodes } = getTeamStatCandidates(summary, mappedEvent, rawEvent);
+  const { result: teamStats, teamCodes } = getTeamStatCandidates(summary, mappedEvent);
   const recordStats = getCompetitorRecordCandidates(rawEvent, mappedEvent);
   const playerStats = getPlayerOrLeaderCandidates(summary, mappedEvent);
   const maxRows = 4;
@@ -2237,15 +2207,16 @@ export default async function handler(req, res) {
   if (req.method !== "GET") return res.status(405).json({ error: "Method not allowed" });
 
   try {
-    const league = String(req.query.league || "NBA");
-    const date = String(req.query.date || ymd()).replace(/[^0-9]/g, "").slice(0, 8);
+    const query = requestQuery(req);
+    const league = String(query.league || "NBA");
+    const date = String(query.date || ymd()).replace(/[^0-9]/g, "").slice(0, 8);
     const config = LEAGUE_MAP[league];
 
     if (!config) {
-      return res.status(400).json({ error: "Unsupported league", supportedLeagues: Object.keys(LEAGUE_MAP) });
+      return res.status(400).json({ error: "Unsupported league", version: APP_VERSION, supportedLeagues: Object.keys(LEAGUE_MAP) });
     }
 
-    const requestedEventId = String(req.query.eventId || "").replace(/[^0-9]/g, "");
+    const requestedEventId = String(query.eventId || "").replace(/[^0-9]/g, "");
     if (config.league === "UFC" && requestedEventId) {
       const seed = { id: requestedEventId, competitions: [] };
       const events = await mapEventsWithEnrichment([seed], config, date);
