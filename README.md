@@ -1,8 +1,8 @@
 # Everybody Loses
 
-## v10.77
+## v10.78
 
-v10.77 repairs the unattended maintenance pipeline that imports the Now window, refreshes live events, and settles completed bets.
+v10.78 repairs the unattended maintenance pipeline that imports the Now window, refreshes live events, and settles completed bets.
 
 ### What changed
 
