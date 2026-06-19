@@ -23,7 +23,7 @@ async function main() {
     throw new Error("Usage: npm run admin:manage -- --grant|--revoke --uid <uid> OR --email <email>");
   }
 
-  const services = getAdminServices();
+  const services = await getAdminServices();
   const userRecord = email ? await services.auth.getUserByEmail(email) : await services.auth.getUser(uidInput);
   const isAdmin = action === "grant";
 

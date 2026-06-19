@@ -5,6 +5,7 @@ import espnHandler from "../api/espn-events.js";
 import repairHandler from "../api/repair-matchup.js";
 import settleHandler from "../api/settle-event.js";
 import healthHandler from "../api/health.js";
+import adminHealthHandler from "../api/admin-health.js";
 
 class MockResponse {
   constructor() {
@@ -68,11 +69,22 @@ test("admin write endpoints reject wrong methods without touching Firebase", asy
 });
 
 
+test("admin backend health returns a structured Firebase configuration error instead of crashing", async () => {
+  await withoutFirebaseAdminCredentials(async () => {
+    const res = new MockResponse();
+    await adminHealthHandler({ method: "GET", headers: {}, url: "/api/admin-health" }, res);
+    assert.equal(res.statusCode, 500);
+    assert.equal(res.parsed().ok, false);
+    assert.equal(res.parsed().code, "ADMIN_CREDENTIALS_MISSING");
+    assert.equal(res.parsed().stage, "loading Firebase Admin SDK");
+  });
+});
+
 test("health endpoint reports the deployed application and Node runtime versions", async () => {
   const res = new MockResponse();
   await healthHandler({ method: "GET", headers: {} }, res);
   assert.equal(res.statusCode, 200);
   assert.equal(res.parsed().ok, true);
-  assert.equal(res.parsed().version, "10.79");
+  assert.equal(res.parsed().version, "10.80");
   assert.match(res.parsed().runtime, /^v22\./);
 });

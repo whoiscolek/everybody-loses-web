@@ -4647,3 +4647,118 @@ label {
 .repair-matchup-status.error {
   color: #b42318;
 }
+
+/* v10.80 administrator-wide bet and ledger audit */
+.admin-full-ledger-card {
+  margin: 16px 0;
+}
+
+.admin-full-ledger-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 18px;
+  margin-bottom: 14px;
+}
+
+.admin-full-ledger-head h3,
+.admin-full-ledger-head p {
+  margin-top: 0;
+}
+
+.admin-ledger-counts {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 7px;
+}
+
+.admin-ledger-counts span {
+  border: 1px solid rgba(255,255,255,.14);
+  border-radius: 999px;
+  padding: 6px 9px;
+  background: rgba(255,255,255,.06);
+  font-size: .72rem;
+  font-weight: 800;
+  white-space: nowrap;
+}
+
+.admin-bet-audit-list {
+  display: grid;
+  gap: 9px;
+  max-height: 720px;
+  overflow: auto;
+  padding-right: 4px;
+}
+
+.admin-bet-audit-row {
+  display: grid;
+  grid-template-columns: minmax(260px, 1.65fr) repeat(3, minmax(105px, .7fr)) minmax(190px, 1fr);
+  align-items: center;
+  gap: 12px;
+  border: 1px solid rgba(255,255,255,.13);
+  border-radius: 16px;
+  padding: 12px;
+  background: rgba(255,255,255,.045);
+}
+
+.admin-bet-audit-main {
+  min-width: 0;
+}
+
+.admin-bet-audit-main > strong {
+  margin-right: 7px;
+}
+
+.admin-bet-audit-event {
+  margin: 5px 0 3px;
+  font-weight: 750;
+  overflow-wrap: anywhere;
+}
+
+.admin-bet-audit-cell {
+  min-width: 0;
+}
+
+.admin-bet-audit-cell span {
+  display: block;
+  margin-bottom: 3px;
+  color: rgba(238,242,248,.58);
+  font-size: .66rem;
+  font-weight: 850;
+  letter-spacing: .06em;
+  text-transform: uppercase;
+}
+
+.admin-bet-audit-cell strong {
+  display: block;
+  font-size: .82rem;
+  line-height: 1.3;
+  overflow-wrap: anywhere;
+}
+
+@media (max-width: 980px) {
+  .admin-bet-audit-row {
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  }
+  .admin-bet-audit-main,
+  .admin-bet-audit-result {
+    grid-column: 1 / -1;
+  }
+}
+
+@media (max-width: 640px) {
+  .admin-full-ledger-head {
+    display: grid;
+  }
+  .admin-ledger-counts {
+    justify-content: flex-start;
+  }
+  .admin-bet-audit-row {
+    grid-template-columns: 1fr;
+  }
+  .admin-bet-audit-main,
+  .admin-bet-audit-result {
+    grid-column: auto;
+  }
+}

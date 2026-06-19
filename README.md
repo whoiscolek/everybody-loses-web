@@ -1,6 +1,15 @@
 # Everybody Loses
 
-## v10.79 Stabilization Release
+## v10.80 Stabilization Release
+
+### v10.80 reliability follow-up
+
+- Firebase Admin is loaded lazily inside each server request so SDK or credential failures return structured JSON instead of crashing the Vercel runtime during module startup.
+- Firebase Admin is pinned to the stable 13.10.0 release while the newer 14.x serverless behavior is isolated.
+- `/api/admin-health` verifies Firebase Admin, administrator authentication, and a Firestore read before a full maintenance sweep begins.
+- Manual maintenance falls back immediately to the browser recovery path when the Firebase server preflight fails instead of waiting through five doomed function calls.
+- Admin now includes a read-only complete betting ledger showing every bet, match relationship, settlement state, and financial outcome.
+
 
 This release changes the project from patch-driven development to a tested release process. It preserves the v10.78 application behavior while adding regression tests, release gates, safer authorization, durable History, and deployment diagnostics.
 
@@ -52,8 +61,8 @@ See `STABILIZATION_REPORT.md` for the audit findings and test matrix.
 3. Publish the included `firestore.rules` in Firebase Console. This step is required for the admin security fix.
 4. Deploy on Vercel using Node 22.x.
 5. Confirm the same `MAINTENANCE_SECRET` exists in Vercel and GitHub Actions.
-6. Open `/api/health` on the production domain and confirm it reports version `10.79` and a Node `v22` runtime.
-7. Open Admin and run **Run server refresh now** once. The maintenance card should report the deployed API version and then a fresh v10.79 maintenance record.
+6. Open `/api/health` on the production domain and confirm it reports version `10.80` and a Node `v22` runtime.
+7. Open Admin and run **Run server refresh now** once. The maintenance card should report the deployed API version and then a fresh v10.80 maintenance record.
 
 ## Administrator management
 

@@ -76,3 +76,20 @@ test("Firestore rules prevent approved users from rewriting bet ownership or unr
   assert.match(rules, /resource\.data\.userA == request\.auth\.uid \|\| resource\.data\.userB == request\.auth\.uid/);
   assert.doesNotMatch(rules, /allow update, delete: if approved\(\) \|\| admin\(\)/);
 });
+
+
+test("administrator view includes a complete read-only betting ledger", async () => {
+  const client = await read("src/main.js");
+  assert.match(client, /function renderAdminFullBetLedger\(\)/);
+  assert.match(client, /Complete betting ledger/);
+  assert.match(client, /\$\{renderAdminFullBetLedger\(\)\}/);
+});
+
+test("Firebase Admin loads lazily so serverless startup failures can be reported", async () => {
+  const admin = await read("api/_admin.js");
+  assert.doesNotMatch(admin, /^import .*firebase-admin/m);
+  assert.match(admin, /await Promise\.all\(\[/);
+  assert.match(admin, /import\("firebase-admin\/app"\)/);
+  const packageJson = JSON.parse(await read("package.json"));
+  assert.equal(packageJson.dependencies["firebase-admin"], "13.10.0");
+});

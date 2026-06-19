@@ -35,7 +35,7 @@ export default async function handler(req, res) {
 
   let stage = "initializing Firebase Admin";
   try {
-    const services = getAdminServices();
+    const services = await getAdminServices();
     stage = "verifying administrator";
     const adminUid = await requireAdmin(req, services);
     const body = requestBody(req);

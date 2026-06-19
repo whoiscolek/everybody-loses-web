@@ -1,4 +1,4 @@
-# v10.79 Stabilization Report
+# v10.80 Stabilization Report
 
 ## Scope
 
@@ -56,7 +56,7 @@ The audit covered event discovery, live refresh, UFC card merging, settlement, l
 
 ## Automated verification matrix
 
-The v10.79 suite covers:
+The v10.80 suite covers:
 
 - raw serverless URLs when `req.query` is absent
 - malformed request-body handling

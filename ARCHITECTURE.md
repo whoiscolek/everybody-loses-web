@@ -1,4 +1,4 @@
-# Everybody Loses v10.79 Architecture
+# Everybody Loses v10.80 Architecture
 
 ## Runtime boundaries
 
@@ -56,4 +56,4 @@ A completed UFC fight can settle while the containing card remains live.
 
 `npm run verify` is the local and CI release gate. Tests use an in-memory Firestore double for deterministic settlement state-transition tests and direct handler tests for serverless request shapes.
 
-The current application remains a large browser module. Decomposing `src/main.js` into domain modules is the next maintainability phase, but v10.79 intentionally avoids a high-risk wholesale rewrite during stabilization.
+The current application remains a large browser module. Decomposing `src/main.js` into domain modules is the next maintainability phase, but v10.80 intentionally avoids a high-risk wholesale rewrite during stabilization.

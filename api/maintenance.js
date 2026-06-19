@@ -529,8 +529,9 @@ function mergeSettlementSummaries(...items) {
   return out;
 }
 
-async function runMaintenance(req, mode, services = getAdminServices()) {
-  const { db, FieldValue } = services;
+async function runMaintenance(req, mode, services = null) {
+  const resolvedServices = services || await getAdminServices();
+  const { db, FieldValue } = resolvedServices;
   const lease = await acquireLease(db, FieldValue, mode);
   if (!lease.acquired) return { skipped: true, reason: "maintenance already running", state: lease.state || {} };
 
@@ -762,7 +763,7 @@ export default async function handler(req, res) {
       return json(res, 400, { error: "Unsupported maintenance mode", mode: requestedMode });
     }
 
-    const services = getAdminServices();
+    const services = await getAdminServices();
     const authorization = await authorizeMaintenanceRequest(req, services);
     if (!authorization) return json(res, 401, { error: "Maintenance authorization required" });
 

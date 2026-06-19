@@ -904,7 +904,7 @@ async function repairKnownUfcCardsInFirestore() {
           fightResults,
           externalIds,
           expectedMainCardCount: repair.minimumFightCount,
-          ufcCardRepairVersion: "v10.79",
+          ufcCardRepairVersion: "v10.80",
           ufcCardRepairAppliedAt: serverTimestamp(),
           updatedAt: serverTimestamp()
         }, { merge: true });
@@ -915,7 +915,7 @@ async function repairKnownUfcCardsInFirestore() {
           fightResults,
           externalIds,
           expectedMainCardCount: repair.minimumFightCount,
-          ufcCardRepairVersion: "v10.79",
+          ufcCardRepairVersion: "v10.80",
           firestoreId: docId
         };
         repaired += 1;
@@ -2968,6 +2968,117 @@ function renderMaintenanceHealth() {
   `;
 }
 
+function formatAdminAuditDate(record = {}) {
+  const value = record.settledAt || record.updatedAt || record.matchedAt || record.createdAt;
+  const ms = toDateValue(value);
+  if (!ms) return "Date unavailable";
+  return new Date(ms).toLocaleString("en-US", {
+    timeZone: "America/New_York",
+    month: "short",
+    day: "numeric",
+    year: "numeric",
+    hour: "numeric",
+    minute: "2-digit"
+  });
+}
+
+function renderAdminFullBetLedger() {
+  const bets = Object.values(state.bets || {}).sort((a, b) => {
+    const timeDifference = toDateValue(b.createdAt || b.updatedAt) - toDateValue(a.createdAt || a.updatedAt);
+    if (timeDifference) return timeDifference;
+    return String(b.firestoreId || b.id || "").localeCompare(String(a.firestoreId || a.id || ""));
+  });
+  const matches = Object.values(state.matches || {});
+  const ledgerEntries = Object.values(state.ledgerEntries || {});
+  const settlements = Object.values(state.settlements || {});
+
+  const betIdentifiers = bet => [...new Set([bet?.firestoreId, bet?.id].filter(Boolean).map(String))];
+  const matchForBet = bet => {
+    const ids = betIdentifiers(bet);
+    return matches.find(match => {
+      const linkedIds = [match.betA, match.betB, match.betIdA, match.betIdB, match.bet1Id, match.bet2Id]
+        .filter(Boolean)
+        .map(String);
+      if (ids.some(id => linkedIds.includes(id))) return true;
+      const sameEvent = String(match.eventId || "") === String(bet.eventId || "");
+      const sameFight = String(match.fightId || "") === String(bet.fightId || "");
+      const sameUser = [match.userA, match.userB].map(String).includes(String(bet.userId || ""));
+      return sameEvent && sameFight && sameUser;
+    }) || null;
+  };
+
+  const financialResult = (bet, match) => {
+    if (!match) return bet.status === "open" ? "Unmatched" : label(bet.status || "unmatched");
+    const matchId = String(match.firestoreId || match.id || "");
+    const ledger = ledgerEntries.find(entry =>
+      String(entry.matchId || "") === matchId ||
+      (String(entry.eventId || "") === String(bet.eventId || "") &&
+       [entry.fromUser, entry.toUser].map(String).includes(String(bet.userId || "")))
+    );
+    if (ledger) {
+      return String(ledger.fromUser) === String(bet.userId)
+        ? `Owes ${userName(ledger.toUser)} ${money(ledger.amount)}`
+        : `Won ${money(ledger.amount)} from ${userName(ledger.fromUser)}`;
+    }
+    const settlement = settlements.find(item =>
+      String(item.matchId || "") === matchId ||
+      (String(item.eventId || "") === String(bet.eventId || "") &&
+       [item.fromUser, item.toUser].map(String).includes(String(bet.userId || "")))
+    );
+    if (settlement) return `Paid/settled ${money(settlement.amount || 0)}`;
+    if (["void", "voided"].includes(String(match.status || "").toLowerCase())) return "Voided · no money owed";
+    if (String(match.status || "").toLowerCase() === "settled") return "Settled · no open balance";
+    return `Match ${label(match.status || "active")}`;
+  };
+
+  const rows = bets.map(bet => {
+    const event = state.events[bet.eventId] || Object.values(state.events || {}).find(item =>
+      String(item.firestoreId || item.id || "") === String(bet.eventId || "")
+    );
+    const match = matchForBet(bet);
+    const opponentId = match
+      ? String(match.userA || "") === String(bet.userId || "") ? match.userB : match.userA
+      : "";
+    const pick = bet.side || bet.pick || bet.selection || bet.participant || bet.driver || "—";
+    const fight = bet.fightId ? ` · Fight ${bet.fightOrder || bet.fightId}` : "";
+    const betId = bet.firestoreId || bet.id || "Unknown bet ID";
+    return `
+      <div class="admin-bet-audit-row">
+        <div class="admin-bet-audit-main">
+          <strong>${escapeHtml(userName(bet.userId))}</strong>
+          <span class="status-badge ${escapeHtml(String(bet.status || "open").toLowerCase())}">${escapeHtml(label(bet.status || "open"))}</span>
+          <div class="admin-bet-audit-event">${escapeHtml(event ? eventDisplayTitle(event) : (bet.eventId || "Unknown event"))}${escapeHtml(fight)}</div>
+          <div class="muted tiny">${escapeHtml(formatAdminAuditDate(bet))} · Bet ID ${escapeHtml(betId)} · Event ID ${escapeHtml(bet.eventId || "—")}</div>
+        </div>
+        <div class="admin-bet-audit-cell"><span>Pick</span><strong>${escapeHtml(label(pick))}</strong></div>
+        <div class="admin-bet-audit-cell"><span>Amount</span><strong>${escapeHtml(money(Number(bet.amount || bet.wager || 0)))}</strong></div>
+        <div class="admin-bet-audit-cell"><span>Matched with</span><strong>${escapeHtml(opponentId ? userName(opponentId) : "Nobody")}</strong></div>
+        <div class="admin-bet-audit-cell admin-bet-audit-result"><span>Outcome / ledger</span><strong>${escapeHtml(financialResult(bet, match))}</strong></div>
+      </div>
+    `;
+  }).join("");
+
+  return `
+    <div class="admin-card admin-full-ledger-card">
+      <div class="admin-full-ledger-head">
+        <div>
+          <h3>Complete betting ledger</h3>
+          <p class="muted small">Administrator-only audit of every bet, including unmatched bets, linked opponents, settlement state, and money owed. This is read-only; use the repair and manual-ledger tools below to make corrections.</p>
+        </div>
+        <div class="admin-ledger-counts">
+          <span>${bets.length} bets</span>
+          <span>${matches.length} matches</span>
+          <span>${ledgerEntries.length} ledger rows</span>
+          <span>${settlements.length} payments</span>
+        </div>
+      </div>
+      <div class="admin-bet-audit-list">
+        ${rows || `<div class="record">No bets have been recorded yet.</div>`}
+      </div>
+    </div>
+  `;
+}
+
 function renderAdmin() {
   if (!isAdmin()) return renderAdminAccessRequired();
 
@@ -2977,6 +3088,7 @@ function renderAdmin() {
   return `
     ${renderAdminStats()}
     ${renderMaintenanceHealth()}
+    ${renderAdminFullBetLedger()}
     <div class="admin-grid">
       <div class="admin-card">
         <h3>User approvals</h3>
@@ -5587,6 +5699,37 @@ async function runAdminForegroundMaintenanceFallback(options = {}) {
   };
 }
 
+async function callAdminBackendHealth() {
+  if (!auth.currentUser) throw new Error("Admin login is required.");
+  const token = await auth.currentUser.getIdToken();
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 12000);
+  try {
+    const response = await fetch(`/api/admin-health?fresh=${Date.now()}`, {
+      method: "GET",
+      cache: "no-store",
+      signal: controller.signal,
+      headers: {
+        "Authorization": `Bearer ${token}`,
+        "Cache-Control": "no-cache, no-store"
+      }
+    });
+    const rawBody = await response.text();
+    let data = {};
+    try { data = rawBody ? JSON.parse(rawBody) : {}; } catch { data = {}; }
+    if (!response.ok || !data.ok) {
+      const detail = [data.error, data.code, data.stage].filter(Boolean).join(" · ");
+      throw new Error(detail || rawBody.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim().slice(0, 320) || `Firebase backend check returned ${response.status}`);
+    }
+    return data;
+  } catch (error) {
+    if (error?.name === "AbortError") throw new Error("Firebase backend health check timed out after 12 seconds");
+    throw error;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 async function callServerMaintenance(mode, extra = {}) {
   if (!auth.currentUser) throw new Error("Admin login is required.");
   const token = await auth.currentUser.getIdToken();
@@ -5657,6 +5800,31 @@ async function triggerServerMaintenance(reason = "foreground") {
   const staleAtStart = serverMaintenanceIsStale();
 
   try {
+    showStage("Checking Firebase server access…");
+    try {
+      const backend = await callAdminBackendHealth();
+      if (showProgress) {
+        showStage(`Firebase server connected · API v${backend.version || "unknown"} · ${backend.firebaseProject || "project verified"}`);
+      }
+    } catch (error) {
+      errors.push(`server preflight: ${error.message}`);
+      showStage("Firebase server check failed; running browser recovery only…");
+      try {
+        fallback = await runAdminForegroundMaintenanceFallback({ includeDiscovery: reason === "manual" || staleAtStart });
+      } catch (fallbackError) {
+        errors.push(`browser fallback: ${fallbackError.message}`);
+      }
+      const activity = fallback.added + fallback.updated + fallback.settled;
+      serverMaintenanceMessageType = activity ? "success" : "error";
+      serverMaintenanceMessage = [
+        `Server maintenance unavailable: ${error.message}`,
+        `${fallback.added} added`,
+        `${fallback.updated} updated`,
+        `${fallback.settled} browser settlement repair(s)`
+      ].join(" · ");
+      return activity ? { browserFallback: true, ...fallback } : null;
+    }
+
     showStage("Refreshing existing live and unsettled events…");
     try { results.push(await callServerMaintenance("refresh")); }
     catch (error) { errors.push(`refresh: ${error.message}`); }

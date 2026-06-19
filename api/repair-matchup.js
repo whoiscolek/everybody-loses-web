@@ -107,7 +107,7 @@ export function createRepairMatchupHandler(serviceFactory = getAdminServices) {
 
   let stage = "initializing Firebase Admin";
   try {
-    const services = serviceFactory();
+    const services = await serviceFactory();
     stage = "verifying the signed-in admin";
     const adminUid = await requireAdmin(req, services);
     stage = "parsing the repair request";
