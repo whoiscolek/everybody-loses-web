@@ -1,4 +1,4 @@
-# v10.80 Stabilization Report
+# v10.81 Stabilization Report
 
 ## Scope
 
@@ -56,7 +56,7 @@ The audit covered event discovery, live refresh, UFC card merging, settlement, l
 
 ## Automated verification matrix
 
-The v10.80 suite covers:
+The v10.81 suite covers:
 
 - raw serverless URLs when `req.query` is absent
 - malformed request-body handling
@@ -106,3 +106,8 @@ The production dependency audit reports no high or critical findings. Six modera
 - Bet matching is still orchestrated in the browser. For a public or adversarial deployment, matching should move to a transactional server endpoint and Firestore bet/match rules should be narrowed further.
 - External live-data correctness cannot be completely proven offline. Deployment smoke checks and structured source diagnostics remain necessary.
 - The main client bundle is slightly above Vite's default 500 kB warning threshold before gzip; code splitting is a future performance improvement, not a functional release blocker.
+
+
+## v10.81 profile analytics follow-up
+
+The Profile stats placeholder was removed. The app now computes sport, league, pick, odds-tagged, and recent-decision analytics from settled ledger entries, matches, bets, and events. The regression suite includes dedicated profile analytics tests and a repository-contract check that prevents the planned-stat placeholder copy from returning.

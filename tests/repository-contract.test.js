@@ -93,3 +93,13 @@ test("Firebase Admin loads lazily so serverless startup failures can be reported
   const packageJson = JSON.parse(await read("package.json"));
   assert.equal(packageJson.dependencies["firebase-admin"], "13.10.0");
 });
+
+
+test("Profile stats are implemented rather than left as planned placeholders", async () => {
+  const client = await read("src/main.js");
+  assert.match(client, /computeProfileAnalytics/);
+  assert.match(client, /renderSportAndLeagueSplitPanel/);
+  assert.match(client, /renderPickSplitPanel/);
+  assert.doesNotMatch(client, /Planned stats/);
+  assert.doesNotMatch(client, /This will populate after more settled bets/);
+});

@@ -32,6 +32,7 @@ import {
 
 import { auth, db, storage, hasFirebaseConfig } from "./firebase.js";
 import { UFC_CARD_REPAIRS } from "../shared/ufc-repairs.js";
+import { computeProfileAnalytics } from "./profile-stats.js";
 
 const DISPLAY_TIME_ZONE = "America/New_York";
 const TIME_ZONE_LABEL = "ET";
@@ -904,7 +905,7 @@ async function repairKnownUfcCardsInFirestore() {
           fightResults,
           externalIds,
           expectedMainCardCount: repair.minimumFightCount,
-          ufcCardRepairVersion: "v10.80",
+          ufcCardRepairVersion: "v10.81",
           ufcCardRepairAppliedAt: serverTimestamp(),
           updatedAt: serverTimestamp()
         }, { merge: true });
@@ -915,7 +916,7 @@ async function repairKnownUfcCardsInFirestore() {
           fightResults,
           externalIds,
           expectedMainCardCount: repair.minimumFightCount,
-          ufcCardRepairVersion: "v10.80",
+          ufcCardRepairVersion: "v10.81",
           firestoreId: docId
         };
         repaired += 1;
@@ -2695,11 +2696,96 @@ function renderProfile() {
   `;
 }
 
+
+function renderSplitRows(rows, emptyText, options = {}) {
+  const limit = options.limit || 6;
+  const labelFormatter = options.labelFormatter || (row => row.name);
+  const visible = rows.slice(0, limit);
+  if (!visible.length) return `<div class="record">${escapeHtml(emptyText)}</div>`;
+
+  return visible.map(row => {
+    const winRate = row.winRate === null ? "N/A" : `${row.winRate}%`;
+    const record = `${row.wins}-${row.losses}${row.voids ? ` · ${row.voids} void` : ""}`;
+    return `
+      <div class="record profile-stat-record">
+        <strong>${escapeHtml(labelFormatter(row))}</strong><br>
+        <span class="muted small">${escapeHtml(record)} · Win rate: ${escapeHtml(winRate)} · Net: ${money(row.net)} · Risked: ${money(row.amountRisked)}</span>
+      </div>
+    `;
+  }).join("");
+}
+
+function renderOddsPerformancePanel(analytics) {
+  const odds = analytics.odds;
+  const hasOdds = odds.count > 0;
+  return `
+    <div class="panel profile-stat-panel">
+      <h3>Odds-based performance</h3>
+      <div class="stat-list">
+        <div class="stat-line"><span>Settled decisions with odds</span><strong>${odds.count}</strong></div>
+        <div class="stat-line"><span>Odds-tagged win rate</span><strong>${hasOdds ? `${odds.winRate}% (${odds.wins}-${odds.losses})` : "N/A"}</strong></div>
+        <div class="stat-line"><span>Net on odds-tagged bets</span><strong>${money(odds.net)}</strong></div>
+        <div class="stat-line"><span>Settled decisions missing odds</span><strong>${Math.max(0, odds.missing)}</strong></div>
+      </div>
+      <p class="footer-note small">${hasOdds ? "Uses settled bets whose event or bet record contains non-placeholder odds." : "No settled decisions have reliable odds attached yet, but regular win/loss and sport stats are active."}</p>
+    </div>
+  `;
+}
+
+function renderSportAndLeagueSplitPanel(analytics) {
+  return `
+    <div class="panel profile-stat-panel">
+      <h3>Sport and league splits</h3>
+      <div class="history-list">
+        <div class="record profile-stat-subhead"><strong>By sport</strong></div>
+        ${renderSplitRows(analytics.sportSplits, "No settled sport results yet.", { labelFormatter: row => label(row.name) })}
+        <div class="record profile-stat-subhead"><strong>By league</strong></div>
+        ${renderSplitRows(analytics.leagueSplits, "No settled league results yet.")}
+      </div>
+    </div>
+  `;
+}
+
+function renderPickSplitPanel(analytics) {
+  return `
+    <div class="panel profile-stat-panel">
+      <h3>Pick splits</h3>
+      <div class="history-list">
+        ${renderSplitRows(analytics.pickSplits, "No settled pick results yet.", { limit: 8 })}
+      </div>
+      <p class="footer-note small">Pick rows are built from settled matches, linked bet records, and event results, including individual UFC fights.</p>
+    </div>
+  `;
+}
+
+function renderRecentDecisionPanel(analytics) {
+  return `
+    <div class="panel profile-stat-panel">
+      <h3>Recent settled decisions</h3>
+      <div class="history-list">
+        ${analytics.recentDecisions.length ? analytics.recentDecisions.map(decision => `
+          <div class="record">
+            <strong>${escapeHtml(decision.result === "win" ? `Won ${money(decision.ledgerAmount)}` : decision.result === "loss" ? `Lost ${money(decision.ledgerAmount)}` : "Voided")}</strong><br>
+            <span class="muted small">${escapeHtml(decision.eventTitle)} · ${escapeHtml(decision.pick)} · ${escapeHtml(decision.league)}</span>
+          </div>
+        `).join("") : `<div class="record">No settled decisions yet.</div>`}
+      </div>
+    </div>
+  `;
+}
+
 function renderStats() {
   const user = currentUser();
   if (!user) return `<div class="panel empty-state">Log in to see your stats.</div>`;
 
   const stats = getUserStats(user.id);
+  const analytics = computeProfileAnalytics({
+    userId: user.id,
+    events: state.events,
+    bets: state.bets,
+    matches: state.matches,
+    ledgerEntries: state.ledgerEntries
+  });
   const opponentRows = Object.entries(
     stats.ledger.reduce((acc, entry) => {
       const otherId = entry.toUser === user.id ? entry.fromUser : entry.toUser;
@@ -2720,10 +2806,14 @@ function renderStats() {
       <div class="panel">
         <h3>Core stats</h3>
         <div class="stat-list">
-          <div class="stat-line"><span>Net profit</span><strong>${money(stats.net)}</strong></div>
-          <div class="stat-line"><span>Gross won</span><strong>${money(stats.grossWon)}</strong></div>
-          <div class="stat-line"><span>Gross lost</span><strong>${money(stats.grossLost)}</strong></div>
-          <div class="stat-line"><span>Win rate by ledger item</span><strong>${stats.winRate}%</strong></div>
+          <div class="stat-line"><span>Net profit</span><strong>${money(analytics.totals.net)}</strong></div>
+          <div class="stat-line"><span>Gross won</span><strong>${money(analytics.totals.grossWon)}</strong></div>
+          <div class="stat-line"><span>Gross lost</span><strong>${money(analytics.totals.grossLost)}</strong></div>
+          <div class="stat-line"><span>Win rate</span><strong>${analytics.totals.decisions ? `${analytics.totals.winRate}% (${analytics.totals.wins}-${analytics.totals.losses})` : "N/A"}</strong></div>
+          <div class="stat-line"><span>Settled decisions</span><strong>${analytics.totals.decisions}</strong></div>
+          <div class="stat-line"><span>Voids / pushes</span><strong>${analytics.totals.voids}</strong></div>
+          <div class="stat-line"><span>Total risked</span><strong>${money(analytics.totals.amountRisked)}</strong></div>
+          <div class="stat-line"><span>Average stake</span><strong>${money(analytics.totals.averageStake)}</strong></div>
         </div>
       </div>
 
@@ -2732,7 +2822,7 @@ function renderStats() {
         <div class="stat-list">
           ${stats.buckets.map(bucket => `<div class="stat-line"><span>${escapeHtml(bucket.name)}</span><strong>${bucket.count ? `${bucket.winRate}% (${bucket.count})` : "N/A"}</strong></div>`).join("")}
         </div>
-        <p class="footer-note small">Odds-percentage stats will appear once real odds data is attached to bets.</p>
+        <p class="footer-note small">Amount buckets use settled ledger rows so they stay aligned with the leaderboard.</p>
       </div>
 
       <div class="panel">
@@ -2742,17 +2832,10 @@ function renderStats() {
         </div>
       </div>
 
-      <div class="panel">
-        <h3>Planned stats</h3>
-        <div class="record">
-          <strong>Odds-based performance</strong><br>
-          <span class="muted small">This will populate after more settled bets have reliable odds attached.</span>
-        </div>
-        <div class="record">
-          <strong>Sport and pick splits</strong><br>
-          <span class="muted small">This will populate after more settled events accumulate across sports/leagues.</span>
-        </div>
-      </div>
+      ${renderOddsPerformancePanel(analytics)}
+      ${renderSportAndLeagueSplitPanel(analytics)}
+      ${renderPickSplitPanel(analytics)}
+      ${renderRecentDecisionPanel(analytics)}
     </div>
   `;
 }
