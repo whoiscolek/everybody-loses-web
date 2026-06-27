@@ -93,3 +93,73 @@ test("profile analytics reports odds-tagged performance without blocking other s
   assert.equal(stats.odds.winRate, 100);
   assert.equal(stats.odds.missing, 2);
 });
+
+test("profile analytics preserves sport and league from archived ledger snapshots after event cleanup", () => {
+  const stats = computeProfileAnalytics({
+    userId: "cole",
+    events: {},
+    bets: {},
+    matches: {},
+    ledgerEntries: {
+      archived: {
+        id: "archived",
+        eventId: "401705278",
+        matchId: "old-nba-match",
+        fromUser: "jamie",
+        toUser: "cole",
+        amount: 5,
+        originalAmount: 5,
+        eventTitle: "Minnesota Timberwolves at Oklahoma City Thunder",
+        eventSport: "basketball",
+        eventLeague: "NBA",
+        eventSnapshot: {
+          title: "Minnesota Timberwolves at Oklahoma City Thunder",
+          sport: "basketball",
+          league: "NBA",
+          shortCode: "NBA0528-1"
+        }
+      }
+    }
+  });
+
+  assert.equal(stats.sportSplits.find(row => row.name === "basketball")?.wins, 1);
+  assert.equal(stats.leagueSplits.find(row => row.name === "NBA")?.wins, 1);
+  assert.equal(stats.sportSplits.some(row => row.name === "Unknown sport"), false);
+  assert.equal(stats.leagueSplits.some(row => row.name === "Unknown league"), false);
+});
+
+test("profile analytics infers legacy NBA ledger rows from event IDs and team text", () => {
+  const stats = computeProfileAnalytics({
+    userId: "cole",
+    events: {},
+    bets: {},
+    matches: {},
+    ledgerEntries: {
+      idPrefix: {
+        id: "idPrefix",
+        eventId: "NBA-2026-06-19-OKC-IND-401769842",
+        fromUser: "jamie",
+        toUser: "cole",
+        amount: 4,
+        note: "Auto-settled: Oklahoma City Thunder at Indiana Pacers"
+      },
+      shortCodePrefix: {
+        id: "shortCodePrefix",
+        eventId: "NBA0619-1",
+        fromUser: "cole",
+        toUser: "jamie",
+        amount: 2,
+        note: "Auto-settled: New York Knicks at Boston Celtics"
+      }
+    }
+  });
+
+  const basketball = stats.sportSplits.find(row => row.name === "basketball");
+  const nba = stats.leagueSplits.find(row => row.name === "NBA");
+  assert.equal(basketball.wins, 1);
+  assert.equal(basketball.losses, 1);
+  assert.equal(nba.wins, 1);
+  assert.equal(nba.losses, 1);
+  assert.equal(stats.sportSplits.some(row => row.name === "Unknown sport"), false);
+  assert.equal(stats.leagueSplits.some(row => row.name === "Unknown league"), false);
+});

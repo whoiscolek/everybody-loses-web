@@ -486,7 +486,39 @@ async function acquireLease(db, FieldValue, requestedMode) {
   });
 }
 
-export async function cleanupHistory(db, FieldValue, events, bets, matches) {
+
+function teamNameForSnapshot(event = {}, side) {
+  const team = event[side] || {};
+  return team.name || team.displayName || team.shortDisplayName || team.code || team.abbreviation || (side === "away" ? "Away" : "Home");
+}
+
+function eventTitleForSnapshot(event = {}, eventId = "") {
+  if (event.type === EVENT_TYPES.TEAM || (event.away && event.home)) {
+    const separator = event.sport === "soccer" ? "vs" : "at";
+    return `${teamNameForSnapshot(event, "away")} ${separator} ${teamNameForSnapshot(event, "home")}`;
+  }
+  return event.title || event.shortCode || event.id || eventId || "Unknown event";
+}
+
+function eventSnapshotForLedger(event = {}, eventId = "") {
+  const id = event.firestoreId || event.id || eventId || "";
+  return {
+    id,
+    firestoreId: event.firestoreId || "",
+    eventId: id,
+    shortCode: event.shortCode || "",
+    title: eventTitleForSnapshot(event, id),
+    sport: event.sport || "",
+    league: event.league || "",
+    type: event.type || "",
+    startTime: event.startTime || "",
+    away: event.away ? { name: event.away.name || event.away.displayName || "", code: event.away.code || event.away.abbreviation || "" } : null,
+    home: event.home ? { name: event.home.name || event.home.displayName || "", code: event.home.code || event.home.abbreviation || "" } : null,
+    externalIds: event.externalIds || null
+  };
+}
+
+export async function cleanupHistory(db, FieldValue, events, bets, matches, ledgerEntries = []) {
   const retentionDays = Number(process.env.HISTORY_RETENTION_DAYS || 0);
   if (!Number.isFinite(retentionDays) || retentionDays <= 0) return 0;
   const retentionMs = retentionDays * 24 * 60 * 60 * 1000;
@@ -497,6 +529,19 @@ export async function cleanupHistory(db, FieldValue, events, bets, matches) {
     const eventMatches = matches.filter(m => recordBelongs(m, event));
     if (eventMatches.some(m => !["settled", "void", "cancelled"].includes(m.status))) continue;
     const batch = db.batch();
+    for (const entry of ledgerEntries.filter(row => recordBelongs(row, event))) {
+      const id = entry.firestoreId || entry.id;
+      if (id) {
+        batch.set(db.collection("ledgerEntries").doc(id), {
+          eventTitle: eventTitleForSnapshot(event, eventId),
+          eventSport: event.sport || "",
+          eventLeague: event.league || "",
+          eventShortCode: event.shortCode || "",
+          eventSnapshot: eventSnapshotForLedger(event, eventId),
+          updatedAt: FieldValue.serverTimestamp()
+        }, { merge: true });
+      }
+    }
     for (const bet of bets.filter(b => recordBelongs(b, event))) {
       const id = bet.firestoreId || bet.id;
       if (id) batch.delete(db.collection("bets").doc(id));
@@ -695,7 +740,7 @@ async function runMaintenance(req, mode, services = null) {
     const freshLedger = toRows(freshLedgerSnap);
     const postSettlement = await settleFinalEvents(db, FieldValue, events, freshBets, freshMatches, freshLedger);
     const settlement = mergeSettlementSummaries(preSettlement, postSettlement);
-    const historyRemoved = await cleanupHistory(db, FieldValue, events, freshBets, freshMatches);
+    const historyRemoved = await cleanupHistory(db, FieldValue, events, freshBets, freshMatches, freshLedger);
     const summary = {
       version: MAINTENANCE_VERSION,
       runtime: process.version,

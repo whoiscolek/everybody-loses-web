@@ -72,3 +72,46 @@ test("history cleanup only runs when an administrator explicitly configures rete
     else process.env.HISTORY_RETENTION_DAYS = previous;
   }
 });
+
+test("history cleanup stamps surviving ledger rows with event identity before deleting event docs", async () => {
+  const previous = process.env.HISTORY_RETENTION_DAYS;
+  process.env.HISTORY_RETENTION_DAYS = "5";
+  try {
+    const db = new FakeFirestore({
+      events: { old: { status: "final" } },
+      bets: { bet: { eventId: "old" } },
+      matches: { match: { eventId: "old", status: "settled" } },
+      ledgerEntries: { ledger: { eventId: "old", fromUser: "jamie", toUser: "cole", amount: 5 } }
+    });
+    const removed = await cleanupHistory(
+      db,
+      FakeFieldValue,
+      [{
+        firestoreId: "old",
+        id: "old",
+        status: "final",
+        startTime: "2020-01-01T00:00:00Z",
+        type: "TEAM_HEAD_TO_HEAD",
+        sport: "basketball",
+        league: "NBA",
+        shortCode: "NBA0601-1",
+        away: { name: "Boston Celtics", code: "BOS" },
+        home: { name: "New York Knicks", code: "NYK" }
+      }],
+      [{ firestoreId: "bet", eventId: "old" }],
+      [{ firestoreId: "match", eventId: "old", status: "settled" }],
+      [{ firestoreId: "ledger", eventId: "old", fromUser: "jamie", toUser: "cole", amount: 5 }]
+    );
+
+    assert.equal(removed, 1);
+    assert.equal(db.get("events", "old"), undefined);
+    const ledger = db.get("ledgerEntries", "ledger");
+    assert.equal(ledger.eventSport, "basketball");
+    assert.equal(ledger.eventLeague, "NBA");
+    assert.equal(ledger.eventShortCode, "NBA0601-1");
+    assert.equal(ledger.eventSnapshot.title, "Boston Celtics at New York Knicks");
+  } finally {
+    if (previous === undefined) delete process.env.HISTORY_RETENTION_DAYS;
+    else process.env.HISTORY_RETENTION_DAYS = previous;
+  }
+});

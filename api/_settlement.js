@@ -7,6 +7,45 @@ import {
   ufcFightHasResult
 } from "./_event-utils.js";
 
+
+function teamName(event = {}, side) {
+  const team = event[side] || {};
+  return team.name || team.displayName || team.shortDisplayName || team.code || team.abbreviation || (side === "away" ? "Away" : "Home");
+}
+
+function eventTitle(event = {}, eventId = "") {
+  if (event.type === EVENT_TYPES.TEAM || (event.away && event.home)) {
+    const separator = event.sport === "soccer" ? "vs" : "at";
+    return `${teamName(event, "away")} ${separator} ${teamName(event, "home")}`;
+  }
+  return event.title || event.shortCode || event.id || eventId || "Unknown event";
+}
+
+function eventLedgerFields(event = {}, eventId = "") {
+  const id = event.firestoreId || event.id || eventId || "";
+  const title = eventTitle(event, id);
+  return {
+    eventTitle: title,
+    eventSport: event.sport || "",
+    eventLeague: event.league || "",
+    eventShortCode: event.shortCode || "",
+    eventSnapshot: {
+      id,
+      firestoreId: event.firestoreId || "",
+      eventId: id,
+      shortCode: event.shortCode || "",
+      title,
+      sport: event.sport || "",
+      league: event.league || "",
+      type: event.type || "",
+      startTime: event.startTime || "",
+      away: event.away ? { name: event.away.name || event.away.displayName || "", code: event.away.code || event.away.abbreviation || "" } : null,
+      home: event.home ? { name: event.home.name || event.home.displayName || "", code: event.home.code || event.home.abbreviation || "" } : null,
+      externalIds: event.externalIds || null
+    }
+  };
+}
+
 function effectiveAmount(match = {}, betA = null, betB = null) {
   const doubled = Boolean(match.doubleUp?.applied || match.doubledUp);
   const explicitDouble = Number(match.doubleUpAmount || match.doubledAmount);
@@ -339,7 +378,8 @@ export async function settleFinalEvents(db, FieldValue, events, bets, matches, l
           amount,
           originalAmount: Number(match.doubleUp?.originalAmount || match.amount || amount),
           doubledUp: Boolean(match.doubleUp?.applied || match.doubledUp),
-          note: `Auto-settled: ${event.title || eventId}${match.doubleUp?.applied || match.doubledUp ? " · doubled up" : ""}`,
+          note: `Auto-settled: ${eventTitle(event, eventId)}${match.doubleUp?.applied || match.doubledUp ? " · doubled up" : ""}`,
+          ...eventLedgerFields(event, eventId),
           settled: Boolean(existingLedger?.settled || false),
           createdAt: existingLedger?.createdAt || FieldValue.serverTimestamp(),
           updatedAt: FieldValue.serverTimestamp()
@@ -497,7 +537,8 @@ export async function settleFinalEvents(db, FieldValue, events, bets, matches, l
           amount,
           originalAmount: Number(match.doubleUp?.originalAmount || match.amount || amount),
           doubledUp: Boolean(match.doubleUp?.applied || match.doubledUp),
-          note: `UFC settled: ${event.title || eventId} · ${fight.label || match.fightId}`,
+          note: `UFC settled: ${eventTitle(event, eventId)} · ${fight.label || match.fightId}`,
+          ...eventLedgerFields(event, eventId),
           settled: Boolean(existingLedger?.settled || false),
           createdAt: existingLedger?.createdAt || FieldValue.serverTimestamp(),
           updatedAt: FieldValue.serverTimestamp()
@@ -550,7 +591,8 @@ export async function settleFinalEvents(db, FieldValue, events, bets, matches, l
             fromUser: loser,
             toUser: winner,
             amount,
-            note: `Ranked finish: ${event.title || eventId}`,
+            note: `Ranked finish: ${eventTitle(event, eventId)}`,
+            ...eventLedgerFields(event, eventId),
             settled: false,
             createdAt: FieldValue.serverTimestamp(),
             updatedAt: FieldValue.serverTimestamp()

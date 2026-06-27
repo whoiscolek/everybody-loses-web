@@ -905,7 +905,7 @@ async function repairKnownUfcCardsInFirestore() {
           fightResults,
           externalIds,
           expectedMainCardCount: repair.minimumFightCount,
-          ufcCardRepairVersion: "v10.81",
+          ufcCardRepairVersion: "v10.82",
           ufcCardRepairAppliedAt: serverTimestamp(),
           updatedAt: serverTimestamp()
         }, { merge: true });
@@ -916,7 +916,7 @@ async function repairKnownUfcCardsInFirestore() {
           fightResults,
           externalIds,
           expectedMainCardCount: repair.minimumFightCount,
-          ufcCardRepairVersion: "v10.81",
+          ufcCardRepairVersion: "v10.82",
           firestoreId: docId
         };
         repaired += 1;
@@ -1084,6 +1084,26 @@ function eventDisplayTitle(event) {
   if (event?.type !== EVENT_TYPES.TEAM) return event?.title || event?.id || "Event";
   const separator = event?.sport === "soccer" ? "vs" : "at";
   return `${teamDisplayName(event, "away")} ${separator} ${teamDisplayName(event, "home")}`;
+}
+
+
+function ledgerEventSnapshot(event = {}, eventId = "") {
+  const id = event.firestoreId || event.id || eventId || "";
+  const title = eventDisplayTitle(event) || event.title || id || "Unknown event";
+  return removeUndefinedDeep({
+    id,
+    firestoreId: event.firestoreId,
+    eventId: id,
+    shortCode: event.shortCode,
+    title,
+    sport: event.sport,
+    league: event.league,
+    type: event.type,
+    startTime: event.startTime,
+    away: event.away ? { name: event.away.name, code: event.away.code } : null,
+    home: event.home ? { name: event.home.name, code: event.home.code } : null,
+    externalIds: event.externalIds
+  });
 }
 
 function userName(id) {
@@ -4330,6 +4350,11 @@ async function settleTeamEvent(event, options = {}) {
       originalAmount: Number(match.doubleUp?.originalAmount || match.exposure || amount),
       doubledUp: matchIsDoubled(match),
       note: `Auto-settled: ${eventDisplayTitle(event)}${matchIsDoubled(match) ? " · doubled up" : ""}`,
+      eventTitle: eventDisplayTitle(event),
+      eventSport: event.sport || "",
+      eventLeague: event.league || "",
+      eventShortCode: event.shortCode || "",
+      eventSnapshot: ledgerEventSnapshot(event, eventId),
       settled: Boolean(existingLedger?.settled || false),
       createdAt: existingLedger?.createdAt || localNow,
       updatedAt: localNow
@@ -4470,6 +4495,11 @@ async function settleRankedEvent(event, options = {}) {
         toUser: winner,
         amount: exposure,
         note: `Ranked finish: ${event.title}`,
+        eventTitle: event.title || eventDisplayTitle(event),
+        eventSport: event.sport || "",
+        eventLeague: event.league || "",
+        eventShortCode: event.shortCode || "",
+        eventSnapshot: ledgerEventSnapshot(event, event.id),
         settled: false,
         createdAt: serverTimestamp(),
         updatedAt: serverTimestamp()
@@ -4546,6 +4576,11 @@ async function settleFightCardEvent(event, options = {}) {
       originalAmount: Number(match.doubleUp?.originalAmount || match.amount || amount),
       doubledUp: matchIsDoubled(match),
       note: `UFC settled: ${event.title} · ${fight.label}${matchIsDoubled(match) ? " · doubled up" : ""}`,
+      eventTitle: event.title || eventDisplayTitle(event),
+      eventSport: event.sport || "",
+      eventLeague: event.league || "",
+      eventShortCode: event.shortCode || "",
+      eventSnapshot: ledgerEventSnapshot(event, eventId),
       settled: Boolean(existingLedger?.settled || false),
       createdAt: existingLedger?.createdAt || serverTimestamp(),
       updatedAt: serverTimestamp()
@@ -6435,7 +6470,8 @@ async function manualLedgerAdd() {
   if (!isAdmin()) return;
 
   const manualInput = document.querySelector("#manualEventId")?.value.trim() || "MANUAL";
-  const eventId = findEventByIdOrCode(manualInput)?.id || manualInput;
+  const manualEvent = findEventByIdOrCode(manualInput);
+  const eventId = manualEvent?.id || manualInput;
   const fromUser = document.querySelector("#manualFrom")?.value;
   const toUser = document.querySelector("#manualTo")?.value;
   const amount = Number(document.querySelector("#manualAmount")?.value);
@@ -6449,6 +6485,11 @@ async function manualLedgerAdd() {
     toUser,
     amount,
     note: `Admin manual ledger: ${note}`,
+    eventTitle: manualEvent ? eventDisplayTitle(manualEvent) : manualInput,
+    eventSport: manualEvent?.sport || "",
+    eventLeague: manualEvent?.league || "",
+    eventShortCode: manualEvent?.shortCode || "",
+    eventSnapshot: manualEvent ? ledgerEventSnapshot(manualEvent, eventId) : null,
     settled: false,
     createdAt: serverTimestamp(),
     updatedAt: serverTimestamp()
