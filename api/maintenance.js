@@ -561,6 +561,58 @@ export async function expireStaleOpenBets(db, FieldValue, events, bets, now = Da
   return stale.length;
 }
 
+function ledgerEntryHasSettledFlag(entry = {}) {
+  const status = String(entry.status || "").toLowerCase();
+  return entry.settled === true
+    || entry.settled === "true"
+    || status === "settled"
+    || Boolean(entry.settlementId);
+}
+
+function usersMatchSettlement(entry = {}, settlement = {}) {
+  return (entry.fromUser === settlement.fromUser && entry.toUser === settlement.toUser)
+    || (entry.fromUser === settlement.toUser && entry.toUser === settlement.fromUser);
+}
+
+function settlementCoversLedgerEntry(entry = {}, settlement = {}) {
+  if (!usersMatchSettlement(entry, settlement)) return false;
+  const settlementTime = dateMs(settlement.createdAt) || dateMs(settlement.updatedAt) || dateMs(settlement.settledAt);
+  if (!settlementTime) return false;
+  const entryTime = dateMs(entry.createdAt) || dateMs(entry.updatedAt);
+  return !entryTime || entryTime <= settlementTime + 2000;
+}
+
+export async function reconcileSettledLedgerRows(db, FieldValue, ledgerEntries = [], settlements = []) {
+  const repairs = [];
+  for (const entry of ledgerEntries) {
+    const id = entry.firestoreId || entry.id;
+    if (!id || ledgerEntryHasSettledFlag(entry)) continue;
+    const covering = settlements
+      .filter(settlement => settlementCoversLedgerEntry(entry, settlement))
+      .sort((a, b) => (dateMs(b.createdAt) || dateMs(b.updatedAt) || 0) - (dateMs(a.createdAt) || dateMs(a.updatedAt) || 0))[0];
+    if (!covering) continue;
+    repairs.push({ entry, settlement: covering });
+  }
+
+  if (!repairs.length) return 0;
+  let repaired = 0;
+  for (let i = 0; i < repairs.length; i += 450) {
+    const batch = db.batch();
+    for (const { entry, settlement } of repairs.slice(i, i + 450)) {
+      batch.set(db.collection("ledgerEntries").doc(entry.firestoreId || entry.id), {
+        settled: true,
+        settlementId: settlement.firestoreId || settlement.id || entry.settlementId || null,
+        settledAt: settlement.createdAt || settlement.updatedAt || FieldValue.serverTimestamp(),
+        settlementRepairReason: "Reconciled by maintenance because an existing settle-up covered this older open ledger row.",
+        updatedAt: FieldValue.serverTimestamp()
+      }, { merge: true });
+      repaired += 1;
+    }
+    await batch.commit();
+  }
+  return repaired;
+}
+
 export async function cleanupHistory(db, FieldValue, events, bets, matches, ledgerEntries = []) {
   const retentionDays = Number(process.env.HISTORY_RETENTION_DAYS || 0);
   if (!Number.isFinite(retentionDays) || retentionDays <= 0) return 0;
@@ -627,17 +679,19 @@ async function runMaintenance(req, mode, services = null) {
   const origin = mode === "settle" ? "" : inferOrigin(req);
   const errors = [];
   try {
-    const [eventsSnap, betsSnap, matchesSnap, ledgerSnap] = await Promise.all([
+    const [eventsSnap, betsSnap, matchesSnap, ledgerSnap, settlementsSnap] = await Promise.all([
       db.collection("events").get(),
       db.collection("bets").get(),
       db.collection("matches").get(),
-      db.collection("ledgerEntries").get()
+      db.collection("ledgerEntries").get(),
+      db.collection("settlements").get()
     ]);
     const toRows = snap => snap.docs.map(doc => ({ firestoreId: doc.id, ...doc.data() }));
     let events = toRows(eventsSnap);
     const bets = toRows(betsSnap);
     const matches = toRows(matchesSnap);
     const ledgerEntries = toRows(ledgerSnap);
+    const settlements = toRows(settlementsSnap);
 
     // Settle already-final events before any network discovery. This guarantees
     // ledger work is not starved when a long source sweep approaches the
@@ -783,6 +837,7 @@ async function runMaintenance(req, mode, services = null) {
     const freshLedger = toRows(freshLedgerSnap);
     const postSettlement = await settleFinalEvents(db, FieldValue, events, freshBets, freshMatches, freshLedger);
     const staleOpenBetsExpired = await expireStaleOpenBets(db, FieldValue, events, freshBets);
+    const ledgerSettlementRepairs = await reconcileSettledLedgerRows(db, FieldValue, freshLedger, settlements);
     const settlement = mergeSettlementSummaries(preSettlement, postSettlement);
     const historyRemoved = await cleanupHistory(db, FieldValue, events, freshBets, freshMatches, freshLedger);
     const summary = {
@@ -799,6 +854,7 @@ async function runMaintenance(req, mode, services = null) {
       archivedStale: events.filter(e => e.boardState === "archived" && e.status !== "final").length,
       settlement,
       staleOpenBetsExpired,
+      ledgerSettlementRepairs,
       historyRemoved,
       errors: errors.slice(0, 20),
       sourceSummary: sourceSummary.slice(0, 100)

@@ -60,7 +60,7 @@ test("repair endpoint creates a complete team match when both users have no exis
 
   assert.equal(res.statusCode, 200);
   assert.equal(res.parsed().ok, true);
-  assert.equal(res.parsed().version, "10.83");
+  assert.equal(res.parsed().version, "10.84");
   assert.equal(db.entries("bets").length, 2);
   assert.equal(db.entries("matches").length, 1);
 

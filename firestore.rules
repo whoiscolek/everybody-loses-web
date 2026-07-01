@@ -18,6 +18,14 @@ service cloud.firestore {
       return signedIn() && userDoc().data.isAdmin == true && userDoc().data.approved == true;
     }
 
+    function preservesProtectedAdmin() {
+      return resource.data.protectedAdmin != true || (
+        request.resource.data.isAdmin == true
+        && request.resource.data.approved == true
+        && request.resource.data.protectedAdmin == true
+      );
+    }
+
     match /users/{userId} {
       allow read: if signedIn();
 
@@ -32,7 +40,7 @@ service cloud.firestore {
 
       // Users may edit profile presentation/preferences only. They cannot
       // promote or approve themselves by writing directly to Firestore.
-      allow update: if admin() || (
+      allow update: if (admin() && preservesProtectedAdmin()) || (
         signedIn()
         && request.auth.uid == userId
         && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
@@ -44,7 +52,7 @@ service cloud.firestore {
           "updatedAt"
         ])
       );
-      allow delete: if admin();
+      allow delete: if admin() && resource.data.protectedAdmin != true;
     }
 
     match /events/{eventId} {

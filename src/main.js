@@ -1045,6 +1045,23 @@ function isAdmin() {
   return Boolean(user?.approved && user?.isAdmin);
 }
 
+function isProtectedAdminUser(user = {}) {
+  return Boolean(user?.approved && user?.isAdmin && user?.protectedAdmin === true);
+}
+
+async function ensureCurrentAdminProtected() {
+  const user = currentUser();
+  if (!user?.id || !user.approved || !user.isAdmin || user.protectedAdmin === true) return;
+  try {
+    await updateDoc(doc(db, "users", user.id), {
+      protectedAdmin: true,
+      updatedAt: serverTimestamp()
+    });
+  } catch (error) {
+    console.warn("Could not protect current admin account", error);
+  }
+}
+
 function canBet() {
   const user = currentUser();
   return Boolean(user?.approved);
@@ -1632,8 +1649,9 @@ function captureTransientUiState() {
   };
 }
 
-function restoreTransientUiState(snapshot) {
+function restoreTransientUiState(snapshot, options = {}) {
   if (!snapshot) return;
+  const { restoreScroll = true } = options;
 
   Object.entries(snapshot.fields || {}).forEach(([id, saved]) => {
     const field = document.getElementById(id);
@@ -1661,7 +1679,9 @@ function restoreTransientUiState(snapshot) {
     }
   }
 
-  requestAnimationFrame(() => window.scrollTo(snapshot.pageX, snapshot.pageY));
+  if (restoreScroll) {
+    requestAnimationFrame(() => window.scrollTo(snapshot.pageX, snapshot.pageY));
+  }
 }
 
 function renderApp() {
@@ -1676,7 +1696,10 @@ function renderApp() {
     </main>
   `;
   wireUi();
-  restoreTransientUiState(transientUi);
+  if (isAdmin()) ensureCurrentAdminProtected();
+  restoreTransientUiState(transientUi, {
+    restoreScroll: !approvedLiveRefreshRunning && !autoMaintenanceRunning && !apiSyncRunning
+  });
   keepActiveNavVisible();
   maybeStartAutoMaintenance();
   maybeStartSettlementMaintenance();
@@ -1752,7 +1775,7 @@ function renderAuthArea() {
           ${renderAvatar(user)}
           <div class="profile-meta">
             <strong>${escapeHtml(user.displayName)}</strong>
-            <span class="tiny muted">${escapeHtml(user.email)} · ${user.approved ? "Approved" : "Pending"}${user.isAdmin ? " · Admin" : ""}</span>
+            <span class="tiny muted">${escapeHtml(user.email)} · ${user.approved ? "Approved" : "Pending"}${isProtectedAdminUser(user) ? " · Protected Admin" : user.isAdmin ? " · Admin" : ""}</span>
           </div>
         </div>
         <button class="ghost" data-action="logout">Log out</button>
@@ -2460,9 +2483,33 @@ function dollars(valueInCents) {
   return Math.round(Number(valueInCents || 0)) / 100;
 }
 
+function ledgerEntryHasSettledFlag(entry = {}) {
+  const status = String(entry.status || "").toLowerCase();
+  return entry.settled === true
+    || entry.settled === "true"
+    || status === "settled"
+    || Boolean(entry.settlementId);
+}
+
+function usersMatchSettlement(entry = {}, settlement = {}) {
+  return (entry.fromUser === settlement.fromUser && entry.toUser === settlement.toUser)
+    || (entry.fromUser === settlement.toUser && entry.toUser === settlement.fromUser);
+}
+
+function settlementCoversLedgerEntry(entry = {}) {
+  if (ledgerEntryHasSettledFlag(entry)) return true;
+  const entryTime = toDateValue(entry.createdAt) || toDateValue(entry.updatedAt);
+  return Object.values(state.settlements || {}).some(settlement => {
+    if (!usersMatchSettlement(entry, settlement)) return false;
+    const settlementTime = toDateValue(settlement.createdAt) || toDateValue(settlement.updatedAt) || toDateValue(settlement.settledAt);
+    if (!settlementTime) return false;
+    return !entryTime || entryTime <= settlementTime + 2000;
+  });
+}
+
 function openLedgerBetweenUsers(userId, otherUserId) {
   return Object.values(state.ledgerEntries || {})
-    .filter(entry => !entry.settled)
+    .filter(entry => !settlementCoversLedgerEntry(entry))
     .filter(entry =>
       (entry.fromUser === userId && entry.toUser === otherUserId)
       || (entry.fromUser === otherUserId && entry.toUser === userId)
@@ -2480,7 +2527,7 @@ function balanceCentsForCounterparty(userId, otherUserId) {
 function getBalancesByCounterparty(userId) {
   const balances = {};
   for (const entry of Object.values(state.ledgerEntries)) {
-    if (entry.settled) continue;
+    if (settlementCoversLedgerEntry(entry)) continue;
     if (entry.toUser === userId) balances[entry.fromUser] = dollars(cents(balances[entry.fromUser]) + cents(entry.amount));
     if (entry.fromUser === userId) balances[entry.toUser] = dollars(cents(balances[entry.toUser]) - cents(entry.amount));
   }
@@ -3020,11 +3067,11 @@ function renderAdminUserManagement() {
           ${renderAvatar(user)}
           <div>
             <strong>${escapeHtml(user.displayName || "Unnamed user")}</strong><br>
-            <span class="muted small">${escapeHtml(user.email || "No email")} · ${user.approved ? "Approved" : "Pending"}${user.isAdmin ? " · Admin" : ""}</span><br>
+            <span class="muted small">${escapeHtml(user.email || "No email")} · ${user.approved ? "Approved" : "Pending"}${isProtectedAdminUser(user) ? " · Protected Admin" : user.isAdmin ? " · Admin" : ""}</span><br>
             <span class="muted tiny">${betCount} bets · ${matchCount} matches · ${ledgerCount} ledger · ${settlementCount} settlements</span>
           </div>
         </div>
-        <button class="danger" data-delete-user="${escapeHtml(id)}" ${isSelf ? "disabled" : ""}>Delete profile</button>
+        <button class="danger" data-delete-user="${escapeHtml(id)}" ${isSelf || isProtectedAdminUser(user) ? "disabled" : ""}>Delete profile</button>
       </div>
     `;
   }).join("");
@@ -3042,7 +3089,7 @@ function renderAdminPrivilegeManager() {
     <select id="adminPrivilegeUser">
       ${users.map(user => {
         const id = user.firestoreId || user.id;
-        const role = user.isAdmin ? "Admin" : user.approved ? "Approved user" : "Pending user";
+        const role = isProtectedAdminUser(user) ? "Protected admin" : user.isAdmin ? "Admin" : user.approved ? "Approved user" : "Pending user";
         return `<option value="${escapeHtml(id)}">${escapeHtml(user.displayName || user.email || id)} · ${escapeHtml(role)}</option>`;
       }).join("")}
     </select>
@@ -3050,7 +3097,7 @@ function renderAdminPrivilegeManager() {
       <button class="primary" data-action="grant-admin">Grant admin</button>
       <button class="ghost" data-action="revoke-admin">Revoke admin</button>
     </div>
-    <p class="footer-note small">Granting admin also approves the user. Revoking admin keeps the user approved. You cannot revoke admin from your own active account here.</p>
+    <p class="footer-note small">Granting admin also approves the user. Your active admin account is automatically protected, and protected admins cannot be revoked or deleted here.</p>
   `;
 }
 
@@ -3663,7 +3710,9 @@ async function setUserAdminPrivilege(makeAdmin) {
   if (!userId) return alert("Choose a user first.");
   const target = state.users[userId];
   if (!target) return alert("Could not find that user profile.");
-  if (!makeAdmin && userId === state.currentUserId) return alert("You cannot revoke admin from your own active account here.");
+  if (!makeAdmin && (userId === state.currentUserId || isProtectedAdminUser(target))) {
+    return alert("This admin account is protected and cannot be revoked here.");
+  }
 
   const action = makeAdmin ? "grant admin privileges to" : "revoke admin privileges from";
   const ok = confirm(`Are you sure you want to ${action} ${target.displayName || target.email || "this user"}?`);
@@ -3672,6 +3721,7 @@ async function setUserAdminPrivilege(makeAdmin) {
   await updateDoc(doc(db, "users", userId), {
     isAdmin: Boolean(makeAdmin),
     approved: makeAdmin ? true : Boolean(target.approved),
+    ...(makeAdmin && userId === state.currentUserId ? { protectedAdmin: true } : {}),
     updatedAt: serverTimestamp()
   });
 
@@ -3685,6 +3735,7 @@ async function deleteUserProfile(userId) {
 
   const user = state.users[userId];
   if (!user) return alert("Could not find that user profile.");
+  if (isProtectedAdminUser(user)) return alert("This protected admin profile cannot be deleted here.");
 
   const relatedBets = Object.values(state.bets || {}).filter(bet => bet.userId === userId);
   const relatedBetIds = new Set(relatedBets.map(bet => bet.firestoreId || bet.id));
@@ -6062,8 +6113,9 @@ function summarizeMaintenanceResults(results = []) {
     out.ledgerWrites += Number(result?.settlement?.ledgerWrites || 0);
     out.matches += Number(result?.settlement?.matches || 0);
     out.unresolved += Number(result?.settlement?.unresolved?.length || 0);
+    out.ledgerSettlementRepairs += Number(result?.ledgerSettlementRepairs || 0);
     return out;
-  }, { added: 0, updated: 0, ledgerWrites: 0, matches: 0, unresolved: 0 });
+  }, { added: 0, updated: 0, ledgerWrites: 0, matches: 0, unresolved: 0, ledgerSettlementRepairs: 0 });
 }
 
 async function triggerServerMaintenance(reason = "foreground") {
@@ -6155,6 +6207,7 @@ async function triggerServerMaintenance(reason = "foreground") {
         `Finished: ${totals.added + fallback.added} added`,
         `${totals.updated + fallback.updated} updated`,
         `${totals.ledgerWrites} ledger write(s)`,
+        totals.ledgerSettlementRepairs ? `${totals.ledgerSettlementRepairs} settled-ledger repair(s)` : "",
         `${fallback.settled} browser settlement repair(s)`,
         totals.unresolved ? `${totals.unresolved} unresolved` : "",
         errors.length ? `Warnings: ${errors.join(" | ")}` : ""

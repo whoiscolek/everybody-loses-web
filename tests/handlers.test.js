@@ -85,6 +85,6 @@ test("health endpoint reports the deployed application and Node runtime versions
   await healthHandler({ method: "GET", headers: {} }, res);
   assert.equal(res.statusCode, 200);
   assert.equal(res.parsed().ok, true);
-  assert.equal(res.parsed().version, "10.83");
+  assert.equal(res.parsed().version, "10.84");
   assert.match(res.parsed().runtime, /^v22\./);
 });

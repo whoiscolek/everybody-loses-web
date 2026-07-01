@@ -139,3 +139,29 @@ test("My Bets hides stale missing-event records instead of keeping them current 
   assert.match(client, /financialRecordAgeMs\(bet\) <= MY_BETS_ORPHAN_RECORD_GRACE_MS/);
   assert.match(client, /financialRecordAgeMs\(match\) <= MY_BETS_ORPHAN_RECORD_GRACE_MS/);
 });
+
+test("settle-up display ignores old open rows already covered by settlement records", async () => {
+  const client = await read("src/main.js");
+  assert.match(client, /function settlementCoversLedgerEntry\(entry = \{\}\)/);
+  assert.match(client, /Object\.values\(state\.settlements \|\| \{\}\)\.some/);
+  assert.match(client, /filter\(entry => !settlementCoversLedgerEntry\(entry\)\)/);
+  assert.match(client, /ledgerSettlementRepairs/);
+});
+
+test("protected admin accounts cannot be revoked or deleted from the browser or rules", async () => {
+  const client = await read("src/main.js");
+  const rules = await read("firestore.rules");
+  assert.match(client, /function isProtectedAdminUser\(user = \{\}\)/);
+  assert.match(client, /ensureCurrentAdminProtected/);
+  assert.match(client, /protectedAdmin: true/);
+  assert.match(client, /This admin account is protected and cannot be revoked here/);
+  assert.match(rules, /function preservesProtectedAdmin\(\)/);
+  assert.match(rules, /request\.resource\.data\.protectedAdmin == true/);
+  assert.match(rules, /allow delete: if admin\(\) && resource\.data\.protectedAdmin != true/);
+});
+
+test("server refresh progress does not force page scroll restoration during maintenance", async () => {
+  const client = await read("src/main.js");
+  assert.match(client, /restoreTransientUiState\(snapshot, options = \{\}\)/);
+  assert.match(client, /restoreScroll: !approvedLiveRefreshRunning && !autoMaintenanceRunning && !apiSyncRunning/);
+});

@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { cleanForFirestore, cleanupHistory, expireStaleOpenBets } from "../api/maintenance.js";
+import { cleanForFirestore, cleanupHistory, expireStaleOpenBets, reconcileSettledLedgerRows } from "../api/maintenance.js";
 import { FakeFirestore, FakeFieldValue } from "./helpers/fake-firestore.js";
 
 test("cleanForFirestore removes undefined fields without corrupting Timestamp-like values", () => {
@@ -163,4 +163,54 @@ test("maintenance expires orphaned open bets only after the grace window", async
   assert.equal(oldDb.get("bets", "old").status, "expired");
   assert.equal(recentChanged, 0);
   assert.equal(recentDb.get("bets", "recent").status, "open");
+});
+
+test("maintenance reconciles older open ledger rows covered by an existing net settlement", async () => {
+  const db = new FakeFirestore({
+    ledgerEntries: {
+      won: {
+        fromUser: "jamie",
+        toUser: "cole",
+        amount: 25,
+        settled: true,
+        createdAt: "2026-06-20T12:00:00Z",
+        settlementId: "settle-1"
+      },
+      leftover: {
+        fromUser: "cole",
+        toUser: "jamie",
+        amount: 3,
+        settled: false,
+        createdAt: "2026-06-20T12:05:00Z"
+      },
+      newer: {
+        fromUser: "cole",
+        toUser: "jamie",
+        amount: 2,
+        settled: false,
+        createdAt: "2026-06-21T12:00:00Z"
+      }
+    },
+    settlements: {
+      "settle-1": {
+        fromUser: "jamie",
+        toUser: "cole",
+        amount: 22,
+        createdAt: "2026-06-20T12:10:00Z"
+      }
+    }
+  });
+
+  const changed = await reconcileSettledLedgerRows(
+    db,
+    FakeFieldValue,
+    db.entries("ledgerEntries").map(row => ({ firestoreId: row.id, ...row })),
+    db.entries("settlements").map(row => ({ firestoreId: row.id, ...row }))
+  );
+
+  assert.equal(changed, 1);
+  assert.equal(db.get("ledgerEntries", "leftover").settled, true);
+  assert.equal(db.get("ledgerEntries", "leftover").settlementId, "settle-1");
+  assert.match(db.get("ledgerEntries", "leftover").settlementRepairReason, /settle-up covered/);
+  assert.equal(db.get("ledgerEntries", "newer").settled, false);
 });

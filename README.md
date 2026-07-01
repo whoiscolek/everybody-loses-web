@@ -1,3 +1,19 @@
+# Everybody Loses Web
+
+## v10.84 Settlement Repair, Scroll Stability, and Protected Admin Release
+
+v10.84 builds on v10.83 and fixes the issues reported after deployment:
+
+- Old opposite-direction ledger rows covered by a prior net settlement no longer show as fake new balances.
+- Server maintenance now reconciles older open ledger rows against existing settlement records and reports `ledgerSettlementRepairs`.
+- Manual server refresh no longer forces page-scroll restoration while progress messages re-render.
+- The active admin/owner account is automatically stamped `protectedAdmin: true` and cannot be revoked or deleted from the admin UI.
+- Updated Firestore rules enforce protected admins on the backend; publish `firestore.rules` after deploying for full protection.
+
+After deployment, confirm `/api/health` reports `10.84`, publish the included Firestore rules, open the app as the owner/admin, and run **Admin → Run server refresh now** once.
+
+---
+
 # Everybody Loses
 
 ## v10.83 Ledger, Settlement, and Admin Role Release
