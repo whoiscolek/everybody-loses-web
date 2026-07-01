@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { cleanForFirestore, cleanupHistory } from "../api/maintenance.js";
+import { cleanForFirestore, cleanupHistory, expireStaleOpenBets } from "../api/maintenance.js";
 import { FakeFirestore, FakeFieldValue } from "./helpers/fake-firestore.js";
 
 test("cleanForFirestore removes undefined fields without corrupting Timestamp-like values", () => {
@@ -114,4 +114,53 @@ test("history cleanup stamps surviving ledger rows with event identity before de
     if (previous === undefined) delete process.env.HISTORY_RETENTION_DAYS;
     else process.env.HISTORY_RETENTION_DAYS = previous;
   }
+});
+
+
+test("maintenance expires open bets when their linked event is final", async () => {
+  const db = new FakeFirestore({
+    bets: { stale: { eventId: "event-1", status: "open", createdAt: "2026-06-01T00:00:00Z" } }
+  });
+
+  const changed = await expireStaleOpenBets(
+    db,
+    FakeFieldValue,
+    [{ firestoreId: "event-1", id: "event-1", status: "final", startTime: "2026-06-01T00:00:00Z" }],
+    [{ firestoreId: "stale", id: "stale", eventId: "event-1", status: "open", createdAt: "2026-06-01T00:00:00Z" }],
+    Date.parse("2026-06-02T00:00:00Z")
+  );
+
+  assert.equal(changed, 1);
+  assert.equal(db.get("bets", "stale").status, "expired");
+  assert.match(db.get("bets", "stale").staleReason, /linked event is final/);
+});
+
+test("maintenance expires orphaned open bets only after the grace window", async () => {
+  const oldDb = new FakeFirestore({
+    bets: { old: { eventId: "missing", status: "open", createdAt: "2026-06-01T00:00:00Z" } }
+  });
+  const recentDb = new FakeFirestore({
+    bets: { recent: { eventId: "missing", status: "open", createdAt: "2026-06-01T20:00:00Z" } }
+  });
+
+  const now = Date.parse("2026-06-03T00:00:00Z");
+  const oldChanged = await expireStaleOpenBets(
+    oldDb,
+    FakeFieldValue,
+    [],
+    [{ firestoreId: "old", id: "old", eventId: "missing", status: "open", createdAt: "2026-06-01T00:00:00Z" }],
+    now
+  );
+  const recentChanged = await expireStaleOpenBets(
+    recentDb,
+    FakeFieldValue,
+    [],
+    [{ firestoreId: "recent", id: "recent", eventId: "missing", status: "open", createdAt: "2026-06-01T20:00:00Z" }],
+    now
+  );
+
+  assert.equal(oldChanged, 1);
+  assert.equal(oldDb.get("bets", "old").status, "expired");
+  assert.equal(recentChanged, 0);
+  assert.equal(recentDb.get("bets", "recent").status, "open");
 });

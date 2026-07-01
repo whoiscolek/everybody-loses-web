@@ -49,6 +49,9 @@ const AUTO_SETTLE_INTERVAL_MS = 2 * 60 * 1000;
 const NOW_WINDOW_SYNC_LABEL = "full 48-hour Now window";
 const NOW_BOARD_LOOKAHEAD_MS = 48 * 60 * 60 * 1000;
 const NOW_BOARD_LOOKBACK_MS = 4 * 60 * 60 * 1000;
+const MY_BETS_ORPHAN_RECORD_GRACE_MS = 36 * 60 * 60 * 1000;
+const CLOSED_BET_STATUSES = new Set(["settled", "cancelled", "canceled", "void", "voided", "expired"]);
+const CLOSED_MATCH_STATUSES = new Set(["settled", "cancelled", "canceled", "void", "voided", "expired"]);
 
 const SPORT_GROUPS = {
   basketball: ["NBA", "NCAA Basketball"],
@@ -2322,18 +2325,47 @@ function displayPick(event, bet) {
   return bet.participant || "Unknown";
 }
 
+function recordStatus(value) {
+  return String(value || "").toLowerCase();
+}
+
+function financialRecordAgeMs(record = {}) {
+  const timestamp = toDateValue(record.createdAt) || toDateValue(record.updatedAt) || 0;
+  return timestamp ? Date.now() - timestamp : Number.POSITIVE_INFINITY;
+}
+
+function eventIsUnavailableForCurrentBets(event) {
+  if (!event) return false;
+  if (event.status === "final") return true;
+  if (event.hiddenFromNow || ["archived", "history"].includes(String(event.boardState || "").toLowerCase())) return true;
+
+  const start = new Date(event.startTime || 0).getTime();
+  if (Number.isFinite(start) && start > 0 && Date.now() - start > maxLiveAgeMs(event)) return true;
+  return false;
+}
+
+function linkedEventForFinancialRecord(record = {}) {
+  return state.events[record?.eventId] || findEventByIdOrCode(record?.eventId);
+}
+
 function betIsCurrent(bet) {
-  const event = state.events[bet?.eventId] || findEventByIdOrCode(bet?.eventId);
-  if (!bet || bet.status === "settled" || bet.status === "cancelled") return false;
-  if (event?.status === "final") return false;
-  return true;
+  if (!bet) return false;
+  const status = recordStatus(bet.status || "open");
+  if (CLOSED_BET_STATUSES.has(status) || status === "matched") return false;
+
+  const event = linkedEventForFinancialRecord(bet);
+  if (!event) return financialRecordAgeMs(bet) <= MY_BETS_ORPHAN_RECORD_GRACE_MS;
+  return !eventIsUnavailableForCurrentBets(event);
 }
 
 function matchIsCurrent(match) {
-  const event = state.events[match?.eventId] || findEventByIdOrCode(match?.eventId);
-  if (!match || match.status !== "matched") return false;
-  if (event?.status === "final") return false;
-  return true;
+  if (!match) return false;
+  const status = recordStatus(match.status || "matched");
+  if (status !== "matched" || CLOSED_MATCH_STATUSES.has(status)) return false;
+
+  const event = linkedEventForFinancialRecord(match);
+  if (!event) return financialRecordAgeMs(match) <= MY_BETS_ORPHAN_RECORD_GRACE_MS;
+  return !eventIsUnavailableForCurrentBets(event);
 }
 
 function renderMyBets() {
@@ -2420,12 +2452,37 @@ function renderBalance(otherId, amount) {
   `;
 }
 
+function cents(value) {
+  return Math.round(Number(value || 0) * 100);
+}
+
+function dollars(valueInCents) {
+  return Math.round(Number(valueInCents || 0)) / 100;
+}
+
+function openLedgerBetweenUsers(userId, otherUserId) {
+  return Object.values(state.ledgerEntries || {})
+    .filter(entry => !entry.settled)
+    .filter(entry =>
+      (entry.fromUser === userId && entry.toUser === otherUserId)
+      || (entry.fromUser === otherUserId && entry.toUser === userId)
+    );
+}
+
+function balanceCentsForCounterparty(userId, otherUserId) {
+  return openLedgerBetweenUsers(userId, otherUserId).reduce((sum, entry) => {
+    if (entry.toUser === userId) return sum + cents(entry.amount);
+    if (entry.fromUser === userId) return sum - cents(entry.amount);
+    return sum;
+  }, 0);
+}
+
 function getBalancesByCounterparty(userId) {
   const balances = {};
   for (const entry of Object.values(state.ledgerEntries)) {
     if (entry.settled) continue;
-    if (entry.toUser === userId) balances[entry.fromUser] = (balances[entry.fromUser] || 0) + Number(entry.amount);
-    if (entry.fromUser === userId) balances[entry.toUser] = (balances[entry.toUser] || 0) - Number(entry.amount);
+    if (entry.toUser === userId) balances[entry.fromUser] = dollars(cents(balances[entry.fromUser]) + cents(entry.amount));
+    if (entry.fromUser === userId) balances[entry.toUser] = dollars(cents(balances[entry.toUser]) - cents(entry.amount));
   }
   return balances;
 }
@@ -2973,6 +3030,30 @@ function renderAdminUserManagement() {
   }).join("");
 }
 
+
+function renderAdminPrivilegeManager() {
+  const users = Object.values(state.users || {})
+    .sort((a, b) => String(a.displayName || "").localeCompare(String(b.displayName || "")));
+
+  if (!users.length) return `<div class="record">No users found.</div>`;
+
+  return `
+    <label>Select user</label>
+    <select id="adminPrivilegeUser">
+      ${users.map(user => {
+        const id = user.firestoreId || user.id;
+        const role = user.isAdmin ? "Admin" : user.approved ? "Approved user" : "Pending user";
+        return `<option value="${escapeHtml(id)}">${escapeHtml(user.displayName || user.email || id)} · ${escapeHtml(role)}</option>`;
+      }).join("")}
+    </select>
+    <div class="button-row">
+      <button class="primary" data-action="grant-admin">Grant admin</button>
+      <button class="ghost" data-action="revoke-admin">Revoke admin</button>
+    </div>
+    <p class="footer-note small">Granting admin also approves the user. Revoking admin keeps the user approved. You cannot revoke admin from your own active account here.</p>
+  `;
+}
+
 async function refreshDeploymentHealth() {
   if (deploymentHealthLoading) return deploymentHealth;
   deploymentHealthLoading = true;
@@ -3085,6 +3166,46 @@ function formatAdminAuditDate(record = {}) {
   });
 }
 
+function adminMatchDecisionKeyFromMatch(match = {}) {
+  const id = match.firestoreId || match.id;
+  if (id) return `match:${id}`;
+  return `match-fallback:${match.eventId || ""}|${match.fightId || ""}|${match.userA || ""}|${match.userB || ""}|${match.amount || ""}|${match.createdAt || ""}`;
+}
+
+function adminMatchDecisionKeyFromLedger(entry = {}) {
+  if (entry.matchId) return `match:${entry.matchId}`;
+  const id = entry.firestoreId || entry.id;
+  if (id) return `ledger:${id}`;
+  return `ledger-fallback:${entry.eventId || ""}|${entry.fromUser || ""}|${entry.toUser || ""}|${entry.amount || ""}|${entry.createdAt || ""}|${entry.note || ""}`;
+}
+
+function adminArchivedLedgerRows(matches = [], ledgerEntries = []) {
+  const matchKeys = new Set(matches.map(adminMatchDecisionKeyFromMatch));
+  return ledgerEntries.filter(entry => !matchKeys.has(adminMatchDecisionKeyFromLedger(entry)));
+}
+
+function renderArchivedLedgerAuditRow(entry) {
+  const entryId = entry.firestoreId || entry.id || "Unknown ledger ID";
+  const eventLabel = entry.eventTitle || entry.eventSnapshot?.title || entry.eventShortCode || entry.eventId || "Archived event";
+  const eventMeta = [entry.eventLeague || entry.eventSnapshot?.league, entry.eventSport || entry.eventSnapshot?.sport]
+    .filter(Boolean)
+    .join(" · ");
+  return `
+      <div class="admin-bet-audit-row archived-ledger-row">
+        <div class="admin-bet-audit-main">
+          <strong>${escapeHtml(userName(entry.fromUser))} → ${escapeHtml(userName(entry.toUser))}</strong>
+          <span class="status-badge ${entry.settled ? "settled" : "open"}">${entry.settled ? "Settled ledger" : "Open ledger"}</span>
+          <div class="admin-bet-audit-event">${escapeHtml(eventLabel)}</div>
+          <div class="muted tiny">${escapeHtml(formatAdminAuditDate(entry))} · Ledger ID ${escapeHtml(entryId)} · Event ID ${escapeHtml(entry.eventId || "—")}${eventMeta ? ` · ${escapeHtml(eventMeta)}` : ""}</div>
+        </div>
+        <div class="admin-bet-audit-cell"><span>Pick</span><strong>Archived</strong></div>
+        <div class="admin-bet-audit-cell"><span>Amount</span><strong>${escapeHtml(money(Number(entry.amount || 0)))}</strong></div>
+        <div class="admin-bet-audit-cell"><span>Matched with</span><strong>${escapeHtml(userName(entry.toUser))}</strong></div>
+        <div class="admin-bet-audit-cell admin-bet-audit-result"><span>Outcome / ledger</span><strong>${escapeHtml(`${userName(entry.fromUser)} owes ${userName(entry.toUser)} ${money(entry.amount || 0)}${entry.settled ? " · settled" : ""}`)}</strong></div>
+      </div>
+    `;
+}
+
 function renderAdminFullBetLedger() {
   const bets = Object.values(state.bets || {}).sort((a, b) => {
     const timeDifference = toDateValue(b.createdAt || b.updatedAt) - toDateValue(a.createdAt || a.updatedAt);
@@ -3094,6 +3215,11 @@ function renderAdminFullBetLedger() {
   const matches = Object.values(state.matches || {});
   const ledgerEntries = Object.values(state.ledgerEntries || {});
   const settlements = Object.values(state.settlements || {});
+  const archivedLedgerRows = adminArchivedLedgerRows(matches, ledgerEntries);
+  const decisionKeys = new Set([
+    ...matches.map(adminMatchDecisionKeyFromMatch),
+    ...archivedLedgerRows.map(adminMatchDecisionKeyFromLedger)
+  ]);
 
   const betIdentifiers = bet => [...new Set([bet?.firestoreId, bet?.id].filter(Boolean).map(String))];
   const matchForBet = bet => {
@@ -3120,8 +3246,8 @@ function renderAdminFullBetLedger() {
     );
     if (ledger) {
       return String(ledger.fromUser) === String(bet.userId)
-        ? `Owes ${userName(ledger.toUser)} ${money(ledger.amount)}`
-        : `Won ${money(ledger.amount)} from ${userName(ledger.fromUser)}`;
+        ? `Owes ${userName(ledger.toUser)} ${money(ledger.amount)}${ledger.settled ? " · settled" : ""}`
+        : `Won ${money(ledger.amount)} from ${userName(ledger.fromUser)}${ledger.settled ? " · settled" : ""}`;
     }
     const settlement = settlements.find(item =>
       String(item.matchId || "") === matchId ||
@@ -3134,7 +3260,7 @@ function renderAdminFullBetLedger() {
     return `Match ${label(match.status || "active")}`;
   };
 
-  const rows = bets.map(bet => {
+  const betRows = bets.map(bet => {
     const event = state.events[bet.eventId] || Object.values(state.events || {}).find(item =>
       String(item.firestoreId || item.id || "") === String(bet.eventId || "")
     );
@@ -3159,24 +3285,30 @@ function renderAdminFullBetLedger() {
         <div class="admin-bet-audit-cell admin-bet-audit-result"><span>Outcome / ledger</span><strong>${escapeHtml(financialResult(bet, match))}</strong></div>
       </div>
     `;
-  }).join("");
+  });
+
+  const archivedRows = archivedLedgerRows
+    .sort((a, b) => toDateValue(b.createdAt || b.updatedAt || b.settledAt) - toDateValue(a.createdAt || a.updatedAt || a.settledAt))
+    .map(renderArchivedLedgerAuditRow);
+  const rows = [...betRows, ...archivedRows].join("");
 
   return `
     <div class="admin-card admin-full-ledger-card">
       <div class="admin-full-ledger-head">
         <div>
           <h3>Complete betting ledger</h3>
-          <p class="muted small">Administrator-only audit of every bet, including unmatched bets, linked opponents, settlement state, and money owed. This is read-only; use the repair and manual-ledger tools below to make corrections.</p>
+          <p class="muted small">Administrator-only audit of current bet rows plus archived ledger-backed decisions that may remain after old bet/match docs are cleaned up. This is read-only; use the repair and manual-ledger tools below to make corrections.</p>
         </div>
         <div class="admin-ledger-counts">
-          <span>${bets.length} bets</span>
-          <span>${matches.length} matches</span>
+          <span>${bets.length} active bet rows</span>
+          <span>${decisionKeys.size} matched decisions</span>
+          <span>${archivedLedgerRows.length} ledger-only decisions</span>
           <span>${ledgerEntries.length} ledger rows</span>
           <span>${settlements.length} payments</span>
         </div>
       </div>
       <div class="admin-bet-audit-list">
-        ${rows || `<div class="record">No bets have been recorded yet.</div>`}
+        ${rows || `<div class="record">No bets or ledger-backed decisions have been recorded yet.</div>`}
       </div>
     </div>
   `;
@@ -3204,6 +3336,12 @@ function renderAdmin() {
         <div class="api-results">
           ${renderAdminUserManagement()}
         </div>
+      </div>
+
+      <div class="admin-card">
+        <h3>Admin privilege manager</h3>
+        <p class="muted small">Select an existing profile and grant or revoke administrator privileges without editing Firestore manually.</p>
+        ${renderAdminPrivilegeManager()}
       </div>
 
       <div class="admin-card">
@@ -3388,6 +3526,8 @@ function wireUi() {
   document.querySelectorAll("[data-settle]").forEach(button => button.addEventListener("click", () => settleBalance(button.dataset.settle, Number(button.dataset.amount))));
   document.querySelectorAll("[data-approve]").forEach(button => button.addEventListener("click", () => approveUser(button.dataset.approve)));
   document.querySelectorAll("[data-delete-user]").forEach(button => button.addEventListener("click", () => deleteUserProfile(button.dataset.deleteUser)));
+  document.querySelector("[data-action='grant-admin']")?.addEventListener("click", () => setUserAdminPrivilege(true));
+  document.querySelector("[data-action='revoke-admin']")?.addEventListener("click", () => setUserAdminPrivilege(false));
   document.querySelector("[data-action='test-notification']")?.addEventListener("click", sendTestNotification);
   document.querySelector("[data-action='run-server-maintenance']")?.addEventListener("click", () => triggerServerMaintenance("manual"));
   document.querySelector("[data-action='save-profile']")?.addEventListener("click", saveProfile);
@@ -3514,6 +3654,28 @@ async function approveUser(userId) {
     approved: true,
     updatedAt: serverTimestamp()
   });
+}
+
+
+async function setUserAdminPrivilege(makeAdmin) {
+  if (!isAdmin()) return;
+  const userId = document.querySelector("#adminPrivilegeUser")?.value;
+  if (!userId) return alert("Choose a user first.");
+  const target = state.users[userId];
+  if (!target) return alert("Could not find that user profile.");
+  if (!makeAdmin && userId === state.currentUserId) return alert("You cannot revoke admin from your own active account here.");
+
+  const action = makeAdmin ? "grant admin privileges to" : "revoke admin privileges from";
+  const ok = confirm(`Are you sure you want to ${action} ${target.displayName || target.email || "this user"}?`);
+  if (!ok) return;
+
+  await updateDoc(doc(db, "users", userId), {
+    isAdmin: Boolean(makeAdmin),
+    approved: makeAdmin ? true : Boolean(target.approved),
+    updatedAt: serverTimestamp()
+  });
+
+  alert(`${target.displayName || target.email || "User"} is now ${makeAdmin ? "an admin" : "not an admin"}.`);
 }
 
 async function deleteUserProfile(userId) {
@@ -4624,30 +4786,42 @@ async function settleBalance(otherUserId, amount) {
   const user = currentUser();
   if (!user) return;
 
-  const target = Number(amount);
-  const affected = Object.values(state.ledgerEntries)
-    .filter(entry => !entry.settled && entry.fromUser === otherUserId && entry.toUser === user.id)
+  const netCents = balanceCentsForCounterparty(user.id, otherUserId);
+  if (netCents <= 0) {
+    alert("There is no positive balance for this person to mark settled.");
+    return;
+  }
+
+  const displayedCents = cents(amount);
+  const netAmount = dollars(netCents);
+  const affected = openLedgerBetweenUsers(user.id, otherUserId)
     .sort((a, b) => toDateValue(a.createdAt) - toDateValue(b.createdAt));
 
+  if (!affected.length) {
+    alert("No open ledger rows were found for this balance.");
+    return;
+  }
+
   const batch = writeBatch(db);
-  let remaining = target;
+  const settlementRef = doc(collection(db, "settlements"));
 
   for (const entry of affected) {
-    if (remaining <= 0) break;
     batch.update(doc(db, "ledgerEntries", entry.firestoreId || entry.id), {
       settled: true,
+      settlementId: settlementRef.id,
       settledAt: serverTimestamp(),
       updatedAt: serverTimestamp()
     });
-    remaining -= Number(entry.amount);
   }
 
-  const settlementRef = doc(collection(db, "settlements"));
   batch.set(settlementRef, {
     id: settlementRef.id,
     fromUser: otherUserId,
     toUser: user.id,
-    amount: target,
+    amount: netAmount,
+    includedLedgerCount: affected.length,
+    displayedAmount: dollars(displayedCents),
+    recalculated: displayedCents !== netCents,
     createdAt: serverTimestamp(),
     updatedAt: serverTimestamp()
   });

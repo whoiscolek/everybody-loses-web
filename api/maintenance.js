@@ -24,6 +24,7 @@ const SUPPORTED_LEAGUES = [
 const LEASE_MS = 75 * 1000;
 const NOW_LOOKAHEAD_MS = 48 * 60 * 60 * 1000;
 const PREGAME_LOOKBACK_MS = 4 * 60 * 60 * 1000;
+const ORPHAN_OPEN_BET_GRACE_MS = 36 * 60 * 60 * 1000;
 const MAINTENANCE_VERSION = APP_VERSION;
 
 export function cleanForFirestore(value) {
@@ -518,6 +519,48 @@ function eventSnapshotForLedger(event = {}, eventId = "") {
   };
 }
 
+
+function linkedEventForRecord(events, record) {
+  return events.find(event => recordBelongs(record, event)) || null;
+}
+
+function closedBetStatus(status) {
+  return ["settled", "expired", "void", "voided", "cancelled", "canceled"].includes(String(status || "").toLowerCase());
+}
+
+function openBetIsStale(event, bet, now = Date.now()) {
+  if (event) {
+    if (event.status === "final") return true;
+    if (event.hiddenFromNow || ["archived", "history"].includes(String(event.boardState || "").toLowerCase())) return true;
+    const start = dateMs(event.startTime);
+    return Boolean(start && now - start > staleThresholdMs(event));
+  }
+
+  const lastSeen = dateMs(bet?.createdAt) || dateMs(bet?.updatedAt);
+  return !lastSeen || now - lastSeen > ORPHAN_OPEN_BET_GRACE_MS;
+}
+
+export async function expireStaleOpenBets(db, FieldValue, events, bets, now = Date.now()) {
+  const stale = bets.filter(bet => {
+    const betId = bet.firestoreId || bet.id;
+    if (!betId || closedBetStatus(bet.status)) return false;
+    if (String(bet.status || "open").toLowerCase() === "matched") return false;
+    return openBetIsStale(linkedEventForRecord(events, bet), bet, now);
+  });
+
+  if (!stale.length) return 0;
+  const batch = db.batch();
+  for (const bet of stale) {
+    batch.set(db.collection("bets").doc(bet.firestoreId || bet.id), {
+      status: "expired",
+      staleReason: "Expired by maintenance because the linked event is final, archived, stale, or no longer available.",
+      updatedAt: FieldValue.serverTimestamp()
+    }, { merge: true });
+  }
+  await batch.commit();
+  return stale.length;
+}
+
 export async function cleanupHistory(db, FieldValue, events, bets, matches, ledgerEntries = []) {
   const retentionDays = Number(process.env.HISTORY_RETENTION_DAYS || 0);
   if (!Number.isFinite(retentionDays) || retentionDays <= 0) return 0;
@@ -739,6 +782,7 @@ async function runMaintenance(req, mode, services = null) {
     const freshMatches = toRows(freshMatchesSnap);
     const freshLedger = toRows(freshLedgerSnap);
     const postSettlement = await settleFinalEvents(db, FieldValue, events, freshBets, freshMatches, freshLedger);
+    const staleOpenBetsExpired = await expireStaleOpenBets(db, FieldValue, events, freshBets);
     const settlement = mergeSettlementSummaries(preSettlement, postSettlement);
     const historyRemoved = await cleanupHistory(db, FieldValue, events, freshBets, freshMatches, freshLedger);
     const summary = {
@@ -754,6 +798,7 @@ async function runMaintenance(req, mode, services = null) {
       updated,
       archivedStale: events.filter(e => e.boardState === "archived" && e.status !== "final").length,
       settlement,
+      staleOpenBetsExpired,
       historyRemoved,
       errors: errors.slice(0, 20),
       sourceSummary: sourceSummary.slice(0, 100)

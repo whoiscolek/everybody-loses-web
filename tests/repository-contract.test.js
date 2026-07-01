@@ -103,3 +103,39 @@ test("Profile stats are implemented rather than left as planned placeholders", a
   assert.doesNotMatch(client, /Planned stats/);
   assert.doesNotMatch(client, /This will populate after more settled bets/);
 });
+
+
+test("administrator view can grant admin roles without manual Firestore editing", async () => {
+  const client = await read("src/main.js");
+  assert.match(client, /function renderAdminPrivilegeManager\(\)/);
+  assert.match(client, /Admin privilege manager/);
+  assert.match(client, /data-action=["']grant-admin["']/);
+  assert.match(client, /data-action=["']revoke-admin["']/);
+  assert.match(client, /async function setUserAdminPrivilege\(makeAdmin\)/);
+  assert.match(client, /isAdmin: Boolean\(makeAdmin\)/);
+});
+
+test("settle-up nets both directions and clears all open rows between users", async () => {
+  const client = await read("src/main.js");
+  assert.match(client, /function openLedgerBetweenUsers\(userId, otherUserId\)/);
+  assert.match(client, /function balanceCentsForCounterparty\(userId, otherUserId\)/);
+  assert.match(client, /for \(const entry of affected\) \{\s*batch\.update\(doc\(db, "ledgerEntries"/s);
+  assert.match(client, /includedLedgerCount: affected\.length/);
+  assert.doesNotMatch(client, /filter\(entry => !entry\.settled && entry\.fromUser === otherUserId && entry\.toUser === user\.id\)/);
+});
+
+test("admin ledger counts ledger-backed archived decisions in addition to live match docs", async () => {
+  const client = await read("src/main.js");
+  assert.match(client, /function adminArchivedLedgerRows\(matches = \[\], ledgerEntries = \[\]\)/);
+  assert.match(client, /ledger-only decisions/);
+  assert.match(client, /matched decisions/);
+  assert.match(client, /renderArchivedLedgerAuditRow/);
+});
+
+test("My Bets hides stale missing-event records instead of keeping them current forever", async () => {
+  const client = await read("src/main.js");
+  assert.match(client, /MY_BETS_ORPHAN_RECORD_GRACE_MS/);
+  assert.match(client, /function linkedEventForFinancialRecord/);
+  assert.match(client, /financialRecordAgeMs\(bet\) <= MY_BETS_ORPHAN_RECORD_GRACE_MS/);
+  assert.match(client, /financialRecordAgeMs\(match\) <= MY_BETS_ORPHAN_RECORD_GRACE_MS/);
+});
